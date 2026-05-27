@@ -435,6 +435,41 @@ export function logWebhook(
   return Number(result.lastInsertRowid);
 }
 
+// --- Delete ---
+
+export function deleteContact(db: Database.Database, id: string): void {
+  const contact = db.prepare('SELECT id FROM crm_contacts WHERE id = ?').get(id);
+  if (!contact) throw new Error(`Contact ${id} not found`);
+  const txn = db.transaction(() => {
+    db.prepare('UPDATE crm_activities SET contact_id = NULL WHERE contact_id = ? AND deal_id IS NOT NULL').run(id);
+    db.prepare('DELETE FROM crm_activities WHERE contact_id = ? AND deal_id IS NULL').run(id);
+    db.prepare('UPDATE crm_deals SET contact_id = NULL WHERE contact_id = ?').run(id);
+    db.prepare('DELETE FROM crm_contacts WHERE id = ?').run(id);
+  });
+  txn();
+}
+
+export function deleteCompany(db: Database.Database, id: string): void {
+  const company = db.prepare('SELECT id FROM crm_companies WHERE id = ?').get(id);
+  if (!company) throw new Error(`Company ${id} not found`);
+  const txn = db.transaction(() => {
+    db.prepare('UPDATE crm_contacts SET company_id = NULL WHERE company_id = ?').run(id);
+    db.prepare('UPDATE crm_deals SET company_id = NULL WHERE company_id = ?').run(id);
+    db.prepare('DELETE FROM crm_companies WHERE id = ?').run(id);
+  });
+  txn();
+}
+
+export function deleteDeal(db: Database.Database, id: string): void {
+  const deal = db.prepare('SELECT id FROM crm_deals WHERE id = ?').get(id);
+  if (!deal) throw new Error(`Deal ${id} not found`);
+  const txn = db.transaction(() => {
+    db.prepare('UPDATE crm_activities SET deal_id = NULL WHERE deal_id = ?').run(id);
+    db.prepare('DELETE FROM crm_deals WHERE id = ?').run(id);
+  });
+  txn();
+}
+
 // --- Review Queue ---
 
 export interface CrmReviewItem {

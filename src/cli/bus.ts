@@ -2822,6 +2822,12 @@ crmContacts.command('update').argument('<id>')
     console.log(`Updated ${id}`);
   });
 
+crmContacts.command('delete').argument('<id>').action((id: string) => {
+  const db = getCrmDb();
+  crm.deleteContact(db, id);
+  console.log(`Deleted contact ${id}`);
+});
+
 const crmCompanies = busCommand.command('crm-companies').description('CRM company operations');
 
 crmCompanies.command('list')
@@ -2875,6 +2881,12 @@ crmCompanies.command('update').argument('<id>')
     console.log(`Updated ${id}`);
   });
 
+crmCompanies.command('delete').argument('<id>').action((id: string) => {
+  const db = getCrmDb();
+  crm.deleteCompany(db, id);
+  console.log(`Deleted company ${id}`);
+});
+
 const crmDeals = busCommand.command('crm-deals').description('CRM deal operations');
 
 crmDeals.command('list')
@@ -2927,6 +2939,12 @@ crmDeals.command('update').argument('<id>')
     crm.updateDeal(db, id, fields);
     console.log(`Updated ${id}`);
   });
+
+crmDeals.command('delete').argument('<id>').action((id: string) => {
+  const db = getCrmDb();
+  crm.deleteDeal(db, id);
+  console.log(`Deleted deal ${id}`);
+});
 
 const crmActivities = busCommand.command('crm-activities').description('CRM activity operations');
 
