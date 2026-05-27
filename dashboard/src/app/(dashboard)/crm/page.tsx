@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
-import { IconUsers, IconBuilding, IconBriefcase } from '@tabler/icons-react';
+import { IconUsers, IconBuilding, IconBriefcase, IconFileText } from '@tabler/icons-react';
 import { PipelineBoard } from '@/components/crm/pipeline-board';
 import { CreateDealDialog } from '@/components/crm/create-deal-dialog';
 
@@ -86,6 +86,12 @@ export default function CrmPage() {
             <Button variant="ghost" size="sm">
               <IconBuilding className="size-4 mr-1" />
               Companies
+            </Button>
+          </Link>
+          <Link href="/crm/research">
+            <Button variant="ghost" size="sm">
+              <IconFileText className="size-4 mr-1" />
+              Research
             </Button>
           </Link>
           <CreateDealDialog onCreated={fetchData} />

@@ -205,6 +205,13 @@ function initializeSchema(db: Database.Database): void {
       id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT NOT NULL, event_type TEXT,
       payload TEXT, processed INTEGER DEFAULT 0, error TEXT, received_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS crm_review_queue (
+      id TEXT PRIMARY KEY, type TEXT NOT NULL, entity_id TEXT NOT NULL,
+      context TEXT, status TEXT DEFAULT 'pending', resolved_by TEXT,
+      created_at TEXT NOT NULL, resolved_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_crm_review_queue_status ON crm_review_queue(status);
+    DROP INDEX IF EXISTS idx_crm_contacts_email;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_crm_contacts_email ON crm_contacts(email);
     CREATE INDEX IF NOT EXISTS idx_crm_contacts_company ON crm_contacts(company_id);
     CREATE INDEX IF NOT EXISTS idx_crm_deals_stage ON crm_deals(stage);

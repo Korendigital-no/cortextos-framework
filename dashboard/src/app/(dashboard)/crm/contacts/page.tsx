@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { IconArrowLeft, IconSearch, IconUserPlus } from '@tabler/icons-react';
 
@@ -19,6 +20,7 @@ export default function ContactsPage() {
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
+  const router = useRouter();
   const [showAdd, setShowAdd] = useState(false);
   const [newName, setNewName] = useState('');
   const [newEmail, setNewEmail] = useState('');
@@ -111,7 +113,7 @@ export default function ContactsPage() {
       ) : (
         <div className="rounded-lg border divide-y">
           {contacts.map(contact => (
-            <div key={contact.id} className="flex items-center justify-between px-4 py-3 hover:bg-accent/50 transition-colors">
+            <div key={contact.id} onClick={() => router.push(`/crm/contacts/${contact.id}`)} className="flex items-center justify-between px-4 py-3 hover:bg-accent/50 transition-colors cursor-pointer">
               <div className="min-w-0">
                 <p className="text-sm font-medium truncate">{contact.name}</p>
                 <p className="text-xs text-muted-foreground truncate">
