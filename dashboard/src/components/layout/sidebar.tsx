@@ -20,6 +20,7 @@ import {
   IconMessages,
   IconNotes,
   IconBriefcase,
+  IconCalendar,
 } from '@tabler/icons-react';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
@@ -42,6 +43,7 @@ const navItems: NavItem[] = [
 
   // CRM
   { label: 'CRM', href: '/crm', icon: IconBriefcase, section: 'core' },
+  { label: 'Calendar', href: '/crm/calendar', icon: IconCalendar, section: 'core' },
 
   // Operations
   { label: 'Comms', href: '/comms', icon: IconMessages, section: 'ops' },
