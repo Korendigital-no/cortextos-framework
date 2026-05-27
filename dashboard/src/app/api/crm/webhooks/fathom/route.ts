@@ -1,5 +1,7 @@
 import { NextRequest } from 'next/server';
 import { createHmac, randomUUID, timingSafeEqual } from 'crypto';
+import { execFile } from 'child_process';
+import { join } from 'path';
 import { db } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
@@ -105,6 +107,19 @@ export async function POST(request: NextRequest) {
     }
 
     db.prepare('UPDATE crm_webhook_log SET processed = 1 WHERE id = ?').run(webhookId);
+
+    const frameworkRoot = process.env.CTX_FRAMEWORK_ROOT;
+    if (frameworkRoot) {
+      const cliPath = join(frameworkRoot, 'dist', 'cli.js');
+      const contactNames = matchedContacts.length > 0
+        ? (attendeesRaw?.filter(a => a.email).map(a => a.name || a.email).join(', ') ?? 'unknown')
+        : 'no matched contacts';
+      const msg = `Fathom meeting recorded: "${meetingTitle}". Contacts: ${contactNames}. ${createdTasks.length} follow-up tasks created.${summary ? ` Summary: ${summary.slice(0, 200)}` : ''}`;
+      execFile(process.execPath, [cliPath, 'bus', 'send-message', 'sales', 'normal', msg], {
+        env: { ...process.env, CTX_AGENT_NAME: 'crm-webhook' },
+        timeout: 5000,
+      }, () => {});
+    }
 
     return Response.json({
       ok: true,

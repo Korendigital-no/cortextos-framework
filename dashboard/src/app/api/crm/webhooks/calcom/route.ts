@@ -1,5 +1,7 @@
 import { NextRequest } from 'next/server';
 import { createHmac, randomUUID, timingSafeEqual } from 'crypto';
+import { execFile } from 'child_process';
+import { join } from 'path';
 import { db } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
@@ -112,6 +114,16 @@ export async function POST(request: NextRequest) {
     }
 
     db.prepare('UPDATE crm_webhook_log SET processed = 1 WHERE id = ?').run(webhookId);
+
+    const frameworkRoot = process.env.CTX_FRAMEWORK_ROOT;
+    if (frameworkRoot) {
+      const cliPath = join(frameworkRoot, 'dist', 'cli.js');
+      const msg = `New Cal.com booking from ${contactName} (${contactEmail}).${companyName ? ` Company: ${companyName}.` : ''} ${!existingDeal ? 'New lead created.' : 'Existing deal updated.'}`;
+      execFile(process.execPath, [cliPath, 'bus', 'send-message', 'sales', 'normal', msg], {
+        env: { ...process.env, CTX_AGENT_NAME: 'crm-webhook' },
+        timeout: 5000,
+      }, () => {});
+    }
 
     return Response.json({
       ok: true,
