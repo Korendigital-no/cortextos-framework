@@ -1,10 +1,25 @@
 import type Database from 'better-sqlite3';
 import { randomUUID } from 'crypto';
+import { execFile } from 'child_process';
+import { join } from 'path';
 import {
   createContact, getContact, upsertContactByEmail, updateContact,
   createCompany, createDeal, createActivity, createMeeting, listContacts,
   logWebhook,
 } from './crm.js';
+
+function notifySales(message: string): void {
+  const frameworkRoot = process.env.CTX_FRAMEWORK_ROOT;
+  if (!frameworkRoot) return;
+  const cliPath = join(frameworkRoot, 'dist', 'cli.js');
+  const truncated = message.length > 2000 ? message.slice(0, 1997) + '...' : message;
+  try {
+    execFile(process.execPath, [cliPath, 'bus', 'send-message', 'sales', 'normal', truncated], {
+      env: { ...process.env, CTX_AGENT_NAME: 'crm-webhook' },
+      timeout: 5000,
+    }, () => {});
+  } catch { /* notification failure must never block CRM processing */ }
+}
 
 function now(): string {
   return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
@@ -99,6 +114,15 @@ export function processCalcomWebhook(db: Database.Database, job: WebhookJob): { 
   } else {
     dealId = existingDeal.id;
   }
+
+  const responseSummary = responseDetails.length > 0 ? ` Booking responses: ${responseDetails.join(', ')}.` : '';
+  notifySales(
+    `New Cal.com booking: "${title}". Contact: ${contactName} (${contactEmail}).` +
+    (companyName ? ` Company: ${companyName}.` : '') +
+    (newDeal ? ' New lead created.' : ` Existing deal (${dealId}).`) +
+    responseSummary +
+    ` Use /customer-research or /lead-research-assistant for enrichment.`
+  );
 
   return { contact_id: contact.id, deal_id: dealId, new_deal: newDeal };
 }
@@ -283,6 +307,22 @@ export function processFathomWebhook(
       meeting_title: meetingTitle,
     }));
   }
+
+  const contactNames = matchedContacts.length > 0
+    ? (attendeesRaw?.filter(a => a.email).map(a => a.name || a.email).join(', ') ?? 'unknown')
+    : 'no matched contacts';
+  const aiSummary = aiOutput
+    ? ` Category: ${aiOutput.meeting_category}. Interest: ${aiOutput.deal_signals?.interest_level ?? 'unknown'}.`
+    : '';
+
+  notifySales(
+    `Meeting recorded: "${meetingTitle}". Contacts: ${contactNames}.` +
+    ` ${tasksCreated} follow-up tasks created.` +
+    aiSummary +
+    (aiOutput?.follow_up_email_draft ? ' Email draft ready - run cortextos bus crm-activities list --type email_draft.' : '') +
+    (matchedContacts.length === 0 ? ' No contact match - review queue item created.' : '') +
+    ` Use /cold-email for outreach or /sales-enablement for prep.`
+  );
 
   return { meeting_id: finalMeetingId, matched_contacts: matchedContacts.length, tasks_created: tasksCreated };
 }
