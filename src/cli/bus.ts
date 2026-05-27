@@ -22,6 +22,7 @@ import { checkUsageApi, refreshOAuthToken, rotateOAuth, loadAccounts, ALERT_5H, 
 import { getCrmDb } from '../bus/crm-db.js';
 import * as crm from '../bus/crm.js';
 import { processWebhookQueue } from '../bus/crm-webhook-processor.js';
+import { generatePipelineReport, generateMeetingSummaryHtml } from '../bus/crm-reports.js';
 import { resolvePaths } from '../utils/paths.js';
 import { resolveEnv } from '../utils/env.js';
 import { IPCClient } from '../daemon/ipc-server.js';
@@ -3039,6 +3040,58 @@ crmReview.command('resolve').argument('<id>')
     }
     crm.resolveReviewItem(db, id, action, env.agentName);
     console.log(`Resolved ${id} (${action})`);
+  });
+
+busCommand.command('crm-report')
+  .description('Generate CRM reports as HTML and optionally send via Telegram')
+  .argument('<type>', 'Report type: pipeline or meeting')
+  .option('--meeting-id <id>', 'Meeting ID (for meeting report)')
+  .option('--send', 'Send as Telegram document to user')
+  .action(async (type: string, opts: { meetingId?: string; send?: boolean }) => {
+    const db = getCrmDb();
+    let html: string | null = null;
+    let filename = '';
+
+    if (type === 'pipeline') {
+      html = generatePipelineReport(db);
+      filename = `pipeline-report-${new Date().toISOString().split('T')[0]}.html`;
+    } else if (type === 'meeting') {
+      if (!opts.meetingId) { console.error('--meeting-id required for meeting report'); process.exit(1); }
+      html = generateMeetingSummaryHtml(db, opts.meetingId);
+      filename = `meeting-summary-${opts.meetingId.substring(0, 8)}.html`;
+    } else {
+      console.error('Unknown report type. Use: pipeline or meeting');
+      process.exit(1);
+    }
+
+    if (!html) { console.error('No data found for report'); process.exit(1); }
+
+    if (opts.send) {
+      const { writeFileSync, unlinkSync, existsSync } = await import('fs');
+      const { join } = await import('path');
+      const tmpPath = join(process.env.TMPDIR ?? '/tmp', filename);
+      writeFileSync(tmpPath, html);
+
+      const chatId = process.env.CTX_TELEGRAM_CHAT_ID;
+      const botToken = process.env.BOT_TOKEN;
+      if (!chatId || !botToken) {
+        console.log(`Report saved to ${tmpPath} (no Telegram credentials for sending)`);
+        return;
+      }
+
+      try {
+        const { TelegramAPI } = await import('../telegram/api.js');
+        const api = new TelegramAPI(botToken);
+        await api.sendDocument(parseInt(chatId), tmpPath, filename);
+        console.log(`Report sent via Telegram: ${filename}`);
+      } catch (err) {
+        console.error(`Failed to send report: ${err instanceof Error ? err.message : err}`);
+      } finally {
+        if (existsSync(tmpPath)) unlinkSync(tmpPath);
+      }
+    } else {
+      console.log(html);
+    }
   });
 
 busCommand.command('crm-process-webhooks')
