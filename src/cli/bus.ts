@@ -3012,6 +3012,35 @@ busCommand.command('crm-follow-ups')
     console.log(`\n${followUps.length} follow-up(s)`);
   });
 
+const crmReview = busCommand.command('crm-review-queue').description('CRM review queue for low-confidence matches');
+
+crmReview.command('list')
+  .option('--status <status>', 'Filter by status (default: pending)')
+  .action((opts: { status?: string }) => {
+    const db = getCrmDb();
+    const items = crm.listReviewQueue(db, opts);
+    if (items.length === 0) { console.log('No review items.'); return; }
+    for (const item of items) {
+      const ctx = item.context ? JSON.parse(item.context) : {};
+      console.log(`${item.id}  ${item.type}  ${ctx.reason ?? '-'}  ${item.created_at.substring(0, 10)}`);
+    }
+    console.log(`\n${items.length} item(s)`);
+  });
+
+crmReview.command('resolve').argument('<id>')
+  .requiredOption('--action <action>', 'merge|create|dismiss')
+  .action((id: string, opts: { action: string }) => {
+    const env = resolveEnv();
+    const db = getCrmDb();
+    const action = opts.action as 'merge' | 'create' | 'dismiss';
+    if (!['merge', 'create', 'dismiss'].includes(action)) {
+      console.error('Action must be: merge, create, or dismiss');
+      process.exit(1);
+    }
+    crm.resolveReviewItem(db, id, action, env.agentName);
+    console.log(`Resolved ${id} (${action})`);
+  });
+
 busCommand.command('crm-process-webhooks')
   .description('Process pending webhook queue (runs AI pipeline for Fathom, creates CRM entries for Cal.com)')
   .action(async () => {

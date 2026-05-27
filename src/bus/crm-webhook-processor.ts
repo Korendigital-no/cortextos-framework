@@ -57,10 +57,27 @@ export function processCalcomWebhook(db: Database.Database, job: WebhookJob): { 
     source_ref: bookingId,
   });
 
+  const responseDetails: string[] = [];
+  if (responses) {
+    for (const [key, val] of Object.entries(responses)) {
+      if (key === 'name' || key === 'email' || key === 'location') continue;
+      const value = (val as { value?: string })?.value;
+      if (value) responseDetails.push(`${key}: ${value}`);
+    }
+  }
+
+  const phone = (inner.attendees as Array<{ phone?: string }> | undefined)?.[0]?.phone;
+  if (phone) {
+    updateContact(db, contact.id, { phone });
+  }
+
+  const bodyParts = [`Booking created via Cal.com. ID: ${bookingId}`];
+  if (responseDetails.length > 0) bodyParts.push(`\nResponses:\n${responseDetails.join('\n')}`);
+
   createActivity(db, {
     type: 'booking',
     subject: title,
-    body: `Booking created via Cal.com. ID: ${bookingId}`,
+    body: bodyParts.join(''),
     contact_id: contact.id,
     agent: 'calcom-webhook',
   });

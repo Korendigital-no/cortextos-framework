@@ -434,3 +434,60 @@ export function logWebhook(
   `).run(source, eventType, payload, now());
   return Number(result.lastInsertRowid);
 }
+
+// --- Review Queue ---
+
+export interface CrmReviewItem {
+  id: string;
+  type: string;
+  entity_id: string;
+  context: string | null;
+  status: string;
+  resolved_by: string | null;
+  created_at: string;
+  resolved_at: string | null;
+}
+
+export function listReviewQueue(
+  db: Database.Database,
+  filters?: { status?: string },
+): CrmReviewItem[] {
+  const status = filters?.status ?? 'pending';
+  return db.prepare('SELECT * FROM crm_review_queue WHERE status = ? ORDER BY created_at DESC').all(status) as CrmReviewItem[];
+}
+
+export function resolveReviewItem(
+  db: Database.Database,
+  id: string,
+  action: 'merge' | 'create' | 'dismiss',
+  resolvedBy: string,
+): void {
+  const item = db.prepare('SELECT * FROM crm_review_queue WHERE id = ?').get(id) as CrmReviewItem | null;
+  if (!item) throw new Error(`Review item ${id} not found`);
+
+  if (item.status !== 'pending') throw new Error(`Review item ${id} is already ${item.status}`);
+
+  if (action === 'dismiss') {
+    db.prepare("UPDATE crm_review_queue SET status = 'dismissed', resolved_by = ?, resolved_at = ? WHERE id = ? AND status = 'pending'").run(resolvedBy, now(), id);
+    return;
+  }
+
+  if (action === 'create' && item.type === 'contact_match') {
+    let context: Record<string, unknown> = {};
+    try { context = item.context ? JSON.parse(item.context) : {}; } catch { /* skip */ }
+    const attendees = context.attendees as Array<{ name?: string; email?: string }> | undefined;
+    if (Array.isArray(attendees)) {
+      for (const att of attendees) {
+        if (!att.email || typeof att.email !== 'string') continue;
+        const ts = now();
+        db.prepare(`
+          INSERT INTO crm_contacts (id, name, email, source, match_confidence, needs_review, created_at, updated_at)
+          VALUES (?, ?, ?, 'review_queue', 0.5, 0, ?, ?)
+          ON CONFLICT(email) DO NOTHING
+        `).run(randomUUID(), att.name ?? att.email.split('@')[0], att.email, ts, ts);
+      }
+    }
+  }
+
+  db.prepare("UPDATE crm_review_queue SET status = 'resolved', resolved_by = ?, resolved_at = ? WHERE id = ? AND status = 'pending'").run(resolvedBy, now(), id);
+}
