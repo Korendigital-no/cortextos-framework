@@ -203,7 +203,9 @@ function initializeSchema(db: Database.Database): void {
     );
     CREATE TABLE IF NOT EXISTS crm_webhook_log (
       id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT NOT NULL, event_type TEXT,
-      payload TEXT, processed INTEGER DEFAULT 0, error TEXT, received_at TEXT NOT NULL
+      payload TEXT, status TEXT DEFAULT 'pending', attempt_count INTEGER DEFAULT 0,
+      next_retry_at TEXT, locked_at TEXT, last_error TEXT, processed_at TEXT,
+      received_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS crm_review_queue (
       id TEXT PRIMARY KEY, type TEXT NOT NULL, entity_id TEXT NOT NULL,

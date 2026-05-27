@@ -81,8 +81,12 @@ export function initializeCrmSchema(db: Database.Database): void {
       source TEXT NOT NULL,
       event_type TEXT,
       payload TEXT,
-      processed INTEGER DEFAULT 0,
-      error TEXT,
+      status TEXT DEFAULT 'pending',
+      attempt_count INTEGER DEFAULT 0,
+      next_retry_at TEXT,
+      locked_at TEXT,
+      last_error TEXT,
+      processed_at TEXT,
       received_at TEXT NOT NULL
     );
 
@@ -116,4 +120,10 @@ export function initializeCrmSchema(db: Database.Database): void {
   safeAlter(db, 'ALTER TABLE crm_contacts ADD COLUMN needs_review INTEGER DEFAULT 0');
   safeAlter(db, 'ALTER TABLE crm_meetings ADD COLUMN ai_parsed TEXT');
   safeAlter(db, 'ALTER TABLE crm_meetings ADD COLUMN email_draft TEXT');
+  safeAlter(db, "ALTER TABLE crm_webhook_log ADD COLUMN status TEXT DEFAULT 'pending'");
+  safeAlter(db, 'ALTER TABLE crm_webhook_log ADD COLUMN attempt_count INTEGER DEFAULT 0');
+  safeAlter(db, 'ALTER TABLE crm_webhook_log ADD COLUMN next_retry_at TEXT');
+  safeAlter(db, 'ALTER TABLE crm_webhook_log ADD COLUMN locked_at TEXT');
+  safeAlter(db, 'ALTER TABLE crm_webhook_log ADD COLUMN last_error TEXT');
+  safeAlter(db, 'ALTER TABLE crm_webhook_log ADD COLUMN processed_at TEXT');
 }

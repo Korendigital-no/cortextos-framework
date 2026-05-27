@@ -21,6 +21,7 @@ import { queryKnowledgeBase, ingestKnowledgeBase, ensureKBDirs } from '../bus/kn
 import { checkUsageApi, refreshOAuthToken, rotateOAuth, loadAccounts, ALERT_5H, ALERT_7D } from '../bus/oauth.js';
 import { getCrmDb } from '../bus/crm-db.js';
 import * as crm from '../bus/crm.js';
+import { processWebhookQueue } from '../bus/crm-webhook-processor.js';
 import { resolvePaths } from '../utils/paths.js';
 import { resolveEnv } from '../utils/env.js';
 import { IPCClient } from '../daemon/ipc-server.js';
@@ -3009,6 +3010,14 @@ busCommand.command('crm-follow-ups')
       console.log(`${f.id}  due:${due}  ${f.subject ?? '-'}`);
     }
     console.log(`\n${followUps.length} follow-up(s)`);
+  });
+
+busCommand.command('crm-process-webhooks')
+  .description('Process pending webhook queue (runs AI pipeline for Fathom, creates CRM entries for Cal.com)')
+  .action(async () => {
+    const db = getCrmDb();
+    const result = await processWebhookQueue(db);
+    console.log(`Processed: ${result.processed} | Failed: ${result.failed} | Retrying: ${result.skipped}`);
   });
 
 function sleepMs(ms: number): Promise<void> {
