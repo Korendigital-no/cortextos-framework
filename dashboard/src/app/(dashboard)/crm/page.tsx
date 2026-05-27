@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { IconUsers, IconBuilding, IconBriefcase, IconFileText } from '@tabler/icons-react';
 import { PipelineBoard } from '@/components/crm/pipeline-board';
@@ -31,6 +32,11 @@ export default function CrmPage() {
   const [deals, setDeals] = useState<Deal[]>([]);
   const [summary, setSummary] = useState<PipelineSummary | null>(null);
   const [loading, setLoading] = useState(true);
+  const router = useRouter();
+
+  function handleDealClick(deal: { id: string }) {
+    router.push(`/crm/deals/${deal.id}`);
+  }
 
   const fetchData = useCallback(async () => {
     try {
@@ -122,7 +128,7 @@ export default function CrmPage() {
           <CreateDealDialog onCreated={fetchData} />
         </div>
       ) : (
-        <PipelineBoard deals={activeDeals} onStageChange={handleStageChange} onDealDelete={handleDealDelete} />
+        <PipelineBoard deals={activeDeals} onDealClick={handleDealClick} onStageChange={handleStageChange} onDealDelete={handleDealDelete} />
       )}
     </div>
   );
