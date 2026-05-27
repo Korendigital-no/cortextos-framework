@@ -8,7 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import {
   IconArrowLeft, IconMail, IconPhone, IconBuilding,
   IconCalendarEvent, IconNote, IconChecklist, IconVideo,
-  IconMailForward, IconPlus,
+  IconMailForward, IconPlus, IconEdit,
 } from '@tabler/icons-react';
 
 interface Contact {
@@ -96,6 +96,7 @@ export default function ContactDetailPage() {
   const [deals, setDeals] = useState<Deal[]>([]);
   const [activities, setActivities] = useState<Activity[]>([]);
   const [meetings, setMeetings] = useState<Meeting[]>([]);
+  const [documents, setDocuments] = useState<Array<{ id: string; filename: string; filepath: string; created_at: string }>>([]);
   const [loading, setLoading] = useState(true);
   const [showAddActivity, setShowAddActivity] = useState(false);
   const [activityType, setActivityType] = useState('note');
@@ -105,6 +106,8 @@ export default function ContactDetailPage() {
   const [showAddDeal, setShowAddDeal] = useState(false);
   const [dealTitle, setDealTitle] = useState('');
   const [dealValue, setDealValue] = useState('');
+  const [editing, setEditing] = useState(false);
+  const [editFields, setEditFields] = useState({ name: '', email: '', phone: '', notes: '' });
 
   const fetchData = useCallback(async () => {
     try {
@@ -115,6 +118,7 @@ export default function ContactDetailPage() {
         setDeals(data.deals);
         setActivities(data.activities);
         setMeetings(data.meetings);
+        setDocuments(data.documents ?? []);
       }
     } finally {
       setLoading(false);
@@ -141,6 +145,27 @@ export default function ContactDetailPage() {
     setActivityDue('');
     setActivityType('note');
     setShowAddActivity(false);
+    fetchData();
+  }
+
+  function startEditing() {
+    if (!contact) return;
+    setEditFields({ name: contact.name, email: contact.email ?? '', phone: contact.phone ?? '', notes: contact.notes ?? '' });
+    setEditing(true);
+  }
+
+  async function handleSaveEdit() {
+    await fetch(`/api/crm/contacts/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: editFields.name.trim() || undefined,
+        email: editFields.email.trim() || undefined,
+        phone: editFields.phone.trim() || undefined,
+        notes: editFields.notes.trim() || undefined,
+      }),
+    });
+    setEditing(false);
     fetchData();
   }
 
@@ -205,6 +230,9 @@ export default function ContactDetailPage() {
           </div>
         </div>
         <div className="flex gap-2">
+          <Button variant="outline" size="sm" onClick={startEditing}>
+            <IconEdit className="size-4 mr-1" />Edit
+          </Button>
           <Button variant="outline" size="sm" onClick={() => { setShowAddActivity(!showAddActivity); setShowAddDeal(false); }}>
             <IconPlus className="size-4 mr-1" />Activity
           </Button>
@@ -352,15 +380,50 @@ export default function ContactDetailPage() {
             )}
           </div>
 
+          {/* Documents */}
+          <div>
+            <h3 className="text-sm font-medium mb-2">Documents</h3>
+            {documents.length === 0 ? (
+              <p className="text-xs text-muted-foreground">No documents.</p>
+            ) : (
+              <div className="space-y-1">
+                {documents.map(doc => (
+                  <div key={doc.id} className="flex items-center justify-between rounded border p-2">
+                    <p className="text-xs truncate">{doc.filename}</p>
+                    <span className="text-xs text-muted-foreground shrink-0">{formatDate(doc.created_at)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            <p className="text-xs text-muted-foreground mt-2">Agents can attach documents via: cortextos bus crm-documents add --contact {id} --file path/to/file</p>
+          </div>
+
           {/* Contact Info */}
           <div>
             <h3 className="text-sm font-medium mb-2">Details</h3>
-            <div className="rounded-lg border p-3 space-y-1 text-xs text-muted-foreground">
-              <p>Source: {contact.source ?? 'Unknown'}</p>
-              <p>Confidence: {contact.match_confidence != null ? `${Math.round(contact.match_confidence * 100)}%` : '100%'}</p>
-              <p>Added: {formatDate(contact.created_at)}</p>
-              {contact.notes && <p className="mt-2">{contact.notes}</p>}
-            </div>
+            {editing ? (
+              <div className="rounded-lg border p-3 space-y-2">
+                <input type="text" placeholder="Name" value={editFields.name} onChange={e => setEditFields(f => ({ ...f, name: e.target.value }))}
+                  className="w-full rounded-md border bg-background px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+                <input type="email" placeholder="Email" value={editFields.email} onChange={e => setEditFields(f => ({ ...f, email: e.target.value }))}
+                  className="w-full rounded-md border bg-background px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+                <input type="tel" placeholder="Phone" value={editFields.phone} onChange={e => setEditFields(f => ({ ...f, phone: e.target.value }))}
+                  className="w-full rounded-md border bg-background px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+                <textarea placeholder="Notes" value={editFields.notes} onChange={e => setEditFields(f => ({ ...f, notes: e.target.value }))}
+                  className="w-full rounded-md border bg-background px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring min-h-[60px]" />
+                <div className="flex gap-2 justify-end">
+                  <Button variant="ghost" size="sm" onClick={() => setEditing(false)}>Cancel</Button>
+                  <Button size="sm" onClick={handleSaveEdit}>Save</Button>
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-lg border p-3 space-y-1 text-xs text-muted-foreground">
+                <p>Source: {contact.source ?? 'Unknown'}</p>
+                <p>Confidence: {contact.match_confidence != null ? `${Math.round(contact.match_confidence * 100)}%` : '100%'}</p>
+                <p>Added: {formatDate(contact.created_at)}</p>
+                {contact.notes && <p className="mt-2">{contact.notes}</p>}
+              </div>
+            )}
           </div>
         </div>
       </div>

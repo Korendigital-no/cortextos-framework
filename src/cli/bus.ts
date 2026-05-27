@@ -3031,6 +3031,50 @@ busCommand.command('crm-follow-ups')
     console.log(`\n${followUps.length} follow-up(s)`);
   });
 
+const crmDocs = busCommand.command('crm-documents').description('CRM document attachments');
+
+crmDocs.command('list')
+  .option('--contact <id>', 'Filter by contact')
+  .option('--deal <id>', 'Filter by deal')
+  .action((opts: { contact?: string; deal?: string }) => {
+    const db = getCrmDb();
+    const docs = crm.listDocuments(db, opts);
+    if (docs.length === 0) { console.log('No documents.'); return; }
+    for (const d of docs) {
+      console.log(`${d.id}  ${d.filename}  ${d.filepath}  ${d.created_at.substring(0, 10)}`);
+    }
+    console.log(`\n${docs.length} document(s)`);
+  });
+
+crmDocs.command('add')
+  .requiredOption('--file <path>', 'File path')
+  .option('--contact <id>', 'Link to contact')
+  .option('--deal <id>', 'Link to deal')
+  .option('--name <filename>', 'Display name (defaults to basename)')
+  .action((opts: { file: string; contact?: string; deal?: string; name?: string }) => {
+    const { existsSync, statSync } = require('fs');
+    const { basename } = require('path');
+    if (!existsSync(opts.file)) { console.error(`File not found: ${opts.file}`); process.exit(1); }
+    const stat = statSync(opts.file);
+    const env = resolveEnv();
+    const db = getCrmDb();
+    const doc = crm.addDocument(db, {
+      filename: opts.name ?? basename(opts.file),
+      filepath: opts.file,
+      contact_id: opts.contact,
+      deal_id: opts.deal,
+      size_bytes: stat.size,
+      uploaded_by: env.agentName,
+    });
+    console.log(doc.id);
+  });
+
+crmDocs.command('delete').argument('<id>').action((id: string) => {
+  const db = getCrmDb();
+  crm.deleteDocument(db, id);
+  console.log(`Deleted document ${id}`);
+});
+
 const crmReview = busCommand.command('crm-review-queue').description('CRM review queue for low-confidence matches');
 
 crmReview.command('list')

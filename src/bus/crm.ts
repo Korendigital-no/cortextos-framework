@@ -437,6 +437,48 @@ export function logWebhook(
   return Number(result.lastInsertRowid);
 }
 
+// --- Documents ---
+
+export interface CrmDocument {
+  id: string;
+  contact_id: string | null;
+  deal_id: string | null;
+  filename: string;
+  filepath: string;
+  mime_type: string | null;
+  size_bytes: number | null;
+  uploaded_by: string | null;
+  created_at: string;
+}
+
+export function addDocument(
+  db: Database.Database,
+  opts: { filename: string; filepath: string; contact_id?: string; deal_id?: string; mime_type?: string; size_bytes?: number; uploaded_by?: string },
+): CrmDocument {
+  const id = randomUUID();
+  db.prepare(`
+    INSERT INTO crm_documents (id, contact_id, deal_id, filename, filepath, mime_type, size_bytes, uploaded_by, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, opts.contact_id ?? null, opts.deal_id ?? null, opts.filename, opts.filepath, opts.mime_type ?? null, opts.size_bytes ?? null, opts.uploaded_by ?? null, now());
+  return db.prepare('SELECT * FROM crm_documents WHERE id = ?').get(id) as CrmDocument;
+}
+
+export function listDocuments(
+  db: Database.Database,
+  filters?: { contact?: string; deal?: string },
+): CrmDocument[] {
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  if (filters?.contact) { conditions.push('contact_id = ?'); params.push(filters.contact); }
+  if (filters?.deal) { conditions.push('deal_id = ?'); params.push(filters.deal); }
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  return db.prepare(`SELECT * FROM crm_documents ${where} ORDER BY created_at DESC`).all(...params) as CrmDocument[];
+}
+
+export function deleteDocument(db: Database.Database, id: string): void {
+  db.prepare('DELETE FROM crm_documents WHERE id = ?').run(id);
+}
+
 // --- Delete ---
 
 export function deleteContact(db: Database.Database, id: string): void {

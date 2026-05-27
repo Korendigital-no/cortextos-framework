@@ -101,6 +101,20 @@ export function initializeCrmSchema(db: Database.Database): void {
       resolved_at TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS crm_documents (
+      id TEXT PRIMARY KEY,
+      contact_id TEXT REFERENCES crm_contacts(id),
+      deal_id TEXT REFERENCES crm_deals(id),
+      filename TEXT NOT NULL,
+      filepath TEXT NOT NULL,
+      mime_type TEXT,
+      size_bytes INTEGER,
+      uploaded_by TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_crm_documents_contact ON crm_documents(contact_id);
+    CREATE INDEX IF NOT EXISTS idx_crm_documents_deal ON crm_documents(deal_id);
     CREATE INDEX IF NOT EXISTS idx_crm_review_queue_status ON crm_review_queue(status);
     DROP INDEX IF EXISTS idx_crm_contacts_email;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_crm_contacts_email ON crm_contacts(email);

@@ -32,6 +32,7 @@ describe('CRM schema', () => {
       'crm_companies',
       'crm_contacts',
       'crm_deals',
+      'crm_documents',
       'crm_meetings',
       'crm_review_queue',
       'crm_webhook_log',

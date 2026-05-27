@@ -38,7 +38,9 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
     ORDER BY m.created_at DESC
   `).all(id);
 
-  return Response.json({ contact, deals, activities, meetings });
+  const documents = db.prepare('SELECT * FROM crm_documents WHERE contact_id = ? ORDER BY created_at DESC').all(id);
+
+  return Response.json({ contact, deals, activities, meetings, documents });
 }
 
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
