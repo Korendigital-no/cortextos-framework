@@ -3,7 +3,7 @@ import { db } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
 
-const VALID_STAGES = ['lead', 'qualified', 'proposal', 'negotiation', 'closed_won', 'closed_lost'];
+const VALID_STAGES = ['lead', 'contacted', 'qualified', 'proposal', 'negotiation', 'closed_won', 'closed_lost'];
 
 export async function GET(request: NextRequest) {
   const { searchParams } = request.nextUrl;

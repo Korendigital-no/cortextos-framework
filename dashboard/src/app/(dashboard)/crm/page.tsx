@@ -51,6 +51,11 @@ export default function CrmPage() {
 
   const activeDeals = deals.filter(d => !['closed_won', 'closed_lost'].includes(d.stage));
 
+  async function handleDealDelete(dealId: string) {
+    await fetch(`/api/crm/deals/${dealId}`, { method: 'DELETE' });
+    fetchData();
+  }
+
   async function handleStageChange(dealId: string, newStage: string) {
     const res = await fetch('/api/crm/deals', {
       method: 'PATCH',
@@ -117,7 +122,7 @@ export default function CrmPage() {
           <CreateDealDialog onCreated={fetchData} />
         </div>
       ) : (
-        <PipelineBoard deals={activeDeals} onStageChange={handleStageChange} />
+        <PipelineBoard deals={activeDeals} onStageChange={handleStageChange} onDealDelete={handleDealDelete} />
       )}
     </div>
   );

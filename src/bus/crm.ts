@@ -83,7 +83,7 @@ export interface PipelineStage {
   total_value: number;
 }
 
-const VALID_STAGES = ['lead', 'qualified', 'proposal', 'negotiation', 'closed_won', 'closed_lost'] as const;
+const VALID_STAGES = ['lead', 'contacted', 'qualified', 'proposal', 'negotiation', 'closed_won', 'closed_lost'] as const;
 
 function validateStage(stage: string): void {
   if (!VALID_STAGES.includes(stage as typeof VALID_STAGES[number])) {
@@ -312,13 +312,15 @@ export function getPipeline(db: Database.Database): PipelineStage[] {
   const rows = db.prepare(`
     SELECT stage, COUNT(*) as count, COALESCE(SUM(value_nok), 0) as total_value
     FROM crm_deals
-    WHERE stage NOT IN ('closed_won', 'closed_lost')
+    WHERE stage NOT IN ('closed_won')
     GROUP BY stage
     ORDER BY CASE stage
       WHEN 'lead' THEN 1
-      WHEN 'qualified' THEN 2
-      WHEN 'proposal' THEN 3
-      WHEN 'negotiation' THEN 4
+      WHEN 'contacted' THEN 2
+      WHEN 'qualified' THEN 3
+      WHEN 'proposal' THEN 4
+      WHEN 'negotiation' THEN 5
+      WHEN 'closed_lost' THEN 6
     END
   `).all() as PipelineStage[];
   return rows;

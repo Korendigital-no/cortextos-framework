@@ -22,9 +22,11 @@ interface Deal {
 
 const STAGE_CONFIG: Record<string, { label: string; color: string }> = {
   lead: { label: 'Lead', color: 'bg-blue-500/10 text-blue-700 dark:text-blue-400' },
+  contacted: { label: 'Contacted', color: 'bg-cyan-500/10 text-cyan-700 dark:text-cyan-400' },
   qualified: { label: 'Qualified', color: 'bg-purple-500/10 text-purple-700 dark:text-purple-400' },
   proposal: { label: 'Proposal', color: 'bg-amber-500/10 text-amber-700 dark:text-amber-400' },
   negotiation: { label: 'Negotiation', color: 'bg-orange-500/10 text-orange-700 dark:text-orange-400' },
+  closed_lost: { label: 'Lost', color: 'bg-red-500/10 text-red-700 dark:text-red-400' },
 };
 
 function formatNOK(value: number): string {
@@ -45,7 +47,7 @@ function DroppableColumn({ stage, children }: { stage: string; children: React.R
   );
 }
 
-function SortableDealCard({ deal, onClick }: { deal: Deal; onClick?: (deal: Deal) => void }) {
+function SortableDealCard({ deal, onClick, onDelete }: { deal: Deal; onClick?: (deal: Deal) => void; onDelete?: (id: string) => void }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: deal.id, data: { stage: deal.stage } });
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -55,7 +57,7 @@ function SortableDealCard({ deal, onClick }: { deal: Deal; onClick?: (deal: Deal
 
   return (
     <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
-      <DealCard deal={deal} onClick={onClick} />
+      <DealCard deal={deal} onClick={onClick} onDelete={onDelete} />
     </div>
   );
 }
@@ -64,10 +66,11 @@ interface PipelineBoardProps {
   deals: Deal[];
   onDealClick?: (deal: Deal) => void;
   onStageChange?: (dealId: string, newStage: string) => void;
+  onDealDelete?: (dealId: string) => void;
 }
 
-export function PipelineBoard({ deals, onDealClick, onStageChange }: PipelineBoardProps) {
-  const stages = ['lead', 'qualified', 'proposal', 'negotiation'];
+export function PipelineBoard({ deals, onDealClick, onStageChange, onDealDelete }: PipelineBoardProps) {
+  const stages = ['lead', 'contacted', 'qualified', 'proposal', 'negotiation', 'closed_lost'];
   const [activeDeal, setActiveDeal] = useState<Deal | null>(null);
 
   const sensors = useSensors(
@@ -111,7 +114,7 @@ export function PipelineBoard({ deals, onDealClick, onStageChange }: PipelineBoa
 
   return (
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-3 lg:grid-cols-6">
         {columns.map(col => (
           <div key={col.stage} className="flex flex-col gap-2">
             <div className="flex items-center justify-between px-1">
@@ -137,7 +140,7 @@ export function PipelineBoard({ deals, onDealClick, onStageChange }: PipelineBoa
                       </p>
                     ) : (
                       col.deals.map(deal => (
-                        <SortableDealCard key={deal.id} deal={deal} onClick={onDealClick} />
+                        <SortableDealCard key={deal.id} deal={deal} onClick={onDealClick} onDelete={onDealDelete} />
                       ))
                     )}
                   </div>
