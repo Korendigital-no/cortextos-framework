@@ -69,3 +69,15 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   const updated = db.prepare('SELECT * FROM crm_contacts WHERE id = ?').get(id);
   return Response.json(updated);
 }
+
+export async function DELETE(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const txn = db.transaction(() => {
+    db.prepare('UPDATE crm_activities SET contact_id = NULL WHERE contact_id = ? AND deal_id IS NOT NULL').run(id);
+    db.prepare('DELETE FROM crm_activities WHERE contact_id = ? AND deal_id IS NULL').run(id);
+    db.prepare('UPDATE crm_deals SET contact_id = NULL WHERE contact_id = ?').run(id);
+    db.prepare('DELETE FROM crm_contacts WHERE id = ?').run(id);
+  });
+  txn();
+  return Response.json({ ok: true });
+}

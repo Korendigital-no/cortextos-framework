@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
-import { IconArrowLeft, IconSearch, IconUserPlus } from '@tabler/icons-react';
+import { IconArrowLeft, IconSearch, IconUserPlus, IconTrash } from '@tabler/icons-react';
 
 interface Contact {
   id: string;
@@ -126,6 +126,12 @@ export default function ContactsPage() {
                     {contact.source}
                   </span>
                 )}
+                <button
+                  onClick={async (e) => { e.stopPropagation(); if (confirm(`Delete ${contact.name}?`)) { await fetch(`/api/crm/contacts/${contact.id}`, { method: 'DELETE' }); fetchContacts(); } }}
+                  className="p-1 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors"
+                >
+                  <IconTrash className="size-3.5" />
+                </button>
               </div>
             </div>
           ))}

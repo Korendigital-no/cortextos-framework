@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
-import { IconArrowLeft, IconSearch, IconBuildingPlus } from '@tabler/icons-react';
+import { IconArrowLeft, IconSearch, IconBuildingPlus, IconTrash } from '@tabler/icons-react';
 
 interface Company {
   id: string;
@@ -130,6 +130,12 @@ export default function CompaniesPage() {
                     {company.active_deals} deal{company.active_deals !== 1 ? 's' : ''}
                   </span>
                 )}
+                <button
+                  onClick={async () => { if (confirm(`Delete ${company.name}?`)) { await fetch(`/api/crm/companies/${company.id}`, { method: 'DELETE' }); fetchCompanies(); } }}
+                  className="p-1 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors"
+                >
+                  <IconTrash className="size-3.5" />
+                </button>
               </div>
             </div>
           ))}
