@@ -97,8 +97,14 @@ export default function ContactDetailPage() {
   const [activities, setActivities] = useState<Activity[]>([]);
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [loading, setLoading] = useState(true);
-  const [showAddNote, setShowAddNote] = useState(false);
-  const [noteText, setNoteText] = useState('');
+  const [showAddActivity, setShowAddActivity] = useState(false);
+  const [activityType, setActivityType] = useState('note');
+  const [activitySubject, setActivitySubject] = useState('');
+  const [activityBody, setActivityBody] = useState('');
+  const [activityDue, setActivityDue] = useState('');
+  const [showAddDeal, setShowAddDeal] = useState(false);
+  const [dealTitle, setDealTitle] = useState('');
+  const [dealValue, setDealValue] = useState('');
 
   const fetchData = useCallback(async () => {
     try {
@@ -117,15 +123,42 @@ export default function ContactDetailPage() {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
-  async function handleAddNote() {
-    if (!noteText.trim()) return;
+  async function handleAddActivity() {
+    if (!activitySubject.trim()) return;
     await fetch('/api/crm/activities', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type: 'note', subject: noteText.trim(), contact_id: id }),
+      body: JSON.stringify({
+        type: activityType,
+        subject: activitySubject.trim(),
+        body: activityBody.trim() || undefined,
+        contact_id: id,
+        due_at: activityDue || undefined,
+      }),
     });
-    setNoteText('');
-    setShowAddNote(false);
+    setActivitySubject('');
+    setActivityBody('');
+    setActivityDue('');
+    setActivityType('note');
+    setShowAddActivity(false);
+    fetchData();
+  }
+
+  async function handleAddDeal() {
+    if (!dealTitle.trim()) return;
+    await fetch('/api/crm/deals', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: dealTitle.trim(),
+        value_nok: dealValue ? parseFloat(dealValue) : undefined,
+        contact_id: id,
+        company_id: contact?.company_id || undefined,
+      }),
+    });
+    setDealTitle('');
+    setDealValue('');
+    setShowAddDeal(false);
     fetchData();
   }
 
@@ -172,25 +205,53 @@ export default function ContactDetailPage() {
           </div>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={() => setShowAddNote(!showAddNote)}>
-            <IconPlus className="size-4 mr-1" />Note
+          <Button variant="outline" size="sm" onClick={() => { setShowAddActivity(!showAddActivity); setShowAddDeal(false); }}>
+            <IconPlus className="size-4 mr-1" />Activity
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => { setShowAddDeal(!showAddDeal); setShowAddActivity(false); }}>
+            <IconPlus className="size-4 mr-1" />Deal
           </Button>
         </div>
       </div>
 
-      {/* Add note form */}
-      {showAddNote && (
-        <div className="rounded-lg border bg-card p-4 space-y-2">
-          <textarea
-            placeholder="Add a note..."
-            value={noteText}
-            onChange={e => setNoteText(e.target.value)}
-            className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring min-h-[80px]"
-            autoFocus
-          />
+      {showAddActivity && (
+        <div className="rounded-lg border bg-card p-4 space-y-3">
+          <div className="flex gap-2">
+            <select value={activityType} onChange={e => setActivityType(e.target.value)}
+              className="rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring">
+              <option value="note">Note</option>
+              <option value="call">Call</option>
+              <option value="email">Email</option>
+              <option value="meeting">Meeting</option>
+              <option value="task">Task</option>
+            </select>
+            <input type="text" placeholder="Subject" value={activitySubject} onChange={e => setActivitySubject(e.target.value)}
+              className="flex-1 rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring" autoFocus />
+          </div>
+          <textarea placeholder="Details (optional)" value={activityBody} onChange={e => setActivityBody(e.target.value)}
+            className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring min-h-[60px]" />
+          {activityType === 'task' && (
+            <input type="date" value={activityDue} onChange={e => setActivityDue(e.target.value)}
+              className="rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+          )}
           <div className="flex gap-2 justify-end">
-            <Button variant="ghost" size="sm" onClick={() => setShowAddNote(false)}>Cancel</Button>
-            <Button size="sm" onClick={handleAddNote} disabled={!noteText.trim()}>Save</Button>
+            <Button variant="ghost" size="sm" onClick={() => setShowAddActivity(false)}>Cancel</Button>
+            <Button size="sm" onClick={handleAddActivity} disabled={!activitySubject.trim()}>Save</Button>
+          </div>
+        </div>
+      )}
+
+      {showAddDeal && (
+        <div className="rounded-lg border bg-card p-4 space-y-3">
+          <div className="flex gap-2">
+            <input type="text" placeholder="Deal title" value={dealTitle} onChange={e => setDealTitle(e.target.value)}
+              className="flex-1 rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring" autoFocus />
+            <input type="number" placeholder="Value (NOK)" value={dealValue} onChange={e => setDealValue(e.target.value)}
+              className="w-32 rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+          </div>
+          <div className="flex gap-2 justify-end">
+            <Button variant="ghost" size="sm" onClick={() => setShowAddDeal(false)}>Cancel</Button>
+            <Button size="sm" onClick={handleAddDeal} disabled={!dealTitle.trim()}>Create Deal</Button>
           </div>
         </div>
       )}
