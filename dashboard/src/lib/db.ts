@@ -221,6 +221,21 @@ function initializeSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_crm_documents_contact ON crm_documents(contact_id);
     CREATE INDEX IF NOT EXISTS idx_crm_documents_deal ON crm_documents(deal_id);
     CREATE INDEX IF NOT EXISTS idx_crm_review_queue_status ON crm_review_queue(status);
+    CREATE TABLE IF NOT EXISTS crm_clients (
+      id TEXT PRIMARY KEY, company_id TEXT REFERENCES crm_companies(id),
+      contact_name TEXT, contact_email TEXT, deal_type TEXT,
+      rate_nok REAL, rate_description TEXT, hours_commitment TEXT,
+      status TEXT DEFAULT 'active', notes TEXT,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS crm_time_entries (
+      id TEXT PRIMARY KEY, client_id TEXT NOT NULL REFERENCES crm_clients(id),
+      description TEXT NOT NULL, hours REAL NOT NULL, date TEXT NOT NULL,
+      agent TEXT, created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_crm_clients_status ON crm_clients(status);
+    CREATE INDEX IF NOT EXISTS idx_crm_time_entries_client ON crm_time_entries(client_id);
+    CREATE INDEX IF NOT EXISTS idx_crm_time_entries_date ON crm_time_entries(date);
     DROP INDEX IF EXISTS idx_crm_contacts_email;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_crm_contacts_email ON crm_contacts(email);
     CREATE INDEX IF NOT EXISTS idx_crm_contacts_company ON crm_contacts(company_id);

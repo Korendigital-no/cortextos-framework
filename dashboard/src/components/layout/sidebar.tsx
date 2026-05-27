@@ -21,6 +21,7 @@ import {
   IconNotes,
   IconBriefcase,
   IconCalendar,
+  IconUsers,
 } from '@tabler/icons-react';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
@@ -43,6 +44,7 @@ const navItems: NavItem[] = [
 
   // CRM
   { label: 'CRM', href: '/crm', icon: IconBriefcase, section: 'core' },
+  { label: 'Clients', href: '/clients', icon: IconUsers, section: 'core' },
   { label: 'Calendar', href: '/crm/calendar', icon: IconCalendar, section: 'core' },
 
   // Operations
@@ -151,6 +153,7 @@ export function Sidebar({
                     key={item.href}
                     href={orgHref(item.href)}
                     onClick={onNavigate}
+                    suppressHydrationWarning
                     className={cn(
                       'group flex items-center gap-2.5 rounded-md px-3 py-1.5 text-[13px] transition-all',
                       active
