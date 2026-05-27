@@ -5,7 +5,8 @@
 
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
-import { jwtVerify } from 'jose';
+import { jwtVerify, jwtDecrypt } from 'jose';
+import { hkdf } from '@panva/hkdf';
 
 // Allowed CORS origins - localhost dev + configured deployment URL + mobile app
 // Built once at module load: env-derived origins are validated via `new URL()`,
@@ -72,6 +73,7 @@ export async function middleware(request: NextRequest) {
   if (
     pathname.startsWith('/login') ||
     pathname.startsWith('/api/auth') ||
+    pathname.startsWith('/api/crm/webhooks/') ||
     pathname.startsWith('/_next') ||
     pathname === '/favicon.ico'
   ) {
@@ -82,9 +84,37 @@ export async function middleware(request: NextRequest) {
   }
 
   // Check for next-auth session token cookie (web dashboard)
-  const hasSession =
-    request.cookies.has('authjs.session-token') ||
-    request.cookies.has('__Secure-authjs.session-token');
+  // Validates the JWT via decryption, matching NextAuth v5's JWE scheme.
+  let hasSession = false;
+  const cookieNames = ['authjs.session-token', '__Secure-authjs.session-token'] as const;
+  let sessionCookieName: string | undefined;
+  let sessionCookieValue: string | undefined;
+
+  for (const name of cookieNames) {
+    const val = request.cookies.get(name)?.value;
+    if (val) {
+      sessionCookieName = name;
+      sessionCookieValue = val;
+      break;
+    }
+  }
+
+  if (sessionCookieValue && sessionCookieName) {
+    const authSecret = process.env.AUTH_SECRET ?? process.env.NEXTAUTH_SECRET;
+    if (authSecret) {
+      try {
+        const encryptionKey = await hkdf('sha256', authSecret, sessionCookieName, `Auth.js Generated Encryption Key (${sessionCookieName})`, 64);
+        await jwtDecrypt(sessionCookieValue, encryptionKey, {
+          clockTolerance: 15,
+          keyManagementAlgorithms: ['dir'],
+          contentEncryptionAlgorithms: ['A256CBC-HS512', 'A256GCM'],
+        });
+        hasSession = true;
+      } catch {
+        hasSession = false;
+      }
+    }
+  }
 
   // Check for Bearer token (mobile app)
   const authHeader = request.headers.get('Authorization');
