@@ -236,6 +236,44 @@ function initializeSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_crm_clients_status ON crm_clients(status);
     CREATE INDEX IF NOT EXISTS idx_crm_time_entries_client ON crm_time_entries(client_id);
     CREATE INDEX IF NOT EXISTS idx_crm_time_entries_date ON crm_time_entries(date);
+
+    CREATE TABLE IF NOT EXISTS crm_client_projects (
+      id TEXT PRIMARY KEY, client_id TEXT NOT NULL REFERENCES crm_clients(id),
+      name TEXT NOT NULL, description TEXT, status TEXT DEFAULT 'active',
+      started_at TEXT, due_at TEXT, budget_hours REAL, budget_nok REAL,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS crm_client_tasks (
+      id TEXT PRIMARY KEY, client_id TEXT REFERENCES crm_clients(id),
+      project_id TEXT REFERENCES crm_client_projects(id),
+      title TEXT NOT NULL, description TEXT, status TEXT DEFAULT 'pending',
+      priority TEXT DEFAULT 'normal', due_at TEXT, completed_at TEXT,
+      assigned_to TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS crm_client_notes (
+      id TEXT PRIMARY KEY, client_id TEXT REFERENCES crm_clients(id),
+      project_id TEXT REFERENCES crm_client_projects(id),
+      body TEXT NOT NULL, agent TEXT,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS crm_client_checklists (
+      id TEXT PRIMARY KEY, client_id TEXT REFERENCES crm_clients(id),
+      project_id TEXT REFERENCES crm_client_projects(id),
+      title TEXT NOT NULL, created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS crm_client_checklist_items (
+      id TEXT PRIMARY KEY, checklist_id TEXT NOT NULL REFERENCES crm_client_checklists(id),
+      text TEXT NOT NULL, done INTEGER DEFAULT 0, position INTEGER DEFAULT 0,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_crm_client_projects_client ON crm_client_projects(client_id);
+    CREATE INDEX IF NOT EXISTS idx_crm_client_tasks_client ON crm_client_tasks(client_id);
+    CREATE INDEX IF NOT EXISTS idx_crm_client_tasks_project ON crm_client_tasks(project_id);
+    CREATE INDEX IF NOT EXISTS idx_crm_client_notes_client ON crm_client_notes(client_id);
+    CREATE INDEX IF NOT EXISTS idx_crm_client_notes_project ON crm_client_notes(project_id);
+    CREATE INDEX IF NOT EXISTS idx_crm_client_checklists_client ON crm_client_checklists(client_id);
+    CREATE INDEX IF NOT EXISTS idx_crm_client_checklists_project ON crm_client_checklists(project_id);
+    CREATE INDEX IF NOT EXISTS idx_crm_client_checklist_items_list ON crm_client_checklist_items(checklist_id);
     DROP INDEX IF EXISTS idx_crm_contacts_email;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_crm_contacts_email ON crm_contacts(email);
     CREATE INDEX IF NOT EXISTS idx_crm_contacts_company ON crm_contacts(company_id);
