@@ -1,34 +1,32 @@
-import { listInvoices, listPurchases } from '@/lib/fiken/client';
-import { oreToNok, currentVatPeriod } from '@/lib/fiken/transforms';
+import { db } from '@/lib/db';
+import { currentVatPeriod } from '@/lib/fiken/transforms';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
-  try {
-    const period = currentVatPeriod();
+  const period = currentVatPeriod();
 
-    const [invRes, purRes] = await Promise.all([
-      listInvoices({ fromDate: period.startDate, toDate: period.endDate }),
-      listPurchases({ fromDate: period.startDate, toDate: period.endDate }),
-    ]);
+  const inv = db.prepare(`
+    SELECT COALESCE(SUM(vat_nok), 0) as vat FROM accounting_invoices
+    WHERE issue_date >= ? AND issue_date <= ?
+  `).get(period.startDate, period.endDate) as { vat: number };
 
-    const vatCollectedOre = invRes.invoices.reduce((s, i) => s + i.vat, 0);
-    const vatPaidOre = purRes.purchases.reduce((s, p) => s + p.lines.reduce((ls, l) => ls + l.vat, 0), 0);
-    const balanceOre = vatCollectedOre - vatPaidOre;
+  const exp = db.prepare(`
+    SELECT COALESCE(SUM(vat_nok), 0) as vat FROM accounting_expenses
+    WHERE date >= ? AND date <= ?
+  `).get(period.startDate, period.endDate) as { vat: number };
 
-    return Response.json({
-      period: period.label,
-      period_number: period.number,
-      start_date: period.startDate,
-      end_date: period.endDate,
-      vat_collected_nok: oreToNok(vatCollectedOre),
-      vat_paid_nok: oreToNok(vatPaidOre),
-      balance_nok: oreToNok(balanceOre),
-      direction: balanceOre > 0 ? 'owed' : balanceOre < 0 ? 'refundable' : 'zero',
-      source: invRes.source,
-    });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return Response.json({ error: message }, { status: 500 });
-  }
+  const balance = inv.vat - exp.vat;
+
+  return Response.json({
+    period: period.label,
+    period_number: period.number,
+    start_date: period.startDate,
+    end_date: period.endDate,
+    vat_collected_nok: inv.vat,
+    vat_paid_nok: exp.vat,
+    balance_nok: balance,
+    direction: balance > 0 ? 'owed' : balance < 0 ? 'refundable' : 'zero',
+    source: 'manual' as const,
+  });
 }

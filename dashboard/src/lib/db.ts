@@ -274,6 +274,38 @@ function initializeSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_crm_client_checklists_client ON crm_client_checklists(client_id);
     CREATE INDEX IF NOT EXISTS idx_crm_client_checklists_project ON crm_client_checklists(project_id);
     CREATE INDEX IF NOT EXISTS idx_crm_client_checklist_items_list ON crm_client_checklist_items(checklist_id);
+
+    -- Accounting (manual entry)
+    CREATE TABLE IF NOT EXISTS accounting_invoices (
+      id TEXT PRIMARY KEY,
+      invoice_number TEXT NOT NULL,
+      customer_name TEXT NOT NULL,
+      issue_date TEXT NOT NULL CHECK(issue_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
+      due_date TEXT CHECK(due_date IS NULL OR due_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
+      net_nok REAL NOT NULL CHECK(net_nok >= 0 AND net_nok = net_nok AND net_nok < 1e12),
+      vat_nok REAL NOT NULL DEFAULT 0 CHECK(vat_nok >= 0 AND vat_nok = vat_nok AND vat_nok < 1e12),
+      settled INTEGER NOT NULL DEFAULT 0 CHECK(settled IN (0,1)),
+      notes TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS accounting_expenses (
+      id TEXT PRIMARY KEY,
+      supplier_name TEXT NOT NULL,
+      description TEXT,
+      date TEXT NOT NULL CHECK(date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
+      net_nok REAL NOT NULL CHECK(net_nok >= 0 AND net_nok = net_nok AND net_nok < 1e12),
+      vat_nok REAL NOT NULL DEFAULT 0 CHECK(vat_nok >= 0 AND vat_nok = vat_nok AND vat_nok < 1e12),
+      paid INTEGER NOT NULL DEFAULT 1 CHECK(paid IN (0,1)),
+      account TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_accounting_invoices_number ON accounting_invoices(invoice_number);
+    CREATE INDEX IF NOT EXISTS idx_accounting_invoices_date ON accounting_invoices(issue_date);
+    CREATE INDEX IF NOT EXISTS idx_accounting_invoices_settled ON accounting_invoices(settled);
+    CREATE INDEX IF NOT EXISTS idx_accounting_expenses_date ON accounting_expenses(date);
+    CREATE INDEX IF NOT EXISTS idx_accounting_expenses_paid ON accounting_expenses(paid);
     DROP INDEX IF EXISTS idx_crm_contacts_email;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_crm_contacts_email ON crm_contacts(email);
     CREATE INDEX IF NOT EXISTS idx_crm_contacts_company ON crm_contacts(company_id);
