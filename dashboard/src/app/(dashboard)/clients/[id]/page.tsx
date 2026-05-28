@@ -5,7 +5,10 @@ import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { IconArrowLeft, IconClock, IconPlus } from '@tabler/icons-react';
+import {
+  IconArrowLeft, IconClock, IconPlus, IconFolder, IconChecklist,
+  IconNote, IconCircleCheck, IconCircle,
+} from '@tabler/icons-react';
 
 interface Client {
   id: string;
@@ -14,21 +17,17 @@ interface Client {
   contact_email: string | null;
   deal_type: string | null;
   rate_nok: number | null;
-  rate_description: string | null;
   hours_commitment: string | null;
   status: string;
   notes: string | null;
-  created_at: string;
 }
 
-interface TimeEntry {
-  id: string;
-  description: string;
-  hours: number;
-  date: string;
-  agent: string | null;
-  created_at: string;
-}
+interface TimeEntry { id: string; description: string; hours: number; date: string; agent: string | null; project_id: string | null; }
+interface Project { id: string; name: string; description: string | null; status: string; due_at: string | null; budget_hours: number | null; total_hours: number; open_tasks: number; }
+interface ClientTask { id: string; title: string; status: string; priority: string; due_at: string | null; project_id: string | null; }
+interface Note { id: string; body: string; project_id: string | null; created_at: string; }
+
+type Tab = 'overview' | 'projects' | 'tasks' | 'notes';
 
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString('nb-NO', { day: 'numeric', month: 'short', year: 'numeric' });
@@ -40,54 +39,111 @@ function formatNOK(value: number): string {
 
 export default function ClientDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const [tab, setTab] = useState<Tab>('overview');
   const [client, setClient] = useState<Client | null>(null);
-  const [entries, setEntries] = useState<TimeEntry[]>([]);
+  const [timeEntries, setTimeEntries] = useState<TimeEntry[]>([]);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [tasks, setTasks] = useState<ClientTask[]>([]);
+  const [notes, setNotes] = useState<Note[]>([]);
   const [totals, setTotals] = useState({ total_hours: 0, entry_count: 0 });
   const [loading, setLoading] = useState(true);
-  const [showAdd, setShowAdd] = useState(false);
-  const [desc, setDesc] = useState('');
-  const [hours, setHours] = useState('');
-  const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
 
-  const fetchData = useCallback(async () => {
+  const [showAddTime, setShowAddTime] = useState(false);
+  const [timeDesc, setTimeDesc] = useState('');
+  const [timeHours, setTimeHours] = useState('');
+  const [timeDate, setTimeDate] = useState(new Date().toISOString().split('T')[0]);
+
+  const [showAddProject, setShowAddProject] = useState(false);
+  const [projectName, setProjectName] = useState('');
+  const [projectDesc, setProjectDesc] = useState('');
+
+  const [showAddTask, setShowAddTask] = useState(false);
+  const [taskTitle, setTaskTitle] = useState('');
+  const [taskDue, setTaskDue] = useState('');
+  const [taskPriority, setTaskPriority] = useState('normal');
+
+  const [showAddNote, setShowAddNote] = useState(false);
+  const [noteBody, setNoteBody] = useState('');
+
+  const fetchAll = useCallback(async () => {
     try {
-      const res = await fetch(`/api/clients/${id}`);
-      if (res.ok) {
-        const data = await res.json();
+      const [cRes, pRes, tRes, nRes] = await Promise.all([
+        fetch(`/api/clients/${id}`),
+        fetch(`/api/clients/${id}/projects`),
+        fetch(`/api/clients/${id}/tasks`),
+        fetch(`/api/clients/${id}/notes`),
+      ]);
+      if (cRes.ok) {
+        const data = await cRes.json();
         setClient(data.client);
-        setEntries(data.timeEntries);
+        setTimeEntries(data.timeEntries);
         setTotals(data.totals);
       }
+      if (pRes.ok) setProjects(await pRes.json());
+      if (tRes.ok) setTasks(await tRes.json());
+      if (nRes.ok) setNotes(await nRes.json());
     } finally {
       setLoading(false);
     }
   }, [id]);
 
-  useEffect(() => { fetchData(); }, [fetchData]);
+  useEffect(() => { fetchAll(); }, [fetchAll]);
 
-  async function handleAddEntry() {
-    if (!desc.trim() || !hours) return;
+  async function handleAddTime() {
+    if (!timeDesc.trim() || !timeHours) return;
     await fetch(`/api/clients/${id}/time-entries`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ description: desc.trim(), hours: parseFloat(hours), date }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ description: timeDesc.trim(), hours: parseFloat(timeHours), date: timeDate }),
     });
-    setDesc('');
-    setHours('');
-    setDate(new Date().toISOString().split('T')[0]);
-    setShowAdd(false);
-    fetchData();
+    setTimeDesc(''); setTimeHours(''); setTimeDate(new Date().toISOString().split('T')[0]); setShowAddTime(false);
+    fetchAll();
   }
 
-  if (loading) {
-    return <div className="space-y-4"><div className="h-8 w-48 rounded bg-muted/30 animate-pulse" /><div className="h-64 rounded-lg bg-muted/30 animate-pulse" /></div>;
+  async function handleAddProject() {
+    if (!projectName.trim()) return;
+    await fetch(`/api/clients/${id}/projects`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: projectName.trim(), description: projectDesc.trim() || undefined }),
+    });
+    setProjectName(''); setProjectDesc(''); setShowAddProject(false);
+    fetchAll();
   }
 
-  if (!client) {
-    return <div className="space-y-4"><Link href="/clients"><Button variant="ghost" size="sm"><IconArrowLeft className="size-4 mr-1" />Back</Button></Link><p className="text-sm text-muted-foreground">Client not found.</p></div>;
+  async function handleAddTask() {
+    if (!taskTitle.trim()) return;
+    await fetch(`/api/clients/${id}/tasks`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: taskTitle.trim(), due_at: taskDue || undefined, priority: taskPriority }),
+    });
+    setTaskTitle(''); setTaskDue(''); setTaskPriority('normal'); setShowAddTask(false);
+    fetchAll();
   }
+
+  async function handleAddNote() {
+    if (!noteBody.trim()) return;
+    await fetch(`/api/clients/${id}/notes`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ body: noteBody.trim() }),
+    });
+    setNoteBody(''); setShowAddNote(false);
+    fetchAll();
+  }
+
+  async function toggleTask(taskId: string, currentStatus: string) {
+    const newStatus = currentStatus === 'completed' ? 'pending' : 'completed';
+    await fetch(`/api/clients/${id}/tasks/${taskId}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: newStatus }),
+    });
+    fetchAll();
+  }
+
+  if (loading) return <div className="space-y-4"><div className="h-8 w-48 rounded bg-muted/30 animate-pulse" /><div className="h-64 rounded-lg bg-muted/30 animate-pulse" /></div>;
+  if (!client) return <div className="space-y-4"><Link href="/clients"><Button variant="ghost" size="sm"><IconArrowLeft className="size-4 mr-1" />Back</Button></Link><p className="text-sm text-muted-foreground">Client not found.</p></div>;
 
   const revenue = client.rate_nok ? totals.total_hours * client.rate_nok : null;
+  const activeProjects = projects.filter(p => p.status === 'active').length;
+  const openTasks = tasks.filter(t => t.status !== 'completed').length;
 
   return (
     <div className="space-y-6">
@@ -97,9 +153,7 @@ export default function ClientDetailPage() {
           <div>
             <div className="flex items-center gap-2">
               <h1 className="text-2xl font-semibold">{client.company_name}</h1>
-              <Badge variant="secondary" className={client.status === 'active' ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400' : ''}>
-                {client.status}
-              </Badge>
+              <Badge variant="secondary" className={client.status === 'active' ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400' : ''}>{client.status}</Badge>
             </div>
             <div className="flex items-center gap-4 mt-1 text-sm text-muted-foreground">
               {client.contact_name && <span>{client.contact_name}</span>}
@@ -109,71 +163,159 @@ export default function ClientDetailPage() {
             </div>
           </div>
         </div>
-        <Button variant="outline" size="sm" onClick={() => setShowAdd(!showAdd)}>
-          <IconPlus className="size-4 mr-1" />Log time
-        </Button>
       </div>
 
-      {showAdd && (
-        <div className="rounded-lg border bg-card p-4 space-y-3">
-          <div className="flex gap-2">
-            <input type="text" placeholder="What did you do?" value={desc} onChange={e => setDesc(e.target.value)}
-              className="flex-1 rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring" autoFocus />
-            <input type="number" placeholder="Hours" value={hours} onChange={e => setHours(e.target.value)} step="0.25" min="0.25" max="24"
-              className="w-24 rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
-            <input type="date" value={date} onChange={e => setDate(e.target.value)}
-              className="rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+      <div className="border-b">
+        {(['overview', 'projects', 'tasks', 'notes'] as Tab[]).map(t => (
+          <button key={t} onClick={() => setTab(t)}
+            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${tab === t ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>
+            {t.charAt(0).toUpperCase() + t.slice(1)}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'overview' && (
+        <div className="space-y-6">
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+            <div className="rounded-lg border bg-card p-4"><p className="text-xs text-muted-foreground">Total hours</p><p className="text-2xl font-semibold">{totals.total_hours.toFixed(1)}</p></div>
+            <div className="rounded-lg border bg-card p-4"><p className="text-xs text-muted-foreground">Active projects</p><p className="text-2xl font-semibold">{activeProjects}</p></div>
+            <div className="rounded-lg border bg-card p-4"><p className="text-xs text-muted-foreground">Open tasks</p><p className="text-2xl font-semibold">{openTasks}</p></div>
+            {revenue != null && <div className="rounded-lg border bg-card p-4"><p className="text-xs text-muted-foreground">Revenue (ex MVA)</p><p className="text-2xl font-semibold text-emerald-600 dark:text-emerald-400">{formatNOK(revenue)} kr</p></div>}
           </div>
-          <div className="flex gap-2 justify-end">
-            <Button variant="ghost" size="sm" onClick={() => setShowAdd(false)}>Cancel</Button>
-            <Button size="sm" onClick={handleAddEntry} disabled={!desc.trim() || !hours}>Log</Button>
+
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-lg font-medium">Recent work log</h2>
+              <Button variant="outline" size="sm" onClick={() => setShowAddTime(!showAddTime)}><IconPlus className="size-4 mr-1" />Log time</Button>
+            </div>
+            {showAddTime && (
+              <div className="rounded-lg border bg-card p-4 space-y-3 mb-3">
+                <div className="flex gap-2">
+                  <input type="text" placeholder="What did you do?" value={timeDesc} onChange={e => setTimeDesc(e.target.value)} className="flex-1 rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring" autoFocus />
+                  <input type="number" placeholder="Hours" value={timeHours} onChange={e => setTimeHours(e.target.value)} step="0.25" min="0.25" max="24" className="w-24 rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+                  <input type="date" value={timeDate} onChange={e => setTimeDate(e.target.value)} className="rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+                </div>
+                <div className="flex gap-2 justify-end"><Button variant="ghost" size="sm" onClick={() => setShowAddTime(false)}>Cancel</Button><Button size="sm" onClick={handleAddTime} disabled={!timeDesc.trim() || !timeHours}>Log</Button></div>
+              </div>
+            )}
+            {timeEntries.length === 0 ? (
+              <p className="py-8 text-center text-sm text-muted-foreground">No time entries yet.</p>
+            ) : (
+              <div className="rounded-lg border divide-y">
+                {timeEntries.slice(0, 10).map(e => (
+                  <div key={e.id} className="flex items-center justify-between px-4 py-3">
+                    <div><p className="text-sm">{e.description}</p><p className="text-xs text-muted-foreground">{formatDate(e.date)}</p></div>
+                    <div className="flex items-center gap-1 text-sm font-medium"><IconClock className="size-3.5 text-muted-foreground" />{e.hours.toFixed(1)}h</div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <div className="rounded-lg border bg-card p-4">
-          <p className="text-xs text-muted-foreground">Total hours</p>
-          <p className="text-2xl font-semibold">{totals.total_hours.toFixed(1)}</p>
-        </div>
-        <div className="rounded-lg border bg-card p-4">
-          <p className="text-xs text-muted-foreground">Entries</p>
-          <p className="text-2xl font-semibold">{totals.entry_count}</p>
-        </div>
-        {revenue != null && (
-          <div className="rounded-lg border bg-card p-4">
-            <p className="text-xs text-muted-foreground">Revenue (ex MVA)</p>
-            <p className="text-2xl font-semibold text-emerald-600 dark:text-emerald-400">{formatNOK(revenue)} kr</p>
+      {tab === 'projects' && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-medium">Projects</h2>
+            <Button variant="outline" size="sm" onClick={() => setShowAddProject(!showAddProject)}><IconPlus className="size-4 mr-1" />New project</Button>
           </div>
-        )}
-      </div>
+          {showAddProject && (
+            <div className="rounded-lg border bg-card p-4 space-y-3">
+              <input type="text" placeholder="Project name" value={projectName} onChange={e => setProjectName(e.target.value)} className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring" autoFocus />
+              <textarea placeholder="Description (optional)" value={projectDesc} onChange={e => setProjectDesc(e.target.value)} className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring min-h-[60px]" />
+              <div className="flex gap-2 justify-end"><Button variant="ghost" size="sm" onClick={() => setShowAddProject(false)}>Cancel</Button><Button size="sm" onClick={handleAddProject} disabled={!projectName.trim()}>Create</Button></div>
+            </div>
+          )}
+          {projects.length === 0 ? (
+            <p className="py-8 text-center text-sm text-muted-foreground">No projects yet.</p>
+          ) : (
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              {projects.map(p => (
+                <Link key={p.id} href={`/clients/${id}/projects/${p.id}`} className="rounded-xl border bg-card p-4 hover:bg-accent/50 transition-colors">
+                  <div className="flex items-start justify-between"><h3 className="font-medium">{p.name}</h3><Badge variant="secondary" className={p.status === 'active' ? 'bg-emerald-500/10 text-emerald-700' : ''}>{p.status}</Badge></div>
+                  {p.description && <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{p.description}</p>}
+                  <div className="flex items-center gap-3 mt-3 text-xs text-muted-foreground">
+                    <span className="flex items-center gap-1"><IconClock className="size-3.5" />{p.total_hours.toFixed(1)}h</span>
+                    {p.budget_hours && <span>of {p.budget_hours}h</span>}
+                    {p.open_tasks > 0 && <span>{p.open_tasks} open tasks</span>}
+                    {p.due_at && <span>Due {formatDate(p.due_at)}</span>}
+                  </div>
+                </Link>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
-      <div>
-        <h2 className="text-lg font-medium mb-3">Work Log</h2>
-        {entries.length === 0 ? (
-          <p className="py-8 text-center text-sm text-muted-foreground">No time entries yet. Click "Log time" to add work.</p>
-        ) : (
-          <div className="rounded-lg border divide-y">
-            {entries.map(entry => (
-              <div key={entry.id} className="flex items-center justify-between px-4 py-3">
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-medium">{entry.description}</p>
-                  <p className="text-xs text-muted-foreground">{formatDate(entry.date)}{entry.agent ? ` by ${entry.agent}` : ''}</p>
-                </div>
-                <div className="flex items-center gap-1 text-sm font-medium shrink-0">
-                  <IconClock className="size-3.5 text-muted-foreground" />
-                  {entry.hours.toFixed(1)}h
-                </div>
+      {tab === 'tasks' && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-medium">Tasks</h2>
+            <Button variant="outline" size="sm" onClick={() => setShowAddTask(!showAddTask)}><IconPlus className="size-4 mr-1" />New task</Button>
+          </div>
+          {showAddTask && (
+            <div className="rounded-lg border bg-card p-4 space-y-3">
+              <input type="text" placeholder="Task" value={taskTitle} onChange={e => setTaskTitle(e.target.value)} className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring" autoFocus />
+              <div className="flex gap-2">
+                <select value={taskPriority} onChange={e => setTaskPriority(e.target.value)} className="rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring">
+                  <option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option>
+                </select>
+                <input type="date" value={taskDue} onChange={e => setTaskDue(e.target.value)} className="rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
               </div>
-            ))}
-          </div>
-        )}
-      </div>
+              <div className="flex gap-2 justify-end"><Button variant="ghost" size="sm" onClick={() => setShowAddTask(false)}>Cancel</Button><Button size="sm" onClick={handleAddTask} disabled={!taskTitle.trim()}>Create</Button></div>
+            </div>
+          )}
+          {tasks.length === 0 ? (
+            <p className="py-8 text-center text-sm text-muted-foreground">No tasks yet.</p>
+          ) : (
+            <div className="rounded-lg border divide-y">
+              {tasks.map(t => {
+                const isOverdue = t.due_at && t.status !== 'completed' && new Date(t.due_at) < new Date();
+                return (
+                  <div key={t.id} className="flex items-center gap-3 px-4 py-3">
+                    <button onClick={() => toggleTask(t.id, t.status)} className="shrink-0">
+                      {t.status === 'completed' ? <IconCircleCheck className="size-5 text-emerald-500" /> : <IconCircle className="size-5 text-muted-foreground" />}
+                    </button>
+                    <div className="flex-1 min-w-0">
+                      <p className={`text-sm ${t.status === 'completed' ? 'line-through text-muted-foreground' : ''}`}>{t.title}</p>
+                      <div className="flex items-center gap-3 mt-0.5 text-xs text-muted-foreground">
+                        {t.due_at && <span className={isOverdue ? 'text-red-500 font-medium' : ''}>Due {formatDate(t.due_at)}</span>}
+                        {t.priority !== 'normal' && <span>{t.priority}</span>}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
 
-      {client.notes && (
-        <div>
-          <h3 className="text-sm font-medium mb-2">Notes</h3>
-          <p className="text-sm text-muted-foreground rounded-lg border p-3">{client.notes}</p>
+      {tab === 'notes' && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-medium">Notes</h2>
+            <Button variant="outline" size="sm" onClick={() => setShowAddNote(!showAddNote)}><IconPlus className="size-4 mr-1" />New note</Button>
+          </div>
+          {showAddNote && (
+            <div className="rounded-lg border bg-card p-4 space-y-3">
+              <textarea placeholder="Note..." value={noteBody} onChange={e => setNoteBody(e.target.value)} className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring min-h-[100px]" autoFocus />
+              <div className="flex gap-2 justify-end"><Button variant="ghost" size="sm" onClick={() => setShowAddNote(false)}>Cancel</Button><Button size="sm" onClick={handleAddNote} disabled={!noteBody.trim()}>Save</Button></div>
+            </div>
+          )}
+          {notes.length === 0 ? (
+            <p className="py-8 text-center text-sm text-muted-foreground">No notes yet.</p>
+          ) : (
+            <div className="space-y-2">
+              {notes.map(n => (
+                <div key={n.id} className="rounded-lg border bg-card p-4">
+                  <p className="text-sm whitespace-pre-wrap">{n.body}</p>
+                  <p className="text-xs text-muted-foreground mt-2">{formatDate(n.created_at)}</p>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>
