@@ -26,7 +26,10 @@ export async function POST(request: NextRequest) {
   }
 
   // Security (H8/H13): No hardcoded JWT secret fallback.
-  const JWT_SECRET = process.env.AUTH_SECRET ?? process.env.NEXTAUTH_SECRET;
+  // Mobile tokens prefer MOBILE_JWT_SECRET so a compromised mobile token cannot
+  // also unlock the dashboard session cookie's JWE (and vice versa). Falls back
+  // to AUTH_SECRET when unset to preserve existing deployments.
+  const JWT_SECRET = process.env.MOBILE_JWT_SECRET ?? process.env.AUTH_SECRET ?? process.env.NEXTAUTH_SECRET;
   if (!JWT_SECRET) {
     return Response.json({ error: 'Server configuration error' }, { status: 500 });
   }
@@ -64,11 +67,21 @@ export async function POST(request: NextRequest) {
     // Auth successful — reset rate limit counter
     resetRateLimit(ip);
 
-    // Generate JWT
+    // Generate JWT.
+    // 24h expiry matches the proxy's maxTokenAge — short-lived mobile tokens
+    // limit blast radius if a device is compromised. Issuer/audience are set
+    // only when configured, matching the optional checks on the verify side.
+    const issuer = process.env.MOBILE_JWT_ISSUER;
+    const audience = process.env.MOBILE_JWT_AUDIENCE;
     const token = jwt.sign(
       { sub: String(user.id), name: user.username },
       JWT_SECRET,
-      { expiresIn: '30d' }
+      {
+        algorithm: 'HS256',
+        expiresIn: '24h',
+        ...(issuer ? { issuer } : {}),
+        ...(audience ? { audience } : {}),
+      },
     );
 
     return Response.json({
