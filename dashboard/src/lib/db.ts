@@ -306,6 +306,33 @@ function initializeSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_accounting_invoices_settled ON accounting_invoices(settled);
     CREATE INDEX IF NOT EXISTS idx_accounting_expenses_date ON accounting_expenses(date);
     CREATE INDEX IF NOT EXISTS idx_accounting_expenses_paid ON accounting_expenses(paid);
+
+    -- Accounting v3: company accounts (Bedriftskonto, Skattekonto, MVA-konto, ...)
+    CREATE TABLE IF NOT EXISTS accounting_accounts (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      type TEXT NOT NULL CHECK(type IN ('operating','tax','vat','other')),
+      starting_balance_nok REAL NOT NULL DEFAULT 0 CHECK(starting_balance_nok = starting_balance_nok AND ABS(starting_balance_nok) < 1e12),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_accounting_accounts_type ON accounting_accounts(type);
+
+    -- Accounting v3: recurring monthly deductions (rent, salaries, subscriptions, ...)
+    CREATE TABLE IF NOT EXISTS accounting_recurring (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      account_id TEXT NOT NULL REFERENCES accounting_accounts(id) ON DELETE RESTRICT,
+      amount_nok REAL NOT NULL CHECK(amount_nok >= 0 AND amount_nok = amount_nok AND amount_nok < 1e12),
+      day_of_month INTEGER NOT NULL CHECK(day_of_month BETWEEN 1 AND 28),
+      apply_on_last_day INTEGER NOT NULL DEFAULT 0 CHECK(apply_on_last_day IN (0,1)),
+      active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+      last_applied_ym TEXT CHECK(last_applied_ym IS NULL OR last_applied_ym GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]'),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_accounting_recurring_active ON accounting_recurring(active);
+    CREATE INDEX IF NOT EXISTS idx_accounting_recurring_account ON accounting_recurring(account_id);
     DROP INDEX IF EXISTS idx_crm_contacts_email;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_crm_contacts_email ON crm_contacts(email);
     CREATE INDEX IF NOT EXISTS idx_crm_contacts_company ON crm_contacts(company_id);
@@ -315,6 +342,31 @@ function initializeSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_crm_activities_deal ON crm_activities(deal_id);
     CREATE INDEX IF NOT EXISTS idx_crm_activities_type ON crm_activities(type);
   `);
+
+  // Idempotent column additions (SQLite has no ADD COLUMN IF NOT EXISTS)
+  safeAddColumn(db, 'accounting_invoices', 'account_id', 'TEXT REFERENCES accounting_accounts(id) ON DELETE SET NULL');
+  safeAddColumn(db, 'accounting_expenses', 'account_id', 'TEXT REFERENCES accounting_accounts(id) ON DELETE SET NULL');
+  safeAddColumn(db, 'accounting_expenses', 'recurring_id', 'TEXT REFERENCES accounting_recurring(id) ON DELETE SET NULL');
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_accounting_invoices_account ON accounting_invoices(account_id);
+    CREATE INDEX IF NOT EXISTS idx_accounting_expenses_account ON accounting_expenses(account_id);
+    CREATE INDEX IF NOT EXISTS idx_accounting_expenses_recurring ON accounting_expenses(recurring_id);
+    -- Hard guarantee: at most one auto-posted expense per recurring per calendar month.
+    -- Used by the recurring engine to make double-apply impossible under concurrent calls.
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_accounting_expenses_recurring_month
+      ON accounting_expenses(recurring_id, substr(date, 1, 7))
+      WHERE recurring_id IS NOT NULL;
+  `);
+}
+
+function safeAddColumn(db: Database.Database, table: string, column: string, ddl: string): void {
+  // Identifiers are caller-controlled (constants), not user input. Parameter binding
+  // is not supported for DDL identifiers in SQLite, so concatenation is correct here.
+  const cols = db.prepare('PRAGMA table_info(' + table + ')').all() as Array<{ name: string }>;
+  if (cols.some(c => c.name === column)) return;
+  const sql = 'ALTER TABLE ' + table + ' ADD COLUMN ' + column + ' ' + ddl;
+  db.exec(sql);
 }
 
 // globalThis singleton survives Next.js hot reload

@@ -18,10 +18,12 @@ function isValidMoney(n: unknown): n is number {
 
 export async function GET() {
   const rows = db.prepare(`
-    SELECT id, invoice_number as invoiceNumber, customer_name, issue_date as issueDate, due_date as dueDate,
-      net_nok, vat_nok, (net_nok + vat_nok) as gross_nok, settled, notes
-    FROM accounting_invoices
-    ORDER BY issue_date DESC
+    SELECT i.id, i.invoice_number as invoiceNumber, i.customer_name, i.issue_date as issueDate, i.due_date as dueDate,
+      i.net_nok, i.vat_nok, (i.net_nok + i.vat_nok) as gross_nok, i.settled, i.notes,
+      i.account_id, a.name as account_name
+    FROM accounting_invoices i
+    LEFT JOIN accounting_accounts a ON i.account_id = a.id
+    ORDER BY i.issue_date DESC
     LIMIT 100
   `).all();
   const invoices = (rows as Array<{ settled: number }>).map(r => ({ ...r, settled: !!r.settled }));
@@ -30,7 +32,7 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   const body = await request.json();
-  const { invoice_number, customer_name, issue_date, due_date, net_nok, vat_nok, settled, notes } = body;
+  const { invoice_number, customer_name, issue_date, due_date, net_nok, vat_nok, settled, notes, account_id } = body;
 
   if (!invoice_number || !customer_name) {
     return Response.json({ error: 'invoice_number and customer_name required' }, { status: 400 });
@@ -47,14 +49,17 @@ export async function POST(request: NextRequest) {
   if (vat_nok != null && !isValidMoney(vat_nok)) {
     return Response.json({ error: 'vat_nok must be a finite non-negative number' }, { status: 400 });
   }
+  if (account_id != null && typeof account_id !== 'string') {
+    return Response.json({ error: 'account_id must be a string' }, { status: 400 });
+  }
 
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
   try {
     db.prepare(`
-      INSERT INTO accounting_invoices (id, invoice_number, customer_name, issue_date, due_date, net_nok, vat_nok, settled, notes, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(id, String(invoice_number), String(customer_name), issue_date, due_date ?? null, net_nok, vat_nok ?? 0, settled ? 1 : 0, notes ?? null, now, now);
+      INSERT INTO accounting_invoices (id, invoice_number, customer_name, issue_date, due_date, net_nok, vat_nok, settled, notes, account_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, String(invoice_number), String(customer_name), issue_date, due_date ?? null, net_nok, vat_nok ?? 0, settled ? 1 : 0, notes ?? null, account_id ?? null, now, now);
   } catch (err) {
     if (err instanceof Error && /UNIQUE constraint failed.*invoice_number/i.test(err.message)) {
       return Response.json({ error: 'Invoice number already exists' }, { status: 409 });
@@ -70,7 +75,7 @@ export async function PATCH(request: NextRequest) {
   const { id, settled, ...rest } = body;
   if (!id) return Response.json({ error: 'id required' }, { status: 400 });
 
-  const allowed = ['invoice_number', 'customer_name', 'issue_date', 'due_date', 'net_nok', 'vat_nok', 'notes'];
+  const allowed = ['invoice_number', 'customer_name', 'issue_date', 'due_date', 'net_nok', 'vat_nok', 'notes', 'account_id'];
   const sets: string[] = [];
   const values: unknown[] = [];
   for (const key of allowed) {

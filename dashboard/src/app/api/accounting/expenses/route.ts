@@ -18,10 +18,12 @@ function isValidMoney(n: unknown): n is number {
 
 export async function GET() {
   const rows = db.prepare(`
-    SELECT id, supplier_name, description, date, net_nok, vat_nok,
-      (net_nok + vat_nok) as gross_nok, paid, account
-    FROM accounting_expenses
-    ORDER BY date DESC
+    SELECT e.id, e.supplier_name, e.description, e.date, e.net_nok, e.vat_nok,
+      (e.net_nok + e.vat_nok) as gross_nok, e.paid, e.account,
+      e.account_id, a.name as account_name, e.recurring_id
+    FROM accounting_expenses e
+    LEFT JOIN accounting_accounts a ON e.account_id = a.id
+    ORDER BY e.date DESC
     LIMIT 100
   `).all();
   const expenses = (rows as Array<{ paid: number }>).map(r => ({ ...r, paid: !!r.paid }));
@@ -30,7 +32,7 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   const body = await request.json();
-  const { supplier_name, description, date, net_nok, vat_nok, paid, account } = body;
+  const { supplier_name, description, date, net_nok, vat_nok, paid, account, account_id } = body;
 
   if (!supplier_name) {
     return Response.json({ error: 'supplier_name required' }, { status: 400 });
@@ -44,13 +46,16 @@ export async function POST(request: NextRequest) {
   if (vat_nok != null && !isValidMoney(vat_nok)) {
     return Response.json({ error: 'vat_nok must be a finite non-negative number' }, { status: 400 });
   }
+  if (account_id != null && typeof account_id !== 'string') {
+    return Response.json({ error: 'account_id must be a string' }, { status: 400 });
+  }
 
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
   db.prepare(`
-    INSERT INTO accounting_expenses (id, supplier_name, description, date, net_nok, vat_nok, paid, account, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, String(supplier_name), description ?? null, date, net_nok, vat_nok ?? 0, paid === false ? 0 : 1, account ?? null, now, now);
+    INSERT INTO accounting_expenses (id, supplier_name, description, date, net_nok, vat_nok, paid, account, account_id, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, String(supplier_name), description ?? null, date, net_nok, vat_nok ?? 0, paid === false ? 0 : 1, account ?? null, account_id ?? null, now, now);
 
   return Response.json({ id }, { status: 201 });
 }
@@ -60,7 +65,7 @@ export async function PATCH(request: NextRequest) {
   const { id, paid, ...rest } = body;
   if (!id) return Response.json({ error: 'id required' }, { status: 400 });
 
-  const allowed = ['supplier_name', 'description', 'date', 'net_nok', 'vat_nok', 'account'];
+  const allowed = ['supplier_name', 'description', 'date', 'net_nok', 'vat_nok', 'account', 'account_id'];
   const sets: string[] = [];
   const values: unknown[] = [];
   for (const key of allowed) {
