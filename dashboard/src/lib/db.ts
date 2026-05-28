@@ -307,11 +307,13 @@ function initializeSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_accounting_expenses_date ON accounting_expenses(date);
     CREATE INDEX IF NOT EXISTS idx_accounting_expenses_paid ON accounting_expenses(paid);
 
-    -- Accounting v3: company accounts (Bedriftskonto, Skattekonto, MVA-konto, ...)
+    -- Accounting v3: company accounts (Bedriftskonto, Skattekonto, MVA-konto, Privat, ...)
+    -- type='personal' is a tag-only bucket: expenses tagged to it still count
+    -- in revenue/cost totals but do NOT affect any account balance computation.
     CREATE TABLE IF NOT EXISTS accounting_accounts (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
-      type TEXT NOT NULL CHECK(type IN ('operating','tax','vat','other')),
+      type TEXT NOT NULL CHECK(type IN ('operating','tax','vat','personal','other')),
       starting_balance_nok REAL NOT NULL DEFAULT 0 CHECK(starting_balance_nok = starting_balance_nok AND ABS(starting_balance_nok) < 1e12),
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -343,6 +345,11 @@ function initializeSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_crm_activities_type ON crm_activities(type);
   `);
 
+  // Migrate accounting_accounts CHECK constraint to allow 'personal' type.
+  // SQLite can't ALTER constraints — do a safe backup/drop/recreate/restore
+  // inside a single transaction so partial failure rolls back cleanly.
+  migrateAccountsForPersonalType(db);
+
   // Idempotent column additions (SQLite has no ADD COLUMN IF NOT EXISTS)
   safeAddColumn(db, 'accounting_invoices', 'account_id', 'TEXT REFERENCES accounting_accounts(id) ON DELETE SET NULL');
   safeAddColumn(db, 'accounting_expenses', 'account_id', 'TEXT REFERENCES accounting_accounts(id) ON DELETE SET NULL');
@@ -371,6 +378,79 @@ function safeAddColumn(db: Database.Database, table: string, column: string, ddl
   if (cols.some(c => c.name === column)) return;
   const sql = 'ALTER TABLE ' + table + ' ADD COLUMN ' + column + ' ' + ddl;
   db.exec(sql);
+}
+
+function migrateAccountsForPersonalType(db: Database.Database): void {
+  // Read the current CREATE statement and short-circuit if the new value is
+  // already allowed (covers fresh DBs created with the updated CREATE TABLE).
+  const row = db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type='table' AND name='accounting_accounts'",
+  ).get() as { sql: string } | undefined;
+  if (!row) return; // table doesn't exist yet → CREATE TABLE handles it
+  if (row.sql.includes("'personal'")) return; // already migrated
+
+  // Drift guard: the rebuild copies only the 6 columns we know about. If a
+  // future migration adds a column without updating this rebuild block, the
+  // data in that column would be silently lost. Refuse to migrate when the
+  // live schema does not match the expected pre-migration shape; the operator
+  // can then update this function intentionally.
+  const expectedCols = new Set([
+    'id', 'name', 'type', 'starting_balance_nok', 'created_at', 'updated_at',
+  ]);
+  const liveCols = (db.prepare('PRAGMA table_info(accounting_accounts)').all() as Array<{ name: string }>).map(c => c.name);
+  const extra = liveCols.filter(c => !expectedCols.has(c));
+  const missing = [...expectedCols].filter(c => !liveCols.includes(c));
+  if (extra.length || missing.length) {
+    throw new Error(
+      `accounting_accounts schema drift detected — refusing personal-type migration. ` +
+      `Update migrateAccountsForPersonalType to handle: extra=${JSON.stringify(extra)} missing=${JSON.stringify(missing)}`,
+    );
+  }
+  // Also refuse if any triggers exist on the table — none expected today, but
+  // a future trigger would be dropped by the table swap.
+  const triggers = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='accounting_accounts'",
+  ).all() as Array<{ name: string }>;
+  if (triggers.length > 0) {
+    throw new Error(
+      `accounting_accounts has triggers (${triggers.map(t => t.name).join(', ')}) — ` +
+      `refusing migration that would drop them. Update migrateAccountsForPersonalType.`,
+    );
+  }
+
+  // SQLite blocks DROP of tables that are FK-referenced by other tables, so we
+  // disable FK enforcement for the swap. PRAGMA can't run inside a transaction,
+  // so structure: pragma off → tx (recreate + restore) → pragma on. The tx
+  // rolls back atomically on any failure; FKs are restored either way via the
+  // try/finally.
+  db.pragma('foreign_keys = OFF');
+  try {
+    const tx = db.transaction(() => {
+      db.exec(`
+        CREATE TABLE accounting_accounts__new (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          type TEXT NOT NULL CHECK(type IN ('operating','tax','vat','personal','other')),
+          starting_balance_nok REAL NOT NULL DEFAULT 0 CHECK(starting_balance_nok = starting_balance_nok AND ABS(starting_balance_nok) < 1e12),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        INSERT INTO accounting_accounts__new (id, name, type, starting_balance_nok, created_at, updated_at)
+          SELECT id, name, type, starting_balance_nok, created_at, updated_at FROM accounting_accounts;
+        DROP TABLE accounting_accounts;
+        ALTER TABLE accounting_accounts__new RENAME TO accounting_accounts;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_accounting_accounts_type ON accounting_accounts(type);
+      `);
+    });
+    tx();
+    // Verify FK integrity after the swap before we re-enable enforcement.
+    const fkProblems = db.pragma('foreign_key_check') as Array<unknown>;
+    if (fkProblems.length > 0) {
+      throw new Error(`Foreign key integrity broken after accounts migration: ${JSON.stringify(fkProblems)}`);
+    }
+  } finally {
+    db.pragma('foreign_keys = ON');
+  }
 }
 
 // globalThis singleton survives Next.js hot reload

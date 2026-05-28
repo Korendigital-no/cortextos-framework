@@ -21,7 +21,7 @@ export async function GET() {
       COALESCE((SELECT SUM(net_nok + vat_nok) FROM accounting_expenses WHERE account_id = a.id AND paid = 1), 0) AS paid_expenses_nok
     FROM accounting_accounts a
     ORDER BY
-      CASE a.type WHEN 'operating' THEN 1 WHEN 'tax' THEN 2 WHEN 'vat' THEN 3 ELSE 4 END,
+      CASE a.type WHEN 'operating' THEN 1 WHEN 'tax' THEN 2 WHEN 'vat' THEN 3 WHEN 'personal' THEN 4 ELSE 5 END,
       a.name
   `).all() as Array<{
     id: string; name: string; type: string;
@@ -29,10 +29,24 @@ export async function GET() {
     created_at: string; updated_at: string;
   }>;
 
-  const withBalance = accounts.map(a => ({
-    ...a,
-    balance_nok: a.starting_balance_nok + a.settled_invoices_nok - a.paid_expenses_nok,
-  }));
+  const withBalance = accounts.map(a => {
+    // 'personal' is a tag-only bucket: expenses tagged here still count in
+    // revenue/cost totals but must never affect a balance. Force the totals
+    // visible on the card to zero so the UI can't mislead.
+    if (a.type === 'personal') {
+      return {
+        ...a,
+        starting_balance_nok: 0,
+        settled_invoices_nok: 0,
+        paid_expenses_nok: 0,
+        balance_nok: 0,
+      };
+    }
+    return {
+      ...a,
+      balance_nok: a.starting_balance_nok + a.settled_invoices_nok - a.paid_expenses_nok,
+    };
+  });
 
   return Response.json({ accounts: withBalance });
 }

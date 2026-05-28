@@ -220,14 +220,28 @@ export default function AccountingPage() {
       {accounts.length > 0 && (
         <div>
           <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wider mb-2 flex items-center gap-2"><IconBuildingBank className="size-4" />Accounts</h2>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-            {accounts.map(a => (
-              <div key={a.id} className="rounded-xl border bg-card p-4">
-                <p className="text-xs text-muted-foreground">{a.name}</p>
-                <p className={`text-2xl font-semibold ${a.balance_nok < 0 ? 'text-red-600 dark:text-red-400' : 'text-foreground'}`}>{formatNOK(a.balance_nok)}</p>
-                <p className="text-xs text-muted-foreground mt-1">Start: {formatNOK(a.starting_balance_nok)} · +{formatNOK(a.settled_invoices_nok)} · -{formatNOK(a.paid_expenses_nok)}</p>
-              </div>
-            ))}
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            {accounts.map(a => {
+              const isPersonal = a.type === 'personal';
+              return (
+                <div key={a.id} className={`rounded-xl border p-4 ${isPersonal ? 'bg-muted/40 border-dashed' : 'bg-card'}`}>
+                  <div className="flex items-baseline justify-between">
+                    <p className="text-xs text-muted-foreground">{a.name}</p>
+                    {isPersonal && <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Tag</span>}
+                  </div>
+                  <p className={
+                    isPersonal
+                      ? 'text-2xl font-semibold text-muted-foreground'
+                      : `text-2xl font-semibold ${a.balance_nok < 0 ? 'text-red-600 dark:text-red-400' : 'text-foreground'}`
+                  }>{formatNOK(a.balance_nok)}</p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {isPersonal
+                      ? 'Tag-only · expenses count in totals but not in any balance'
+                      : `Start: ${formatNOK(a.starting_balance_nok)} · +${formatNOK(a.settled_invoices_nok)} · -${formatNOK(a.paid_expenses_nok)}`}
+                  </p>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
