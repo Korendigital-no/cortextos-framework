@@ -88,12 +88,17 @@ export function serializeMarkdown(parsed: ParsedMarkdown): string {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/** Strip HTML comments from a string. */
+function stripHtmlComments(text: string): string {
+  return text.replace(/<!--[\s\S]*?-->/g, '').trim();
+}
+
 /** Get the trimmed text content of a section by heading name (case-insensitive). */
 function getSectionContent(parsed: ParsedMarkdown, ...headings: string[]): string {
   const lowerHeadings = headings.map((h) => h.toLowerCase());
   for (const section of parsed.sections) {
     if (lowerHeadings.includes(section.heading.toLowerCase())) {
-      return section.content.trim();
+      return stripHtmlComments(section.content);
     }
   }
   return '';
@@ -174,7 +179,7 @@ export function parseIdentityMd(
   for (const section of parsed.sections) {
     const key = IDENTITY_HEADINGS[section.heading.toLowerCase()];
     if (key) {
-      fields[key] = section.content.trim();
+      fields[key] = stripHtmlComments(section.content);
     }
   }
 
@@ -231,7 +236,7 @@ export function parseSoulMd(
   for (const section of parsed.sections) {
     const key = SOUL_HEADINGS[section.heading.toLowerCase()];
     if (key) {
-      fields[key] = section.content.trim();
+      fields[key] = stripHtmlComments(section.content);
     }
   }
 
@@ -274,7 +279,7 @@ export function parseGoalsMd(
   for (const section of parsed.sections) {
     const key = GOALS_HEADINGS[section.heading.toLowerCase()];
     if (key) {
-      fields[key] = section.content.trim();
+      fields[key] = stripHtmlComments(section.content);
     }
   }
 
