@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { IconReceipt, IconTrendingUp, IconTrendingDown, IconCash, IconPlus, IconTrash, IconBuildingBank, IconRepeat, IconPlayerPlay } from '@tabler/icons-react';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts';
+import { netFromGross, NORWEGIAN_VAT_RATES } from '@/lib/accounting/vat';
 
 interface PeriodSummary {
   period: string;
@@ -85,10 +86,10 @@ export default function AccountingPage() {
   const [loading, setLoading] = useState(true);
 
   const [showAddInvoice, setShowAddInvoice] = useState(false);
-  const [invForm, setInvForm] = useState({ invoice_number: '', customer_name: '', issue_date: todayLocal(), due_date: '', net_nok: '', vat_nok: '', settled: false, account_id: '' });
+  const [invForm, setInvForm] = useState({ invoice_number: '', customer_name: '', issue_date: todayLocal(), due_date: '', net_nok: '', vat_nok: '', settled: false, account_id: '', mode: 'netto' as 'netto' | 'brutto', vat_rate: 25 as number, gross_nok: '' });
 
   const [showAddExpense, setShowAddExpense] = useState(false);
-  const [expForm, setExpForm] = useState({ supplier_name: '', description: '', date: todayLocal(), net_nok: '', vat_nok: '', account: '', paid: true, account_id: '' });
+  const [expForm, setExpForm] = useState({ supplier_name: '', description: '', date: todayLocal(), net_nok: '', vat_nok: '', account: '', paid: true, account_id: '', mode: 'netto' as 'netto' | 'brutto', vat_rate: 25 as number, gross_nok: '' });
 
   const [showAddRecurring, setShowAddRecurring] = useState(false);
   const [recForm, setRecForm] = useState({ name: '', account_id: '', amount_nok: '', day_of_month: '1', apply_on_last_day: false });
@@ -117,34 +118,75 @@ export default function AccountingPage() {
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
   async function handleAddInvoice() {
-    if (!invForm.invoice_number || !invForm.customer_name || !invForm.net_nok) return;
+    if (!invForm.invoice_number || !invForm.customer_name) return;
+    let net_nok: number, vat_nok: number;
+    if (invForm.mode === 'brutto') {
+      const gross = parseFloat(invForm.gross_nok);
+      if (!isFinite(gross) || gross < 0 || gross >= 1e12) {
+        alert('Brutto NOK må være et positivt tall under 1 000 000 000 000.');
+        return;
+      }
+      ({ net_nok, vat_nok } = netFromGross(gross, invForm.vat_rate));
+    } else {
+      const n = parseFloat(invForm.net_nok);
+      if (!isFinite(n) || n < 0 || n >= 1e12) {
+        alert('Net NOK må være et positivt tall under 1 000 000 000 000.');
+        return;
+      }
+      net_nok = n;
+      vat_nok = invForm.vat_nok ? parseFloat(invForm.vat_nok) : 0;
+      if (!isFinite(vat_nok) || vat_nok < 0 || vat_nok >= 1e12) {
+        alert('VAT NOK må være et positivt tall under 1 000 000 000 000.');
+        return;
+      }
+    }
     await fetch('/api/accounting/invoices', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         invoice_number: invForm.invoice_number, customer_name: invForm.customer_name,
         issue_date: invForm.issue_date, due_date: invForm.due_date || undefined,
-        net_nok: parseFloat(invForm.net_nok), vat_nok: invForm.vat_nok ? parseFloat(invForm.vat_nok) : 0,
+        net_nok, vat_nok,
         settled: invForm.settled, account_id: invForm.account_id || undefined,
       }),
     });
-    setInvForm({ invoice_number: '', customer_name: '', issue_date: todayLocal(), due_date: '', net_nok: '', vat_nok: '', settled: false, account_id: '' });
+    setInvForm({ invoice_number: '', customer_name: '', issue_date: todayLocal(), due_date: '', net_nok: '', vat_nok: '', settled: false, account_id: '', mode: 'netto', vat_rate: 25, gross_nok: '' });
     setShowAddInvoice(false);
     fetchAll();
   }
 
   async function handleAddExpense() {
-    if (!expForm.supplier_name || !expForm.net_nok) return;
+    if (!expForm.supplier_name) return;
+    let net_nok: number, vat_nok: number;
+    if (expForm.mode === 'brutto') {
+      const gross = parseFloat(expForm.gross_nok);
+      if (!isFinite(gross) || gross < 0 || gross >= 1e12) {
+        alert('Brutto NOK må være et positivt tall under 1 000 000 000 000.');
+        return;
+      }
+      ({ net_nok, vat_nok } = netFromGross(gross, expForm.vat_rate));
+    } else {
+      const n = parseFloat(expForm.net_nok);
+      if (!isFinite(n) || n < 0 || n >= 1e12) {
+        alert('Net NOK må være et positivt tall under 1 000 000 000 000.');
+        return;
+      }
+      net_nok = n;
+      vat_nok = expForm.vat_nok ? parseFloat(expForm.vat_nok) : 0;
+      if (!isFinite(vat_nok) || vat_nok < 0 || vat_nok >= 1e12) {
+        alert('VAT NOK må være et positivt tall under 1 000 000 000 000.');
+        return;
+      }
+    }
     await fetch('/api/accounting/expenses', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         supplier_name: expForm.supplier_name, description: expForm.description || undefined,
-        date: expForm.date, net_nok: parseFloat(expForm.net_nok),
-        vat_nok: expForm.vat_nok ? parseFloat(expForm.vat_nok) : 0,
+        date: expForm.date, net_nok, vat_nok,
         account: expForm.account || undefined, paid: expForm.paid,
         account_id: expForm.account_id || undefined,
       }),
     });
-    setExpForm({ supplier_name: '', description: '', date: todayLocal(), net_nok: '', vat_nok: '', account: '', paid: true, account_id: '' });
+    setExpForm({ supplier_name: '', description: '', date: todayLocal(), net_nok: '', vat_nok: '', account: '', paid: true, account_id: '', mode: 'netto', vat_rate: 25, gross_nok: '' });
     setShowAddExpense(false);
     fetchAll();
   }
@@ -347,13 +389,38 @@ export default function AccountingPage() {
         </div>
         {showAddInvoice && (
           <div className="rounded-lg border bg-card p-4 space-y-3 mb-3">
+            <div className="flex items-center gap-3 flex-wrap">
+              <div className="inline-flex rounded-md border bg-background p-0.5 text-xs">
+                <button type="button" onClick={() => setInvForm(f => ({ ...f, mode: 'netto', gross_nok: '', net_nok: '', vat_nok: '' }))} className={invForm.mode === 'netto' ? 'rounded px-3 py-1 bg-foreground text-background font-medium' : 'rounded px-3 py-1 text-muted-foreground'}>Netto</button>
+                <button type="button" onClick={() => setInvForm(f => ({ ...f, mode: 'brutto', gross_nok: '', net_nok: '', vat_nok: '' }))} className={invForm.mode === 'brutto' ? 'rounded px-3 py-1 bg-foreground text-background font-medium' : 'rounded px-3 py-1 text-muted-foreground'}>Brutto</button>
+              </div>
+              <select value={invForm.vat_rate} onChange={e => setInvForm(f => ({ ...f, vat_rate: parseInt(e.target.value, 10) }))} className="rounded-md border bg-background px-3 py-1 text-xs">
+                {NORWEGIAN_VAT_RATES.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
+              </select>
+            </div>
             <div className="grid grid-cols-2 gap-2">
               <input type="text" placeholder="Invoice number" value={invForm.invoice_number} onChange={e => setInvForm(f => ({ ...f, invoice_number: e.target.value }))} className="rounded-md border bg-background px-3 py-2 text-sm" autoFocus />
               <input type="text" placeholder="Customer" value={invForm.customer_name} onChange={e => setInvForm(f => ({ ...f, customer_name: e.target.value }))} className="rounded-md border bg-background px-3 py-2 text-sm" />
               <input type="date" value={invForm.issue_date} onChange={e => setInvForm(f => ({ ...f, issue_date: e.target.value }))} className="rounded-md border bg-background px-3 py-2 text-sm" />
               <input type="date" placeholder="Due date" value={invForm.due_date} onChange={e => setInvForm(f => ({ ...f, due_date: e.target.value }))} className="rounded-md border bg-background px-3 py-2 text-sm" />
-              <input type="number" placeholder="Net NOK" value={invForm.net_nok} onChange={e => setInvForm(f => ({ ...f, net_nok: e.target.value }))} step="0.01" className="rounded-md border bg-background px-3 py-2 text-sm" />
-              <input type="number" placeholder="VAT NOK" value={invForm.vat_nok} onChange={e => setInvForm(f => ({ ...f, vat_nok: e.target.value }))} step="0.01" className="rounded-md border bg-background px-3 py-2 text-sm" />
+              {invForm.mode === 'brutto' ? (
+                <>
+                  <input type="number" placeholder="Brutto NOK (gross)" value={invForm.gross_nok} onChange={e => setInvForm(f => ({ ...f, gross_nok: e.target.value }))} step="0.01" className="rounded-md border bg-background px-3 py-2 text-sm col-span-2" />
+                  {invForm.gross_nok && !isNaN(parseFloat(invForm.gross_nok)) && (() => {
+                    const split = netFromGross(parseFloat(invForm.gross_nok), invForm.vat_rate);
+                    return (
+                      <p className="col-span-2 text-xs text-muted-foreground bg-muted/30 rounded px-3 py-2">
+                        Netto: <span className="font-medium text-foreground">{formatNOK(split.net_nok)}</span> · MVA ({invForm.vat_rate}%): <span className="font-medium text-foreground">{formatNOK(split.vat_nok)}</span>
+                      </p>
+                    );
+                  })()}
+                </>
+              ) : (
+                <>
+                  <input type="number" placeholder="Net NOK" value={invForm.net_nok} onChange={e => setInvForm(f => ({ ...f, net_nok: e.target.value }))} step="0.01" className="rounded-md border bg-background px-3 py-2 text-sm" />
+                  <input type="number" placeholder="VAT NOK" value={invForm.vat_nok} onChange={e => setInvForm(f => ({ ...f, vat_nok: e.target.value }))} step="0.01" className="rounded-md border bg-background px-3 py-2 text-sm" />
+                </>
+              )}
               <select value={invForm.account_id} onChange={e => setInvForm(f => ({ ...f, account_id: e.target.value }))} className="rounded-md border bg-background px-3 py-2 text-sm col-span-2">
                 <option value="">No account</option>
                 {accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
@@ -391,12 +458,37 @@ export default function AccountingPage() {
         </div>
         {showAddExpense && (
           <div className="rounded-lg border bg-card p-4 space-y-3 mb-3">
+            <div className="flex items-center gap-3 flex-wrap">
+              <div className="inline-flex rounded-md border bg-background p-0.5 text-xs">
+                <button type="button" onClick={() => setExpForm(f => ({ ...f, mode: 'netto', gross_nok: '', net_nok: '', vat_nok: '' }))} className={expForm.mode === 'netto' ? 'rounded px-3 py-1 bg-foreground text-background font-medium' : 'rounded px-3 py-1 text-muted-foreground'}>Netto</button>
+                <button type="button" onClick={() => setExpForm(f => ({ ...f, mode: 'brutto', gross_nok: '', net_nok: '', vat_nok: '' }))} className={expForm.mode === 'brutto' ? 'rounded px-3 py-1 bg-foreground text-background font-medium' : 'rounded px-3 py-1 text-muted-foreground'}>Brutto</button>
+              </div>
+              <select value={expForm.vat_rate} onChange={e => setExpForm(f => ({ ...f, vat_rate: parseInt(e.target.value, 10) }))} className="rounded-md border bg-background px-3 py-1 text-xs">
+                {NORWEGIAN_VAT_RATES.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
+              </select>
+            </div>
             <div className="grid grid-cols-2 gap-2">
               <input type="text" placeholder="Supplier" value={expForm.supplier_name} onChange={e => setExpForm(f => ({ ...f, supplier_name: e.target.value }))} className="rounded-md border bg-background px-3 py-2 text-sm" autoFocus />
               <input type="date" value={expForm.date} onChange={e => setExpForm(f => ({ ...f, date: e.target.value }))} className="rounded-md border bg-background px-3 py-2 text-sm" />
               <input type="text" placeholder="Description (optional)" value={expForm.description} onChange={e => setExpForm(f => ({ ...f, description: e.target.value }))} className="rounded-md border bg-background px-3 py-2 text-sm col-span-2" />
-              <input type="number" placeholder="Net NOK" value={expForm.net_nok} onChange={e => setExpForm(f => ({ ...f, net_nok: e.target.value }))} step="0.01" className="rounded-md border bg-background px-3 py-2 text-sm" />
-              <input type="number" placeholder="VAT NOK" value={expForm.vat_nok} onChange={e => setExpForm(f => ({ ...f, vat_nok: e.target.value }))} step="0.01" className="rounded-md border bg-background px-3 py-2 text-sm" />
+              {expForm.mode === 'brutto' ? (
+                <>
+                  <input type="number" placeholder="Brutto NOK (gross)" value={expForm.gross_nok} onChange={e => setExpForm(f => ({ ...f, gross_nok: e.target.value }))} step="0.01" className="rounded-md border bg-background px-3 py-2 text-sm col-span-2" />
+                  {expForm.gross_nok && !isNaN(parseFloat(expForm.gross_nok)) && (() => {
+                    const split = netFromGross(parseFloat(expForm.gross_nok), expForm.vat_rate);
+                    return (
+                      <p className="col-span-2 text-xs text-muted-foreground bg-muted/30 rounded px-3 py-2">
+                        Netto: <span className="font-medium text-foreground">{formatNOK(split.net_nok)}</span> · MVA ({expForm.vat_rate}%): <span className="font-medium text-foreground">{formatNOK(split.vat_nok)}</span>
+                      </p>
+                    );
+                  })()}
+                </>
+              ) : (
+                <>
+                  <input type="number" placeholder="Net NOK" value={expForm.net_nok} onChange={e => setExpForm(f => ({ ...f, net_nok: e.target.value }))} step="0.01" className="rounded-md border bg-background px-3 py-2 text-sm" />
+                  <input type="number" placeholder="VAT NOK" value={expForm.vat_nok} onChange={e => setExpForm(f => ({ ...f, vat_nok: e.target.value }))} step="0.01" className="rounded-md border bg-background px-3 py-2 text-sm" />
+                </>
+              )}
               <input type="text" placeholder="Account no (e.g. 6540)" value={expForm.account} onChange={e => setExpForm(f => ({ ...f, account: e.target.value }))} className="rounded-md border bg-background px-3 py-2 text-sm" />
               <select value={expForm.account_id} onChange={e => setExpForm(f => ({ ...f, account_id: e.target.value }))} className="rounded-md border bg-background px-3 py-2 text-sm">
                 <option value="">No account</option>
