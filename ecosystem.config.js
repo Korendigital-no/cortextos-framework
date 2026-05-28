@@ -22,20 +22,5 @@ module.exports = {
       restart_delay: 5000,
       autorestart: true,
     },
-    {
-      name: 'cortextos-dashboard',
-      script: "npm",
-      args: "run dev",
-      cwd: "/Users/vilhelmkoren/cortextos/dashboard",
-      env: {
-        PORT: process.env.PORT || '3000',
-      },
-      // Dashboard reads its real config from dashboard/.env.local — populated
-      // by /onboarding Phase 7. PM2 just supervises the dashboard process.
-      windowsHide: true,
-      max_restarts: 50,
-      restart_delay: 5000,
-      autorestart: true,
-    },
   ],
 };
