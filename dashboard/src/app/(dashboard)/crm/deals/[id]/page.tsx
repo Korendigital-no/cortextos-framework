@@ -18,6 +18,7 @@ interface Deal {
   contact_id: string | null;
   contact_name: string | null;
   contact_email: string | null;
+  company_id: string | null;
   company_name: string | null;
   expected_close: string | null;
   notes: string | null;
@@ -173,7 +174,15 @@ export default function DealDetailPage() {
                 <IconUser className="size-3.5" />{deal.contact_name}
               </Link>
             )}
-            {deal.company_name && <p className="flex items-center gap-2 text-muted-foreground"><IconBuilding className="size-3.5" />{deal.company_name}</p>}
+            {deal.company_name && (
+              deal.company_id ? (
+                <Link href={`/crm/companies/${deal.company_id}`} className="flex items-center gap-2 text-blue-500 hover:underline">
+                  <IconBuilding className="size-3.5" />{deal.company_name}
+                </Link>
+              ) : (
+                <p className="flex items-center gap-2 text-muted-foreground"><IconBuilding className="size-3.5" />{deal.company_name}</p>
+              )
+            )}
             {deal.expected_close && <p className="text-muted-foreground">Expected close: {formatDate(deal.expected_close)}</p>}
             <p className="text-xs text-muted-foreground">Created: {formatDate(deal.created_at)}</p>
             {deal.notes && <p className="text-xs text-muted-foreground mt-2">{deal.notes}</p>}

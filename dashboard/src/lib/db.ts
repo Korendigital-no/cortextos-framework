@@ -347,6 +347,10 @@ function initializeSchema(db: Database.Database): void {
   safeAddColumn(db, 'accounting_invoices', 'account_id', 'TEXT REFERENCES accounting_accounts(id) ON DELETE SET NULL');
   safeAddColumn(db, 'accounting_expenses', 'account_id', 'TEXT REFERENCES accounting_accounts(id) ON DELETE SET NULL');
   safeAddColumn(db, 'accounting_expenses', 'recurring_id', 'TEXT REFERENCES accounting_recurring(id) ON DELETE SET NULL');
+  // Mirrors columns added by cortextos bus crm-schema.ts so dashboard-only DBs
+  // built from this file alone still satisfy queries on contact match metadata.
+  safeAddColumn(db, 'crm_contacts', 'match_confidence', 'REAL DEFAULT 1.0');
+  safeAddColumn(db, 'crm_contacts', 'needs_review', 'INTEGER DEFAULT 0');
 
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_accounting_invoices_account ON accounting_invoices(account_id);
