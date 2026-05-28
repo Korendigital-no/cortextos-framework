@@ -32,9 +32,14 @@ interface GoalsListProps {
   goals: Goal[];
   org: string;
   onRefresh: () => void;
+  blockedGoalIds?: string[];
+  bottleneck?: string;
 }
 
-export function GoalsList({ goals: initialGoals, org, onRefresh }: GoalsListProps) {
+export function GoalsList({
+  goals: initialGoals, org, onRefresh, blockedGoalIds, bottleneck,
+}: GoalsListProps) {
+  const blockedSet = new Set(blockedGoalIds ?? []);
   const [goals, setGoals] = useState<Goal[]>(
     [...initialGoals].sort((a, b) => a.order - b.order),
   );
@@ -151,6 +156,8 @@ export function GoalsList({ goals: initialGoals, org, onRefresh }: GoalsListProp
                   <GoalItem
                     key={goal.id}
                     goal={goal}
+                    blocked={blockedSet.has(goal.id)}
+                    bottleneck={bottleneck}
                     onUpdate={handleUpdate}
                     onDelete={handleDelete}
                   />
