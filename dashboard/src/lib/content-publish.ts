@@ -18,6 +18,7 @@
 
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { getAllPosts, getWebsiteRepoPath, setStatus, type ContentPost } from "@/lib/content";
+import { upsertPending } from "@/lib/content-publish-pending";
 
 const RATE_LIMIT_WINDOW_MS = 30_000;
 let lastPublishAt = 0;
@@ -59,6 +60,26 @@ function todayYYYYMMDD(): string {
   const d = new Date();
   return `${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, "0")}${String(d.getUTCDate()).padStart(2, "0")}`;
 }
+
+/**
+ * Normalize any git remote URL to `owner/repo` lowercase form so HTTPS, SSH,
+ * trailing-slash, and `.git`-suffix variants all compare equal. Returns the
+ * lowercased input unchanged if it doesn't look like a git URL — that yields
+ * a hard-fail in the caller, which is the right behavior (we'd rather refuse
+ * to publish than guess).
+ *
+ * Examples:
+ *   https://github.com/Foo/Bar.git  -> foo/bar
+ *   git@github.com:Foo/Bar.git      -> foo/bar
+ *   https://github.com/Foo/Bar/     -> foo/bar
+ *   https://github.com/Foo/Bar      -> foo/bar
+ */
+export function normalizeGitRemotePath(url: string): string {
+  const m = url.match(/[:/]([^/:]+\/[^/:]+?)(?:\.git)?\/?$/);
+  return (m ? m[1] : url).toLowerCase();
+}
+
+const DEFAULT_EXPECTED_ORIGIN = "https://github.com/Korendigital-no/Korendigital-nettside.git";
 
 export async function publishApproved(opts: PublishOptions = {}): Promise<PublishResult> {
   const now = Date.now();
@@ -102,6 +123,41 @@ export async function publishApproved(opts: PublishOptions = {}): Promise<Publis
       ok: false,
       published: [],
       message: `git rev-parse failed or returned ${JSON.stringify(startBranch)} (detached HEAD or non-git repo). Refusing to mutate.`,
+    };
+  }
+
+  // Origin URL check: the local website clone's `origin` must point at the
+  // canonical Korendigital-no/Korendigital-nettside repo. The repo moved
+  // from vkoren04/ → Korendigital-no/ on 2026-05-29 and is now PRIVATE; a
+  // stale clone with the old origin will push to a fork that no longer
+  // accepts the push or open a PR against the wrong base. Catching it here
+  // prevents a half-published state on disk (frontmatter flipped, branch
+  // committed, push fails, rollback runs).
+  const expectedOriginRaw = process.env.WEBSITE_REPO_ORIGIN_URL ?? DEFAULT_EXPECTED_ORIGIN;
+  const expectedRepoPath = normalizeGitRemotePath(expectedOriginRaw);
+  const originUrlResult = runGit(cwd, ["remote", "get-url", "origin"]);
+  const originUrl = bufferToString(originUrlResult.stdout).trim();
+  if (originUrlResult.status !== 0 || !originUrl) {
+    return {
+      ok: false,
+      published: [],
+      message: `git remote get-url origin failed in ${cwd}. Set up the origin remote first:\n  cd ${cwd}\n  git remote add origin ${expectedOriginRaw}\n  git fetch origin`,
+    };
+  }
+  const actualRepoPath = normalizeGitRemotePath(originUrl);
+  if (actualRepoPath !== expectedRepoPath) {
+    return {
+      ok: false,
+      published: [],
+      message:
+        `Website repo origin mismatch — refusing to publish.\n` +
+        `  Expected: ${expectedRepoPath}\n` +
+        `  Got:      ${actualRepoPath}  (${originUrl})\n\n` +
+        `Fix on the dashboard host:\n` +
+        `  cd ${cwd}\n` +
+        `  git remote set-url origin ${expectedOriginRaw}\n` +
+        `  git fetch origin\n\n` +
+        `If the canonical URL has legitimately changed, set the WEBSITE_REPO_ORIGIN_URL env var to the new URL and restart the dashboard.`,
     };
   }
 
@@ -232,7 +288,31 @@ export async function publishApproved(opts: PublishOptions = {}): Promise<Publis
   }
   const prUrl = bufferToString(prResult.stdout).trim().split("\n").pop() ?? "";
 
-  // 7. Return to starting branch so the working tree is clean for the next
+  // 7. Record pending PR state in the dashboard's sidecar so the list view
+  //    can show these posts as "published" until the PR merges. Without
+  //    this, the upcoming `git checkout startBranch` reverts the working
+  //    tree to startBranch's state (status: approved), and the UI would
+  //    show the post in the Approved tab even though the PR is open and
+  //    awaiting merge. Sidecar lives outside the website repo so it's
+  //    immune to git checkouts/pulls. Self-heals via gh pr view in
+  //    content.ts when state == MERGED or CLOSED.
+  if (prUrl) {
+    const publishedAt = new Date().toISOString();
+    const entries: Record<string, { prUrl: string; branch: string; publishedAt: string }> = {};
+    for (const p of flipped) {
+      entries[p.slug] = { prUrl, branch: actualBranch, publishedAt };
+    }
+    try {
+      await upsertPending(entries);
+    } catch (err) {
+      // Sidecar write failure is non-fatal: PR is created either way.
+      // Log + continue. UI will be wrong (post shows as approved) but
+      // git state is correct and Vilhelm can still merge the PR.
+      console.error("[content-publish] sidecar upsert failed:", err);
+    }
+  }
+
+  // 8. Return to starting branch so the working tree is clean for the next
   //    publish (or for manual git activity).
   runGit(cwd, ["checkout", startBranch]);
 
