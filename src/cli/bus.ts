@@ -400,7 +400,7 @@ busCommand
   .argument('<severity>', 'Severity (info, warning, error, critical)')
   .option('--meta <json>', 'Metadata JSON string', '{}')
   .action((category: string, event: string, severity: string, opts: { meta: string }) => {
-    const validCategories: EventCategory[] = ['action', 'error', 'metric', 'milestone', 'heartbeat', 'message', 'task', 'approval'];
+    const validCategories: EventCategory[] = ['action', 'error', 'metric', 'milestone', 'heartbeat', 'message', 'task', 'approval', 'measurement'];
     if (!validCategories.includes(category as EventCategory)) {
       console.error(`Invalid category '${category}'. Must be one of: ${validCategories.join(', ')}`);
       process.exit(1);
@@ -3172,6 +3172,107 @@ busCommand.command('content-status-audit')
     console.log(formatAuditReport(report));
     // Non-zero exit on drift so a cron/CI step can detect failure.
     if (!report.ok) process.exitCode = 1;
+  });
+
+busCommand.command('log-measurement')
+  .description('Log a måle-garanti measurement event (task_handled) backing the 2 t/uke time-saved guarantee')
+  .requiredOption('--client <orgnr>', 'Client org number (the guarantee is per client)')
+  .requiredOption('--task-type <type>', 'Task type (booking|doc_review|nav_oppgjor|no_show_chase|...)')
+  .requiredOption('--baseline-seconds <n>', 'Baseline manual seconds per task, from signed uke-0 capture')
+  .option('--agent <name>', 'Agent that handled the task (default: current agent)')
+  .option('--human-touch-seconds <n>', 'Residual human seconds on this task (review/exception)', '0')
+  .option('--outcome <o>', 'completed | escalated_to_human | failed', 'completed')
+  .option('--confidence <c>', 'Baseline confidence: high | medium | low')
+  .option('--completed-at <iso>', 'Completion timestamp (default: now)')
+  .action(async (opts: { client: string; taskType: string; baselineSeconds: string; agent?: string; humanTouchSeconds: string; outcome: string; confidence?: string; completedAt?: string }) => {
+    const { validateMeasurementMeta } = await import('../bus/measurement.js');
+    const env = resolveEnv();
+    const paths = resolvePaths(env.agentName, env.instanceId, env.org);
+    const baseline = Number(opts.baselineSeconds);
+    const humanTouch = Number(opts.humanTouchSeconds);
+    const meta = {
+      client_id: opts.client,
+      agent_id: opts.agent ?? env.agentName,
+      task_type: opts.taskType,
+      completed_at: opts.completedAt ?? new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+      human_touch_required: humanTouch > 0,
+      human_touch_seconds: humanTouch,
+      baseline_seconds_per_task: baseline,
+      ...(opts.confidence ? { baseline_confidence: opts.confidence } : {}),
+      outcome: opts.outcome,
+    };
+    try {
+      validateMeasurementMeta(meta as never);
+    } catch (err) {
+      console.error((err as Error).message);
+      process.exit(1);
+    }
+    logEvent(paths, meta.agent_id, env.org, 'measurement', 'task_handled', 'info', JSON.stringify(meta));
+    console.log(`Logged measurement/task_handled for client ${meta.client_id} (${meta.task_type}, outcome=${meta.outcome})`);
+  });
+
+busCommand.command('measurement-report')
+  .description('Aggregate måle-garanti measurement events for a client into a time-saved / guarantee report')
+  .requiredOption('--client <orgnr>', 'Client org number')
+  .option('--since <iso>', 'Window start (ISO date/datetime; default: 7 days ago)')
+  .option('--until <iso>', 'Window end (ISO date/datetime; default: now)')
+  .option('--json', 'Emit JSON instead of text')
+  .action(async (opts: { client: string; since?: string; until?: string; json?: boolean }) => {
+    const { aggregateMeasurements, formatMeasurementReport } = await import('../bus/measurement.js');
+    const { join } = require('path');
+    const { existsSync, readdirSync, readFileSync } = require('fs');
+    const env = resolveEnv();
+    const paths = resolvePaths(env.agentName, env.instanceId, env.org);
+
+    // A date-only --until means "include that whole day", so pin it to
+    // end-of-day; new Date('2026-05-31') is midnight and would drop every
+    // task completed during that date.
+    const dateOnly = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s);
+    const until = opts.until
+      ? new Date(dateOnly(opts.until) ? `${opts.until}T23:59:59.999Z` : opts.until)
+      : new Date();
+    const since = opts.since ? new Date(opts.since) : new Date(until.getTime() - 7 * 86400000);
+    if (Number.isNaN(since.getTime()) || Number.isNaN(until.getTime())) {
+      console.error('Invalid --since/--until date');
+      process.exit(1);
+    }
+
+    // Measurement events are written per-agent at {analyticsDir}/events/{agent}/{date}.jsonl.
+    // Scan every agent's event files and keep measurement/task_handled rows for this
+    // client whose completed_at falls inside the window.
+    const eventsRoot = join(paths.analyticsDir, 'events');
+    const collected: Array<Record<string, unknown>> = [];
+    if (existsSync(eventsRoot)) {
+      for (const agentDir of readdirSync(eventsRoot, { withFileTypes: true })) {
+        if (!agentDir.isDirectory()) continue;
+        const dir = join(eventsRoot, agentDir.name);
+        for (const file of readdirSync(dir)) {
+          if (!file.endsWith('.jsonl')) continue;
+          let lines: string[];
+          try { lines = readFileSync(join(dir, file), 'utf-8').split('\n').filter(Boolean); }
+          catch { continue; }
+          for (const line of lines) {
+            let evt: { category?: string; event?: string; metadata?: Record<string, unknown> };
+            try { evt = JSON.parse(line); } catch { continue; }
+            if (evt.category !== 'measurement' || evt.event !== 'task_handled') continue;
+            const m = evt.metadata;
+            if (!m || m.client_id !== opts.client) continue;
+            const completedAt = new Date(String(m.completed_at));
+            if (Number.isNaN(completedAt.getTime())) continue;
+            if (completedAt < since || completedAt > until) continue;
+            collected.push(m);
+          }
+        }
+      }
+    }
+
+    const report = aggregateMeasurements(collected as never, {
+      client_id: opts.client,
+      window_start: since.toISOString(),
+      window_end: until.toISOString(),
+    });
+    if (opts.json) console.log(JSON.stringify(report, null, 2));
+    else console.log(formatMeasurementReport(report));
   });
 
 function sleepMs(ms: number): Promise<void> {
