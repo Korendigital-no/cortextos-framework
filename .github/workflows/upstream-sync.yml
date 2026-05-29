@@ -1,0 +1,46 @@
+name: Sync from upstream (grandamenium/cortextos)
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: repo-sync (PR-only, never push to upstream)
+        uses: repo-sync/github-sync@v2
+        with:
+          source_repo: "https://github.com/grandamenium/cortextos.git"
+          source_branch: "main"
+          destination_branch: "upstream-sync"
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Open PR from upstream-sync to main
+        uses: repo-sync/pull-request@v2
+        with:
+          source_branch: "upstream-sync"
+          destination_branch: "main"
+          pr_title: "chore(upstream-sync): merge latest grandamenium/cortextos main"
+          pr_body: |
+            Automated weekly upstream sync from grandamenium/cortextos main.
+
+            Review carefully before merging:
+            - Check for breaking changes to dashboard
+            - Check for new env vars / config requirements
+            - Run CI before merge
+            - Squash-merge to keep main history clean
+          pr_label: "upstream-sync,automated"
+          github_token: ${{ secrets.GITHUB_TOKEN }}
