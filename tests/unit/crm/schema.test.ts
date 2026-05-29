@@ -29,12 +29,19 @@ describe('CRM schema', () => {
 
     expect(tables.map(t => t.name)).toEqual([
       'crm_activities',
+      'crm_client_checklist_items',
+      'crm_client_checklists',
+      'crm_client_notes',
+      'crm_client_projects',
+      'crm_client_tasks',
+      'crm_clients',
       'crm_companies',
       'crm_contacts',
       'crm_deals',
       'crm_documents',
       'crm_meetings',
       'crm_review_queue',
+      'crm_time_entries',
       'crm_webhook_log',
     ]);
   });
