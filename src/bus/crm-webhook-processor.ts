@@ -36,6 +36,95 @@ interface WebhookJob {
   attempt_count: number;
 }
 
+const DEFAULT_TEST_EMAIL_DOMAINS = [
+  'test.com',
+  'example.com',
+  'example.org',
+  'example.net',
+  // Classic placeholder/demo company domains the test-runner uses alongside
+  // the "Ola / Firma AS" fixture identity. No real Koren lead uses these.
+  'acme.com',
+  'acme.no',
+];
+
+/**
+ * Domains that mark a webhook as a test-runner fixture rather than a real
+ * lead. Configurable via CRM_TEST_EMAIL_DOMAINS (comma-separated) so an
+ * operator can adjust without a code change. Any domain ending in `.test`
+ * (RFC 6761 reserved) is always treated as a fixture.
+ */
+function testEmailDomains(): string[] {
+  const env = process.env.CRM_TEST_EMAIL_DOMAINS;
+  if (env && env.trim()) {
+    return env.split(',').map((d) => d.trim().toLowerCase()).filter(Boolean);
+  }
+  return DEFAULT_TEST_EMAIL_DOMAINS;
+}
+
+function isTestEmail(email: string | undefined | null): boolean {
+  if (!email) return false;
+  const at = email.lastIndexOf('@');
+  if (at < 0) return false;
+  const domain = email.slice(at + 1).toLowerCase().trim();
+  if (!domain) return false;
+  if (domain.endsWith('.test')) return true;
+  return testEmailDomains().includes(domain);
+}
+
+const DEFAULT_TEST_COMPANY_NAMES = ['firma as', 'eksempel as', 'test as', 'example inc', 'acme', 'acme as', 'acme inc'];
+
+/**
+ * Placeholder company names that mark a fixture even when the email domain
+ * looks real. The test-runner pairs throwaway .no domains with the literal
+ * placeholder company "Firma AS" ("Company Inc") — caught by sales across
+ * every burst. Configurable via CRM_TEST_COMPANY_NAMES (comma-separated).
+ * Matched case-insensitively on the trimmed name; no real company is named
+ * exactly "Firma AS".
+ */
+function testCompanyNames(): string[] {
+  const env = process.env.CRM_TEST_COMPANY_NAMES;
+  if (env && env.trim()) {
+    return env.split(',').map((n) => n.trim().toLowerCase()).filter(Boolean);
+  }
+  return DEFAULT_TEST_COMPANY_NAMES;
+}
+
+function isTestCompany(name: string | undefined | null): boolean {
+  if (!name) return false;
+  return testCompanyNames().includes(name.trim().toLowerCase());
+}
+
+/**
+ * True when a queued webhook is a test-runner fixture (any attendee/invitee
+ * email is on a test domain). Such jobs are dropped to `skipped_test` before
+ * any CRM write or sales notification, so an external test-runner hammering
+ * the prod webhook endpoint can never pollute the pipeline or mask real
+ * bookings in the sales inbox. Malformed payloads are treated as NOT test
+ * fixtures so they still flow through normal error handling.
+ */
+export function isTestFixtureJob(job: WebhookJob): boolean {
+  try {
+    const payload = JSON.parse(job.payload);
+    if (job.source === 'calcom') {
+      const inner = payload.payload as Record<string, unknown> | undefined;
+      const attendees = (inner?.attendees as Array<{ email?: string }> | undefined) ?? [];
+      if (attendees.some((a) => isTestEmail(a.email))) return true;
+      // Company-name fallback: catches throwaway-but-real-looking domains
+      // (e.g. kari@bergenshipping.no) paired with the placeholder "Firma AS".
+      const responses = inner?.responses as Record<string, { value?: string }> | undefined;
+      const company = responses?.company?.value ?? responses?.['Company']?.value;
+      return isTestCompany(company);
+    }
+    if (job.source === 'fathom') {
+      const invitees = (payload.calendar_invitees as Array<{ email?: string }> | undefined) ?? [];
+      return invitees.some((i) => isTestEmail(i.email));
+    }
+  } catch {
+    // Unparseable payload → let the normal processing path surface the error.
+  }
+  return false;
+}
+
 export function processCalcomWebhook(db: Database.Database, job: WebhookJob): { contact_id: string; deal_id: string; new_deal: boolean } {
   const payload = JSON.parse(job.payload);
   const inner = payload.payload as Record<string, unknown>;
@@ -327,7 +416,7 @@ export function processFathomWebhook(
   return { meeting_id: finalMeetingId, matched_contacts: matchedContacts.length, tasks_created: tasksCreated };
 }
 
-export async function processWebhookQueue(db: Database.Database): Promise<{ processed: number; failed: number; skipped: number }> {
+export async function processWebhookQueue(db: Database.Database): Promise<{ processed: number; failed: number; skipped: number; skippedTest: number }> {
   const jobs = db.prepare(`
     SELECT * FROM crm_webhook_log
     WHERE status = 'pending'
@@ -340,8 +429,18 @@ export async function processWebhookQueue(db: Database.Database): Promise<{ proc
   let processed = 0;
   let failed = 0;
   let skipped = 0;
+  let skippedTest = 0;
 
   for (const job of jobs) {
+    // Drop test-runner fixtures before any CRM write or sales notification.
+    // status='skipped_test' is terminal (the pending query never re-selects
+    // it) and auditable in crm_webhook_log.
+    if (isTestFixtureJob(job)) {
+      db.prepare("UPDATE crm_webhook_log SET status = 'skipped_test', processed_at = datetime('now'), locked_at = NULL WHERE id = ?").run(job.id);
+      skippedTest++;
+      continue;
+    }
+
     db.prepare('UPDATE crm_webhook_log SET locked_at = datetime(\'now\'), attempt_count = attempt_count + 1 WHERE id = ?').run(job.id);
 
     try {
@@ -398,5 +497,5 @@ export async function processWebhookQueue(db: Database.Database): Promise<{ proc
     }
   }
 
-  return { processed, failed, skipped };
+  return { processed, failed, skipped, skippedTest };
 }
