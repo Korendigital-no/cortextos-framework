@@ -49,6 +49,18 @@ describe('validateMeasurementMeta', () => {
   it('rejects an invalid baseline_confidence', () => {
     expect(() => validateMeasurementMeta(ev({ baseline_confidence: 'guess' as never }))).toThrow(/baseline_confidence/);
   });
+
+  it('rejects a path-traversal agent_id (agent_id becomes a filesystem path)', () => {
+    // log-measurement --agent flows into analyticsDir/events/{agent_id}/...;
+    // a traversal value must be rejected before it can escape the tree.
+    expect(() => validateMeasurementMeta(ev({ agent_id: '../../../../tmp/evil' }))).toThrow();
+    expect(() => validateMeasurementMeta(ev({ agent_id: 'has spaces' }))).toThrow();
+    expect(() => validateMeasurementMeta(ev({ agent_id: 'UPPER' }))).toThrow();
+  });
+
+  it('accepts a normal agent_id', () => {
+    expect(() => validateMeasurementMeta(ev({ agent_id: 'booking-agent_1' }))).not.toThrow();
+  });
 });
 
 describe('aggregateMeasurements', () => {

@@ -11,6 +11,8 @@
  * up in a renewal or a dispute — and the guarantee verdict (≥ 2.0 t/uke).
  */
 
+import { validateAgentName } from '../utils/validate.js';
+
 export type MeasurementOutcome = 'completed' | 'escalated_to_human' | 'failed';
 export type BaselineConfidence = 'high' | 'medium' | 'low';
 
@@ -52,6 +54,11 @@ export function validateMeasurementMeta(meta: Partial<MeasurementMeta>): void {
       throw new Error(`measurement: '${field}' is required and must be a non-empty string`);
     }
   }
+  // agent_id becomes a filesystem path component in logEvent
+  // (analyticsDir/events/{agent_id}/...). Enforce the same agent-name regex
+  // every other agent-name→path flow uses, so a value like '../../tmp/evil'
+  // can never escape the per-agent events directory (path traversal).
+  validateAgentName(meta.agent_id as string);
   if (!VALID_OUTCOMES.includes(meta.outcome as MeasurementOutcome)) {
     throw new Error(`measurement: 'outcome' must be one of: ${VALID_OUTCOMES.join(', ')}`);
   }
