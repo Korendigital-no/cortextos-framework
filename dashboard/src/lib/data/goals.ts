@@ -9,6 +9,7 @@ import type { GoalsFile, GoalsData } from '@/lib/types';
 
 const DEFAULT_GOALS: GoalsFile = {
   bottleneck: '',
+  bottleneck_blocks: [],
   goals: [],
 };
 
@@ -42,14 +43,24 @@ export function getGoals(org: string): GoalsData {
       });
     }
 
+    // bottleneck_blocks: array of goal IDs the current bottleneck is blocking.
+    // Filter out IDs that no longer reference an existing goal so stale links
+    // don't leak into the UI after a goal is deleted.
+    const validGoalIds = new Set(goals.map(g => g.id));
+    const rawBlocks = Array.isArray(data.bottleneck_blocks) ? data.bottleneck_blocks : [];
+    const bottleneck_blocks = rawBlocks
+      .filter((id: unknown): id is string => typeof id === 'string')
+      .filter((id: string) => validGoalIds.has(id));
+
     return {
       bottleneck: data.bottleneck ?? '',
+      bottleneck_blocks,
       goals,
       daily_focus: data.daily_focus ?? undefined,
       daily_focus_set_at: data.daily_focus_set_at ?? undefined,
     };
   } catch {
-    return { ...DEFAULT_GOALS, goals: [] };
+    return { ...DEFAULT_GOALS, goals: [], bottleneck_blocks: [] };
   }
 }
 

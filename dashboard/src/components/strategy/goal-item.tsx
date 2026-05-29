@@ -9,6 +9,7 @@ import {
   IconTrash,
   IconCheck,
   IconX,
+  IconAlertCircle,
 } from '@tabler/icons-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -17,11 +18,13 @@ import type { Goal } from '@/lib/types';
 
 interface GoalItemProps {
   goal: Goal;
+  blocked?: boolean;
+  bottleneck?: string;
   onUpdate: (id: string, title: string, progress: number) => void;
   onDelete: (id: string) => void;
 }
 
-export function GoalItem({ goal, onUpdate, onDelete }: GoalItemProps) {
+export function GoalItem({ goal, blocked, bottleneck, onUpdate, onDelete }: GoalItemProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [editTitle, setEditTitle] = useState(goal.title);
   const [editProgress, setEditProgress] = useState(goal.progress);
@@ -119,9 +122,12 @@ export function GoalItem({ goal, onUpdate, onDelete }: GoalItemProps) {
     <div
       ref={setNodeRef}
       style={style}
-      className={`group flex items-center gap-3 rounded-lg border border-foreground/5 bg-card p-3 transition-colors hover:border-foreground/10 ${
-        isDragging ? 'opacity-50 shadow-lg' : ''
-      }`}
+      className={`group flex items-center gap-3 rounded-lg border bg-card p-3 transition-colors ${
+        blocked
+          ? 'border-red-500/40 hover:border-red-500/60'
+          : 'border-foreground/5 hover:border-foreground/10'
+      } ${isDragging ? 'opacity-50 shadow-lg' : ''}`}
+      title={blocked && bottleneck ? `Blocked by: ${bottleneck}` : undefined}
     >
       {/* Drag handle */}
       <button
@@ -136,7 +142,10 @@ export function GoalItem({ goal, onUpdate, onDelete }: GoalItemProps) {
       {/* Goal content */}
       <div className="flex-1 min-w-0 space-y-1.5">
         <div className="flex items-center justify-between gap-2">
-          <span className="text-sm font-medium truncate">{goal.title}</span>
+          <span className="text-sm font-medium truncate flex items-center gap-1.5">
+            {blocked && <IconAlertCircle className="h-3.5 w-3.5 text-red-500 shrink-0" />}
+            {goal.title}
+          </span>
           <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
             {goal.progress}%
           </span>

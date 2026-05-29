@@ -21,6 +21,7 @@ import {
   IconTarget,
   IconX,
   IconNotes,
+  IconBriefcase,
 } from '@tabler/icons-react';
 import { cn } from '@/lib/utils';
 
@@ -32,6 +33,7 @@ const mainTabs = [
 ];
 
 const morePages = [
+  { label: 'CRM', href: '/crm', icon: IconBriefcase },
   { label: 'Agents', href: '/agents', icon: IconRobot },
   { label: 'Comms', href: '/comms', icon: IconMessages },
   { label: 'Activity', href: '/activity', icon: IconActivity },

@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import { withSentryConfig } from "@sentry/nextjs";
 
 // Next.js 15.2+ blocks non-localhost origins from /_next/* dev-internal
 // resources by default. When the dashboard is accessed over Tailscale, a LAN
@@ -32,4 +33,6 @@ const nextConfig: NextConfig = {
   },
 };
 
-export default nextConfig;
+export default withSentryConfig(nextConfig, {
+  silent: true,
+});

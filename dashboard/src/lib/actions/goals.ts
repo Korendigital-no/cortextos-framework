@@ -44,6 +44,7 @@ function revalidate(): void {
 export async function updateBottleneck(
   org: string,
   bottleneck: string,
+  blocks?: string[],
 ): Promise<ActionResult> {
   try {
     const orgErr = validateOrg(org);
@@ -54,9 +55,18 @@ export async function updateBottleneck(
     const data = getGoals(org);
     const oldBottleneck = data.bottleneck;
     data.bottleneck = trimmed;
+
+    if (blocks !== undefined) {
+      // Filter to only IDs that currently match a goal — avoid persisting stale links.
+      const validIds = new Set(data.goals.map((g) => g.id));
+      data.bottleneck_blocks = blocks
+        .filter((id): id is string => typeof id === 'string')
+        .filter((id) => validIds.has(id));
+    }
+
     writeGoals(org, data);
 
-    logEvent('bottleneck_changed', { old: oldBottleneck, new: trimmed });
+    logEvent('bottleneck_changed', { old: oldBottleneck, new: trimmed, blocks: data.bottleneck_blocks ?? [] });
     revalidate();
 
     return { success: true };

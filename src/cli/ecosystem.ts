@@ -62,8 +62,22 @@ export const ecosystemCommand = new Command('ecosystem')
     // user sees as "dashboard keeps restarting". Better to silently skip the
     // dashboard entry if its deps aren't installed yet — the user can re-run
     // `cortextos ecosystem` after `npm install` to add it.
+    //
+    // ALSO skip when a macOS launchd plist is present at
+    //   ~/Library/LaunchAgents/com.vkoren04.cortextos-dashboard.plist
+    // The /onboarding flow installs this plist on macOS as the user-login
+    // supervisor; double-supervising via PM2 + launchd causes both processes
+    // to race for port 3000, mutually kill each other via prestart hooks, and
+    // produce restart-storms (codex round-3 caught this). On macOS, launchd
+    // wins. PM2 keeps the dashboard entry only on Linux/Windows where there's
+    // no equivalent native supervisor.
+    const launchdPlist = process.platform === 'darwin'
+      ? join(process.env.HOME ?? '', 'Library/LaunchAgents/com.vkoren04.cortextos-dashboard.plist')
+      : null;
+    const hasLaunchdSupervisor = launchdPlist ? existsSync(launchdPlist) : false;
     const hasDashboard = existsSync(join(dashboardDir, 'package.json')) &&
-      existsSync(join(dashboardDir, 'node_modules', '.bin', 'next'));
+      existsSync(join(dashboardDir, 'node_modules', '.bin', 'next')) &&
+      !hasLaunchdSupervisor;
 
     // BUG-002 fix: emit ecosystem.config.js as raw JS that resolves
     // process.env.CTX_INSTANCE_ID at PM2-startup time, not at generation time.
@@ -90,10 +104,22 @@ export const ecosystemCommand = new Command('ecosystem')
     // PM2 at the local Next.js binary that `npm run dev` would run anyway.
     // The `next` entry resolves under dashboard/node_modules/next/dist/bin/next
     // and is just a Node script, so PM2 spawns it cleanly on every platform.
+    // Production-mode (next build + next start) replaces the previous
+    // `next dev` supervision. Dev mode runs Turbopack hot-reload which has
+    // hit several runaway-loop bugs that pegged the host CPU at 100-450%
+    // sustained on macOS. Production mode idles near 0% and exercises the
+    // same auth + API code paths. Code edits to the dashboard now require
+    // an explicit rebuild (npm run build) — appropriate for a multi-agent
+    // system where the dashboard is consumed by humans, not edited live.
     const isWindows = process.platform === 'win32';
     const nextBin = join(dashboardDir, 'node_modules', 'next', 'dist', 'bin', 'next');
     const dashboardScript = isWindows && existsSync(nextBin) ? nextBin : 'npm';
-    const dashboardArgs = isWindows && existsSync(nextBin) ? 'dev' : 'run dev';
+    const dashboardArgs = isWindows && existsSync(nextBin) ? 'start' : 'run start:prod';
+    // KNOWN GAP (Windows): the Windows path invokes next bin directly, which
+    // skips the `prestart:prod` npm hook (kill-port + ensure-built). First-time
+    // PM2 boot on Windows requires `npm run build` manually before
+    // `pm2 start ecosystem.config.js`; otherwise it crash-loops on a missing
+    // .next/BUILD_ID. Tracked for a future Windows wrapper script.
 
     // windowsHide: stops PM2 from attaching a visible "next-server" console
     // window to the dashboard process at boot on Windows. PM2's default
@@ -150,6 +176,13 @@ module.exports = {
 
     writeFileSync(options.output, content, 'utf-8');
     console.log(`Generated ${options.output} with daemon (manages ${agents.length} agents)${hasDashboard ? ' + dashboard' : ''}`);
+    if (hasLaunchdSupervisor) {
+      console.log('\nDashboard skipped from PM2 — macOS launchd plist detected at');
+      console.log(`  ${launchdPlist}`);
+      console.log('If upgrading from a prior install that had PM2 dashboard, run:');
+      console.log('  pm2 delete cortextos-dashboard && pm2 save');
+      console.log('to remove the stale entry so PM2 does not resurrect it alongside launchd.');
+    }
     console.log('\nStart with:');
     console.log(`  pm2 start ${options.output}`);
     console.log('  pm2 save');

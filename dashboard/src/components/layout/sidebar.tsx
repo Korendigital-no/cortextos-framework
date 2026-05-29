@@ -19,6 +19,10 @@ import {
   IconTarget,
   IconMessages,
   IconNotes,
+  IconBriefcase,
+  IconCalendar,
+  IconUsers,
+  IconReceipt,
 } from '@tabler/icons-react';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
@@ -39,12 +43,19 @@ const navItems: NavItem[] = [
   { label: 'Tasks', href: '/tasks', icon: IconListCheck, section: 'core' },
   { label: 'Activity', href: '/activity', icon: IconActivity, section: 'core' },
 
+  // CRM
+  { label: 'CRM', href: '/crm', icon: IconBriefcase, section: 'core' },
+  { label: 'Clients', href: '/clients', icon: IconUsers, section: 'core' },
+  { label: 'Calendar', href: '/crm/calendar', icon: IconCalendar, section: 'core' },
+
   // Operations
   { label: 'Comms', href: '/comms', icon: IconMessages, section: 'ops' },
   { label: 'Approvals', href: '/approvals', icon: IconShieldCheck, section: 'ops' },
   { label: 'Workflows', href: '/workflows', icon: IconClock, section: 'ops' },
   { label: 'Strategy', href: '/strategy', icon: IconTarget, section: 'ops' },
   { label: 'Analytics', href: '/analytics', icon: IconChartDots3, section: 'ops' },
+  { label: 'Accounting', href: '/accounting', icon: IconReceipt, section: 'ops' },
+  { label: 'Content', href: '/content', icon: IconNotes, section: 'ops' },
 
   // Intelligence
   { label: 'Knowledge Base', href: '/knowledge-base', icon: IconBook2, section: 'intel' },
@@ -145,6 +156,7 @@ export function Sidebar({
                     key={item.href}
                     href={orgHref(item.href)}
                     onClick={onNavigate}
+                    suppressHydrationWarning
                     className={cn(
                       'group flex items-center gap-2.5 rounded-md px-3 py-1.5 text-[13px] transition-all',
                       active

@@ -19,6 +19,10 @@ import { addCron, removeCron, readCrons, updateCron as updateCronDef, getCronByN
 import { nextFireFromCron } from '../daemon/cron-scheduler.js';
 import { queryKnowledgeBase, ingestKnowledgeBase, ensureKBDirs } from '../bus/knowledge-base.js';
 import { checkUsageApi, refreshOAuthToken, rotateOAuth, loadAccounts, ALERT_5H, ALERT_7D } from '../bus/oauth.js';
+import { getCrmDb } from '../bus/crm-db.js';
+import * as crm from '../bus/crm.js';
+import { processWebhookQueue } from '../bus/crm-webhook-processor.js';
+import { generatePipelineReport, generateMeetingSummaryHtml } from '../bus/crm-reports.js';
 import { resolvePaths } from '../utils/paths.js';
 import { resolveEnv } from '../utils/env.js';
 import { IPCClient } from '../daemon/ipc-server.js';
@@ -2761,6 +2765,403 @@ busCommand
       console.log('\nRestart affected agents to apply the new settings:');
       console.log('  cortextos restart <agent-name>');
     }
+  });
+
+// --- CRM Commands ---
+
+const crmContacts = busCommand.command('crm-contacts').description('CRM contact operations');
+
+crmContacts.command('list')
+  .option('--search <query>', 'Search by name or email')
+  .option('--company <id>', 'Filter by company ID')
+  .option('--source <source>', 'Filter by source')
+  .action((opts: { search?: string; company?: string; source?: string }) => {
+    const db = getCrmDb();
+    const contacts = crm.listContacts(db, opts);
+    if (contacts.length === 0) { console.log('No contacts found.'); return; }
+    for (const c of contacts) {
+      console.log(`${c.id}  ${c.name}  ${c.email ?? '-'}  ${c.source ?? '-'}`);
+    }
+    console.log(`\n${contacts.length} contact(s)`);
+  });
+
+crmContacts.command('get').argument('<id>').action((id: string) => {
+  const db = getCrmDb();
+  const contact = crm.getContact(db, id);
+  if (!contact) { console.error(`Contact ${id} not found`); process.exit(1); }
+  console.log(JSON.stringify(contact, null, 2));
+});
+
+crmContacts.command('create')
+  .requiredOption('--name <name>', 'Contact name')
+  .option('--email <email>', 'Email address')
+  .option('--phone <phone>', 'Phone number')
+  .option('--company <id>', 'Company ID')
+  .option('--source <source>', 'Lead source')
+  .action((opts: { name: string; email?: string; phone?: string; company?: string; source?: string }) => {
+    const db = getCrmDb();
+    const contact = crm.createContact(db, { ...opts, company_id: opts.company });
+    console.log(contact.id);
+  });
+
+crmContacts.command('update').argument('<id>')
+  .option('--name <name>')
+  .option('--email <email>')
+  .option('--phone <phone>')
+  .option('--company <id>', 'Company ID')
+  .option('--notes <notes>')
+  .action((id: string, opts: { name?: string; email?: string; phone?: string; company?: string; notes?: string }) => {
+    const db = getCrmDb();
+    const fields: Record<string, string | undefined> = {};
+    if (opts.name !== undefined) fields.name = opts.name;
+    if (opts.email !== undefined) fields.email = opts.email;
+    if (opts.phone !== undefined) fields.phone = opts.phone;
+    if (opts.company !== undefined) fields.company_id = opts.company;
+    if (opts.notes !== undefined) fields.notes = opts.notes;
+    crm.updateContact(db, id, fields);
+    console.log(`Updated ${id}`);
+  });
+
+crmContacts.command('delete').argument('<id>').action((id: string) => {
+  const db = getCrmDb();
+  crm.deleteContact(db, id);
+  console.log(`Deleted contact ${id}`);
+});
+
+const crmCompanies = busCommand.command('crm-companies').description('CRM company operations');
+
+crmCompanies.command('list')
+  .option('--search <query>', 'Search by name or domain')
+  .action((opts: { search?: string }) => {
+    const db = getCrmDb();
+    const companies = crm.listCompanies(db, opts);
+    if (companies.length === 0) { console.log('No companies found.'); return; }
+    for (const c of companies) {
+      console.log(`${c.id}  ${c.name}  ${c.domain ?? '-'}  ${c.org_number ?? '-'}`);
+    }
+    console.log(`\n${companies.length} company(ies)`);
+  });
+
+crmCompanies.command('get').argument('<id>').action((id: string) => {
+  const db = getCrmDb();
+  const company = crm.getCompany(db, id);
+  if (!company) { console.error(`Company ${id} not found`); process.exit(1); }
+  console.log(JSON.stringify(company, null, 2));
+});
+
+crmCompanies.command('create')
+  .requiredOption('--name <name>', 'Company name')
+  .option('--domain <domain>', 'Website domain')
+  .option('--industry <industry>')
+  .option('--org-number <number>', 'Norwegian org number')
+  .option('--size <size>', 'solo|small|medium|large')
+  .action((opts: { name: string; domain?: string; industry?: string; orgNumber?: string; size?: string }) => {
+    const db = getCrmDb();
+    const company = crm.createCompany(db, { ...opts, org_number: opts.orgNumber });
+    console.log(company.id);
+  });
+
+crmCompanies.command('update').argument('<id>')
+  .option('--name <name>')
+  .option('--domain <domain>')
+  .option('--industry <industry>')
+  .option('--org-number <number>')
+  .option('--size <size>')
+  .option('--notes <notes>')
+  .action((id: string, opts: { name?: string; domain?: string; industry?: string; orgNumber?: string; size?: string; notes?: string }) => {
+    const db = getCrmDb();
+    const fields: Record<string, string | undefined> = {};
+    if (opts.name !== undefined) fields.name = opts.name;
+    if (opts.domain !== undefined) fields.domain = opts.domain;
+    if (opts.industry !== undefined) fields.industry = opts.industry;
+    if (opts.orgNumber !== undefined) fields.org_number = opts.orgNumber;
+    if (opts.size !== undefined) fields.size = opts.size;
+    if (opts.notes !== undefined) fields.notes = opts.notes;
+    crm.updateCompany(db, id, fields);
+    console.log(`Updated ${id}`);
+  });
+
+crmCompanies.command('delete').argument('<id>').action((id: string) => {
+  const db = getCrmDb();
+  crm.deleteCompany(db, id);
+  console.log(`Deleted company ${id}`);
+});
+
+const crmDeals = busCommand.command('crm-deals').description('CRM deal operations');
+
+crmDeals.command('list')
+  .option('--stage <stage>', 'Filter by stage')
+  .option('--contact <id>', 'Filter by contact')
+  .option('--company <id>', 'Filter by company')
+  .action((opts: { stage?: string; contact?: string; company?: string }) => {
+    const db = getCrmDb();
+    const deals = crm.listDeals(db, opts);
+    if (deals.length === 0) { console.log('No deals found.'); return; }
+    for (const d of deals) {
+      const value = d.value_nok != null ? `${d.value_nok} NOK` : '-';
+      console.log(`${d.id}  ${d.stage.padEnd(12)}  ${value.padStart(12)}  ${d.title}`);
+    }
+    console.log(`\n${deals.length} deal(s)`);
+  });
+
+crmDeals.command('get').argument('<id>').action((id: string) => {
+  const db = getCrmDb();
+  const deal = crm.getDeal(db, id);
+  if (!deal) { console.error(`Deal ${id} not found`); process.exit(1); }
+  console.log(JSON.stringify(deal, null, 2));
+});
+
+crmDeals.command('create')
+  .requiredOption('--title <title>', 'Deal title')
+  .option('--value <nok>', 'Value in NOK', parseFloat)
+  .option('--stage <stage>', 'Pipeline stage (default: lead)')
+  .option('--contact <id>', 'Contact ID')
+  .option('--company <id>', 'Company ID')
+  .option('--expected-close <date>', 'Expected close date')
+  .action((opts: { title: string; value?: number; stage?: string; contact?: string; company?: string; expectedClose?: string }) => {
+    const db = getCrmDb();
+    const deal = crm.createDeal(db, { ...opts, value_nok: opts.value, contact_id: opts.contact, company_id: opts.company, expected_close: opts.expectedClose });
+    console.log(deal.id);
+  });
+
+crmDeals.command('update').argument('<id>')
+  .option('--stage <stage>')
+  .option('--value <nok>', 'Value in NOK', parseFloat)
+  .option('--title <title>')
+  .option('--notes <notes>')
+  .action((id: string, opts: { stage?: string; value?: number; title?: string; notes?: string }) => {
+    const db = getCrmDb();
+    const fields: Record<string, string | number | undefined> = {};
+    if (opts.stage !== undefined) fields.stage = opts.stage;
+    if (opts.value !== undefined) fields.value_nok = opts.value;
+    if (opts.title !== undefined) fields.title = opts.title;
+    if (opts.notes !== undefined) fields.notes = opts.notes;
+    crm.updateDeal(db, id, fields);
+    console.log(`Updated ${id}`);
+  });
+
+crmDeals.command('delete').argument('<id>').action((id: string) => {
+  const db = getCrmDb();
+  crm.deleteDeal(db, id);
+  console.log(`Deleted deal ${id}`);
+});
+
+const crmActivities = busCommand.command('crm-activities').description('CRM activity operations');
+
+crmActivities.command('list')
+  .option('--contact <id>', 'Filter by contact')
+  .option('--deal <id>', 'Filter by deal')
+  .option('--type <type>', 'Filter by type')
+  .action((opts: { contact?: string; deal?: string; type?: string }) => {
+    const db = getCrmDb();
+    const activities = crm.listActivities(db, opts);
+    if (activities.length === 0) { console.log('No activities found.'); return; }
+    for (const a of activities) {
+      const date = a.created_at.substring(0, 10);
+      console.log(`${a.id}  ${date}  ${a.type.padEnd(8)}  ${a.subject ?? '-'}`);
+    }
+    console.log(`\n${activities.length} activity(ies)`);
+  });
+
+crmActivities.command('create')
+  .requiredOption('--type <type>', 'Activity type (meeting, email, call, note, task, booking)')
+  .option('--subject <subject>')
+  .option('--body <body>')
+  .option('--contact <id>', 'Contact ID')
+  .option('--deal <id>', 'Deal ID')
+  .option('--meeting <id>', 'Meeting ID')
+  .option('--due <date>', 'Due date for task-type activities')
+  .action((opts: { type: string; subject?: string; body?: string; contact?: string; deal?: string; meeting?: string; due?: string }) => {
+    const env = resolveEnv();
+    const db = getCrmDb();
+    const activity = crm.createActivity(db, { ...opts, contact_id: opts.contact, deal_id: opts.deal, meeting_id: opts.meeting, due_at: opts.due, agent: env.agentName });
+    console.log(activity.id);
+  });
+
+const crmMeetings = busCommand.command('crm-meetings').description('CRM meeting records');
+
+crmMeetings.command('list')
+  .option('--contact <id>', 'Filter by contact')
+  .action((opts: { contact?: string }) => {
+    const db = getCrmDb();
+    const meetings = crm.listMeetings(db, opts);
+    if (meetings.length === 0) { console.log('No meetings found.'); return; }
+    for (const m of meetings) {
+      const date = m.meeting_start?.substring(0, 10) ?? m.created_at.substring(0, 10);
+      console.log(`${m.id}  ${date}  ${m.title ?? '-'}`);
+    }
+    console.log(`\n${meetings.length} meeting(s)`);
+  });
+
+crmMeetings.command('get').argument('<id>').action((id: string) => {
+  const db = getCrmDb();
+  const meeting = crm.getMeeting(db, id);
+  if (!meeting) { console.error(`Meeting ${id} not found`); process.exit(1); }
+  console.log(JSON.stringify(meeting, null, 2));
+});
+
+busCommand.command('crm-pipeline')
+  .description('Pipeline overview with deal counts and values per stage')
+  .action(() => {
+    const db = getCrmDb();
+    const pipeline = crm.getPipeline(db);
+    if (pipeline.length === 0) { console.log('Pipeline is empty.'); return; }
+    let totalValue = 0;
+    let totalCount = 0;
+    for (const p of pipeline) {
+      console.log(`${p.stage.padEnd(14)} ${String(p.count).padStart(3)} deals  ${String(p.total_value).padStart(10)} NOK`);
+      totalValue += p.total_value;
+      totalCount += p.count;
+    }
+    console.log(`${'TOTAL'.padEnd(14)} ${String(totalCount).padStart(3)} deals  ${String(totalValue).padStart(10)} NOK`);
+  });
+
+busCommand.command('crm-follow-ups')
+  .description('Pending follow-up tasks')
+  .option('--due <filter>', 'today|overdue|week')
+  .action((opts: { due?: string }) => {
+    const db = getCrmDb();
+    const dueFilter = opts.due as 'today' | 'overdue' | 'week' | undefined;
+    const followUps = crm.getFollowUps(db, dueFilter ? { due: dueFilter } : undefined);
+    if (followUps.length === 0) { console.log('No pending follow-ups.'); return; }
+    for (const f of followUps) {
+      const due = f.due_at?.substring(0, 10) ?? '-';
+      console.log(`${f.id}  due:${due}  ${f.subject ?? '-'}`);
+    }
+    console.log(`\n${followUps.length} follow-up(s)`);
+  });
+
+const crmDocs = busCommand.command('crm-documents').description('CRM document attachments');
+
+crmDocs.command('list')
+  .option('--contact <id>', 'Filter by contact')
+  .option('--deal <id>', 'Filter by deal')
+  .action((opts: { contact?: string; deal?: string }) => {
+    const db = getCrmDb();
+    const docs = crm.listDocuments(db, opts);
+    if (docs.length === 0) { console.log('No documents.'); return; }
+    for (const d of docs) {
+      console.log(`${d.id}  ${d.filename}  ${d.filepath}  ${d.created_at.substring(0, 10)}`);
+    }
+    console.log(`\n${docs.length} document(s)`);
+  });
+
+crmDocs.command('add')
+  .requiredOption('--file <path>', 'File path')
+  .option('--contact <id>', 'Link to contact')
+  .option('--deal <id>', 'Link to deal')
+  .option('--name <filename>', 'Display name (defaults to basename)')
+  .action((opts: { file: string; contact?: string; deal?: string; name?: string }) => {
+    const { existsSync, statSync } = require('fs');
+    const { basename } = require('path');
+    if (!existsSync(opts.file)) { console.error(`File not found: ${opts.file}`); process.exit(1); }
+    const stat = statSync(opts.file);
+    const env = resolveEnv();
+    const db = getCrmDb();
+    const doc = crm.addDocument(db, {
+      filename: opts.name ?? basename(opts.file),
+      filepath: opts.file,
+      contact_id: opts.contact,
+      deal_id: opts.deal,
+      size_bytes: stat.size,
+      uploaded_by: env.agentName,
+    });
+    console.log(doc.id);
+  });
+
+crmDocs.command('delete').argument('<id>').action((id: string) => {
+  const db = getCrmDb();
+  crm.deleteDocument(db, id);
+  console.log(`Deleted document ${id}`);
+});
+
+const crmReview = busCommand.command('crm-review-queue').description('CRM review queue for low-confidence matches');
+
+crmReview.command('list')
+  .option('--status <status>', 'Filter by status (default: pending)')
+  .action((opts: { status?: string }) => {
+    const db = getCrmDb();
+    const items = crm.listReviewQueue(db, opts);
+    if (items.length === 0) { console.log('No review items.'); return; }
+    for (const item of items) {
+      const ctx = item.context ? JSON.parse(item.context) : {};
+      console.log(`${item.id}  ${item.type}  ${ctx.reason ?? '-'}  ${item.created_at.substring(0, 10)}`);
+    }
+    console.log(`\n${items.length} item(s)`);
+  });
+
+crmReview.command('resolve').argument('<id>')
+  .requiredOption('--action <action>', 'merge|create|dismiss')
+  .action((id: string, opts: { action: string }) => {
+    const env = resolveEnv();
+    const db = getCrmDb();
+    const action = opts.action as 'merge' | 'create' | 'dismiss';
+    if (!['merge', 'create', 'dismiss'].includes(action)) {
+      console.error('Action must be: merge, create, or dismiss');
+      process.exit(1);
+    }
+    crm.resolveReviewItem(db, id, action, env.agentName);
+    console.log(`Resolved ${id} (${action})`);
+  });
+
+busCommand.command('crm-report')
+  .description('Generate CRM reports as HTML and optionally send via Telegram')
+  .argument('<type>', 'Report type: pipeline or meeting')
+  .option('--meeting-id <id>', 'Meeting ID (for meeting report)')
+  .option('--send', 'Send as Telegram document to user')
+  .action(async (type: string, opts: { meetingId?: string; send?: boolean }) => {
+    const db = getCrmDb();
+    let html: string | null = null;
+    let filename = '';
+
+    if (type === 'pipeline') {
+      html = generatePipelineReport(db);
+      filename = `pipeline-report-${new Date().toISOString().split('T')[0]}.html`;
+    } else if (type === 'meeting') {
+      if (!opts.meetingId) { console.error('--meeting-id required for meeting report'); process.exit(1); }
+      html = generateMeetingSummaryHtml(db, opts.meetingId);
+      filename = `meeting-summary-${opts.meetingId.substring(0, 8)}.html`;
+    } else {
+      console.error('Unknown report type. Use: pipeline or meeting');
+      process.exit(1);
+    }
+
+    if (!html) { console.error('No data found for report'); process.exit(1); }
+
+    if (opts.send) {
+      const { writeFileSync, unlinkSync, existsSync } = await import('fs');
+      const { join } = await import('path');
+      const tmpPath = join(process.env.TMPDIR ?? '/tmp', filename);
+      writeFileSync(tmpPath, html);
+
+      const chatId = process.env.CTX_TELEGRAM_CHAT_ID;
+      const botToken = process.env.BOT_TOKEN;
+      if (!chatId || !botToken) {
+        console.log(`Report saved to ${tmpPath} (no Telegram credentials for sending)`);
+        return;
+      }
+
+      try {
+        const { TelegramAPI } = await import('../telegram/api.js');
+        const api = new TelegramAPI(botToken);
+        await api.sendDocument(parseInt(chatId), tmpPath, filename);
+        console.log(`Report sent via Telegram: ${filename}`);
+      } catch (err) {
+        console.error(`Failed to send report: ${err instanceof Error ? err.message : err}`);
+      } finally {
+        if (existsSync(tmpPath)) unlinkSync(tmpPath);
+      }
+    } else {
+      console.log(html);
+    }
+  });
+
+busCommand.command('crm-process-webhooks')
+  .description('Process pending webhook queue (runs AI pipeline for Fathom, creates CRM entries for Cal.com)')
+  .action(async () => {
+    const db = getCrmDb();
+    const result = await processWebhookQueue(db);
+    console.log(`Processed: ${result.processed} | Failed: ${result.failed} | Retrying: ${result.skipped}`);
   });
 
 function sleepMs(ms: number): Promise<void> {
