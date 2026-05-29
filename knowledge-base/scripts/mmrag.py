@@ -1011,24 +1011,47 @@ def ingest_office_doc(client, config, collection, file_path):
 args_force = False
 
 
-def ingest_file(client, config, collection, file_path):
-    """Route a file to the appropriate ingest handler."""
+# Junk filters — these keep directory *traversal* from sweeping in build
+# output and lockfiles. They are deliberately NOT applied to files the caller
+# names explicitly (see should_skip_path): pointing mmrag at a file is an
+# unambiguous request to ingest it, wherever it lives. Without that carve-out a
+# legitimate doc under e.g. vault/SOPs/build/ is silently dropped because the
+# path contains a segment named "build".
+SKIP_NAMES = {".ds_store", "thumbs.db", ".gitignore", ".gitkeep", "package-lock.json",
+              "yarn.lock", "pnpm-lock.yaml", ".eslintcache"}
+SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".env",
+             ".next", ".nuxt", "dist", "build", ".cache", ".turbo",
+             "vendor", ".terraform", ".angular", ".svelte-kit", ".output",
+             "coverage", ".nyc_output", ".pytest_cache", ".mypy_cache"}
+
+
+def should_skip_path(file_path, explicit=False):
+    """Return a skip reason ('junk-name'/'junk-dir'), or None to ingest.
+
+    Junk-name and junk-dir filters apply only during directory traversal
+    (explicit=False). An explicitly-passed file is always honored.
+    """
+    file_path = Path(file_path)
+    if explicit:
+        return None
+    if file_path.name.lower() in SKIP_NAMES:
+        return "junk-name"
+    if set(file_path.parts) & SKIP_DIRS:
+        return "junk-dir"
+    return None
+
+
+def ingest_file(client, config, collection, file_path, explicit=False):
+    """Route a file to the appropriate ingest handler.
+
+    explicit=True means the caller named this exact file (vs. it being
+    discovered by directory traversal); junk-name/junk-dir filters are then
+    bypassed. Size and binary guards always apply.
+    """
     file_path = Path(file_path)
     ext = file_path.suffix.lower()
 
-    # Skip common non-content files
-    skip_names = {".ds_store", "thumbs.db", ".gitignore", ".gitkeep", "package-lock.json",
-                  "yarn.lock", "pnpm-lock.yaml", ".eslintcache"}
-    if file_path.name.lower() in skip_names:
-        return 0
-
-    # Skip junk directories
-    skip_dirs = {".git", "node_modules", "__pycache__", ".venv", "venv", ".env",
-                 ".next", ".nuxt", "dist", "build", ".cache", ".turbo",
-                 "vendor", ".terraform", ".angular", ".svelte-kit", ".output",
-                 "coverage", ".nyc_output", ".pytest_cache", ".mypy_cache"}
-    parts = set(file_path.parts)
-    if parts & skip_dirs:
+    if should_skip_path(file_path, explicit=explicit):
         return 0
 
     # Skip text files > 10MB (likely generated/binary)
@@ -1105,7 +1128,7 @@ def cmd_ingest(args):
             elif p.is_file():
                 print(f"Ingesting: {p.name}")
                 try:
-                    count = ingest_file(client, config, collection, p)
+                    count = ingest_file(client, config, collection, p, explicit=True)
                     total += count
                     if count > 0:
                         print(f"  Added {count} chunk(s)")
