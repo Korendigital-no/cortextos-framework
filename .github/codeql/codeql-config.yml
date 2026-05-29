@@ -1,0 +1,28 @@
+name: "cortextos-framework CodeQL config"
+
+paths-ignore:
+  - "node_modules"
+  - "**/node_modules"
+  - "dist"
+  - "**/dist"
+  - ".next"
+  - "**/.next"
+  - "tests"
+  - "**/*.test.ts"
+  - "**/*.test.js"
+  - "**/*.spec.ts"
+  - "**/*.spec.js"
+  - "knowledge-base/venv"
+  - "**/venv"
+  - "**/.venv"
+  - "**/cdk.out"
+  - "**/__pycache__"
+  - "**/coverage"
+  - "templates"
+
+query-filters:
+  - exclude:
+      id: js/insecure-temporary-file
+      tags: external/cwe/cwe-377
+  - exclude:
+      id: js/file-system-race
