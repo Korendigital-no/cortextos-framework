@@ -62,6 +62,8 @@ export interface ContentPost {
   status: ContentStatus;
   body: string;
   wordCount: number;
+  /** Open PR URL if this post is "published" via the sidecar (PR awaiting merge). */
+  pendingPrUrl?: string;
 }
 
 function toIsoDate(d: string | Date): string {
@@ -124,7 +126,63 @@ export async function getAllPosts(): Promise<ContentPost[]> {
       console.error(`[content] Failed to parse ${f}:`, err);
     }
   }
-  return posts.sort((a, b) => b.date.localeCompare(a.date));
+  return applyPublishSidecar(posts.sort((a, b) => b.date.localeCompare(a.date)));
+}
+
+/**
+ * Overlay the content-publish sidecar onto the raw frontmatter-sourced posts.
+ * After publishApproved opens a PR, it writes the slug → {prUrl, branch, publishedAt}
+ * to a sidecar JSON in the dashboard state dir. We can't store the published
+ * state in the website repo's working tree because publishApproved's final
+ * `git checkout startBranch` reverts the files back to status: approved
+ * (the new commit only exists on the publish branch, awaiting PR merge).
+ *
+ * For each sidecar entry:
+ *   - gh pr view → MERGED → frontmatter has caught up (or will once Vilhelm
+ *     pulls main) → remove from sidecar
+ *   - gh pr view → CLOSED (not merged) → publish cancelled → remove from
+ *     sidecar so the post returns to its on-disk approved state
+ *   - gh pr view → OPEN → override status to "published" + attach prUrl so
+ *     the UI can show a "View PR" link
+ *   - gh pr view → UNKNOWN (gh not installed, network blip, etc) → leave
+ *     sidecar in place + override to published (fail-safe: we'd rather
+ *     misclassify briefly than yank a post out of the UI)
+ */
+async function applyPublishSidecar(posts: ContentPost[]): Promise<ContentPost[]> {
+  const [{ readPending, deletePending }, { fetchPrState }] = await Promise.all([
+    import("./content-publish-pending"),
+    import("./gh-pr-state"),
+  ]);
+  const pending = await readPending();
+  const slugs = Object.keys(pending);
+  if (slugs.length === 0) return posts;
+
+  const toRemove: string[] = [];
+  const overrides = new Map<string, { prUrl: string }>();
+  await Promise.all(
+    slugs.map(async (slug) => {
+      const entry = pending[slug];
+      const state = await fetchPrState(entry.prUrl);
+      if (state === "MERGED" || state === "CLOSED") {
+        toRemove.push(slug);
+        return;
+      }
+      overrides.set(slug, { prUrl: entry.prUrl });
+    }),
+  );
+
+  if (toRemove.length > 0) {
+    try { await deletePending(toRemove); } catch (err) {
+      console.error("[content] failed to clean up sidecar entries:", err);
+    }
+  }
+
+  if (overrides.size === 0) return posts;
+  return posts.map((p) => {
+    const ov = overrides.get(p.slug);
+    if (!ov) return p;
+    return { ...p, status: "published" as const, pendingPrUrl: ov.prUrl };
+  });
 }
 
 export async function getPostBySlug(slug: string): Promise<ContentPost | null> {
