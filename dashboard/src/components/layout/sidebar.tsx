@@ -55,6 +55,7 @@ const navItems: NavItem[] = [
   { label: 'Strategy', href: '/strategy', icon: IconTarget, section: 'ops' },
   { label: 'Analytics', href: '/analytics', icon: IconChartDots3, section: 'ops' },
   { label: 'Accounting', href: '/accounting', icon: IconReceipt, section: 'ops' },
+  { label: 'Content', href: '/content', icon: IconNotes, section: 'ops' },
 
   // Intelligence
   { label: 'Knowledge Base', href: '/knowledge-base', icon: IconBook2, section: 'intel' },
