@@ -17,7 +17,14 @@
 // - PR-only policy (CLAUDE.md): never `git push origin main` directly.
 
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { getAllPosts, getWebsiteRepoPath, setStatus, type ContentPost } from "@/lib/content";
+import {
+  getAllPosts,
+  getWebsiteRepoPath,
+  readStatusFromDisk,
+  revertToApproved,
+  setStatus,
+  type ContentPost,
+} from "@/lib/content";
 import { upsertPending } from "@/lib/content-publish-pending";
 
 const RATE_LIMIT_WINDOW_MS = 30_000;
@@ -48,6 +55,30 @@ function runGh(cwd: string, args: string[]): SpawnSyncReturns<Buffer> {
 function bufferToString(b: Buffer | string | undefined): string {
   if (!b) return "";
   return Buffer.isBuffer(b) ? b.toString("utf-8") : b;
+}
+
+/**
+ * True if a raw post blob's frontmatter declares status: published. Reads only
+ * the fenced `---` block and the top-level `status:` line, tolerating quotes
+ * and a trailing `# comment`. Used to verify the STAGED git blob before commit
+ * without pulling gray-matter into this module's hot path.
+ */
+export function stagedBlobIsPublished(blob: string): boolean {
+  const fence = blob.match(/^﻿?---\r?\n([\s\S]*?)\r?\n---\s*(\r?\n|$)/);
+  if (!fence) return false;
+  for (const line of fence[1].split(/\r?\n/)) {
+    const m = line.match(/^status:\s*(.*)$/);
+    if (!m) continue;
+    let v = m[1].trim();
+    // Strip an unquoted trailing comment.
+    if (!/^["']/.test(v)) v = v.replace(/\s+#.*$/, "").trim();
+    // Strip surrounding quotes.
+    if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
+      v = v.slice(1, -1);
+    }
+    return v === "published";
+  }
+  return false;
 }
 
 /** Build a slug-friendly summary for the branch name from the post slugs. */
@@ -184,12 +215,47 @@ export async function publishApproved(opts: PublishOptions = {}): Promise<Publis
     }
   } catch (err) {
     for (const f of flipped) {
-      try { await setStatus(f.slug, "approved"); } catch { /* best effort */ }
+      // revertToApproved (not setStatus) so the failed-publish stamp is
+      // cleared and the approval trail is preserved — see codex HIGH#3.
+      try { await revertToApproved(f.slug); } catch { /* best effort */ }
     }
     return {
       ok: false,
       published: [],
       message: `Status flip failed, rolled back: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  // 2. VERIFY-ON-DISK guardrail (blocks the "blog-filter-bug" class).
+  //    Before we commit/push/PR, re-read each flipped post's LITERAL BYTES
+  //    ON DISK and assert its status is actually "published". setStatus
+  //    returned a post object claiming success, but a partial atomic-write or
+  //    schema quirk could mean the bytes on disk don't match. Committing here
+  //    would ship a PR whose post still renders as approved (doesn't appear on
+  //    the live blog) — exactly the failure we're hardening against.
+  //    readStatusFromDisk bypasses getAllPosts + applyPublishSidecar so the
+  //    sidecar's "PR-awaiting-merge → show as published" override can NEVER
+  //    mask a still-approved file (codex HIGH#1). This is a true disk
+  //    round-trip, not a re-read of the in-memory `flipped` object or the
+  //    sidecar-overlaid view.
+  //    On ANY mismatch: roll the status flips back (no branch exists yet, so
+  //    rollbackStatusOnly is the correct path) and return ok:false naming the
+  //    offending slug(s). Nothing is committed, pushed, or PR'd.
+  const notPublished: string[] = [];
+  for (const f of flipped) {
+    const onDiskStatus = await readStatusFromDisk(f.slug);
+    if (onDiskStatus !== "published") {
+      notPublished.push(f.slug);
+    }
+  }
+  if (notPublished.length > 0) {
+    await rollbackStatusOnly(flipped);
+    return {
+      ok: false,
+      published: [],
+      message:
+        `Pre-publish verification failed — these post(s) did not flip to "published" on disk: ${notPublished.join(", ")}. ` +
+        `Nothing was committed, pushed, or PR'd; status flips rolled back. Inspect the file(s) and retry.`,
     };
   }
 
@@ -199,7 +265,7 @@ export async function publishApproved(opts: PublishOptions = {}): Promise<Publis
   const baseBranchName = `blog/publish-${todayYYYYMMDD()}-${buildBranchSummary(slugs)}`;
   const filePaths = flipped.map((p) => `content/blog/${p.filename}`);
 
-  // 2. Create a fresh branch off current HEAD. Try up to 5 suffixed names
+  // 3. Create a fresh branch off current HEAD. Try up to 5 suffixed names
   //    if collisions exist locally; check remote too via ls-remote so we
   //    don't try to push over an existing remote branch (per codex HIGH#4).
   let actualBranch: string | null = null;
@@ -229,14 +295,40 @@ export async function publishApproved(opts: PublishOptions = {}): Promise<Publis
     };
   }
 
-  // 3. Stage ONLY the specific flipped post files. `git add content/blog`
+  // 4. Stage ONLY the specific flipped post files. `git add content/blog`
   //    would sweep unapproved drafts and bypass the approve gate.
   const addResult = runGit(cwd, ["add", "--", ...filePaths]);
   if (addResult.status !== 0) {
     return rollback(flipped, "git add failed", bufferToString(addResult.stderr), cwd, startBranch, actualBranch);
   }
 
-  // 4. git commit.
+  // 4b. VERIFY-STAGED-BLOB guardrail (closes the TOCTTOU window — codex
+  //     HIGH#2). The step-2 disk check ran before branch creation; a
+  //     concurrent edit could have reverted a file to "approved" in the
+  //     interim. `git commit` snapshots the STAGED blob, so we read exactly
+  //     that blob back (`git show :<path>`) and assert it declares
+  //     `status: published` in its frontmatter. This is the last gate before
+  //     the commit captures the bytes — anything that didn't make it into the
+  //     index as published is caught here, not shipped.
+  const badStaged: string[] = [];
+  for (const p of flipped) {
+    const rel = `content/blog/${p.filename}`;
+    const show = runGit(cwd, ["show", `:${rel}`]);
+    const blob = bufferToString(show.stdout);
+    if (show.status !== 0 || !stagedBlobIsPublished(blob)) {
+      badStaged.push(p.slug);
+    }
+  }
+  if (badStaged.length > 0) {
+    return rollback(
+      flipped,
+      `staged content for ${badStaged.join(", ")} is not "published" (concurrent edit?) — refusing to commit`,
+      "",
+      cwd, startBranch, actualBranch,
+    );
+  }
+
+  // 5. git commit.
   const commitResult = runGit(cwd, ["commit", "-m", commitMsg]);
   if (commitResult.status !== 0) {
     const stderr = bufferToString(commitResult.stderr);
@@ -252,13 +344,13 @@ export async function publishApproved(opts: PublishOptions = {}): Promise<Publis
     );
   }
 
-  // 5. Push branch to origin (NOT to main — branch only).
+  // 6. Push branch to origin (NOT to main — branch only).
   const pushResult = runGit(cwd, ["push", "-u", "origin", actualBranch]);
   if (pushResult.status !== 0) {
     return rollback(flipped, "git push (branch) failed", bufferToString(pushResult.stderr), cwd, startBranch, actualBranch);
   }
 
-  // 6. Open PR via gh CLI. NO auto-merge — Vilhelm reviews + merges on GitHub.
+  // 7. Open PR via gh CLI. NO auto-merge — Vilhelm reviews + merges on GitHub.
   const prTitle = commitMsg;
   const prBody = [
     `Auto-generated by dashboard /content publish action.`,
@@ -288,7 +380,7 @@ export async function publishApproved(opts: PublishOptions = {}): Promise<Publis
   }
   const prUrl = bufferToString(prResult.stdout).trim().split("\n").pop() ?? "";
 
-  // 7. Record pending PR state in the dashboard's sidecar so the list view
+  // 8. Record pending PR state in the dashboard's sidecar so the list view
   //    can show these posts as "published" until the PR merges. Without
   //    this, the upcoming `git checkout startBranch` reverts the working
   //    tree to startBranch's state (status: approved), and the UI would
@@ -312,7 +404,7 @@ export async function publishApproved(opts: PublishOptions = {}): Promise<Publis
     }
   }
 
-  // 8. Return to starting branch so the working tree is clean for the next
+  // 9. Return to starting branch so the working tree is clean for the next
   //    publish (or for manual git activity).
   runGit(cwd, ["checkout", startBranch]);
 
@@ -340,7 +432,10 @@ export async function publishApproved(opts: PublishOptions = {}): Promise<Publis
  */
 async function rollbackStatusOnly(flipped: ContentPost[]): Promise<void> {
   for (const f of flipped) {
-    try { await setStatus(f.slug, "approved"); } catch { /* best effort */ }
+    // revertToApproved clears the failed-publish stamp (publishedAt/By) and
+    // preserves the approval trail — a plain setStatus(slug,"approved") would
+    // re-stamp approvedAt/By and leave stale publish metadata (codex HIGH#3).
+    try { await revertToApproved(f.slug); } catch { /* best effort */ }
   }
 }
 
