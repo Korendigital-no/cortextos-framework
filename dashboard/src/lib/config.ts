@@ -1,6 +1,7 @@
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
+import { assertSafeOrgIdent, assertSafeAgentIdent } from './safe-path';
 
 // Expand tilde in paths (Node.js doesn't do this automatically)
 function expandTilde(p: string): string {
@@ -38,11 +39,13 @@ export function getFrameworkRoot(): string {
 // -- Org-scoped paths --
 
 export function getOrgDir(org: string): string {
+  assertSafeOrgIdent(org);
   return path.join(CTX_ROOT, 'orgs', org);
 }
 
 export function getTaskDir(org?: string): string {
   if (org) {
+    assertSafeOrgIdent(org);
     return path.join(CTX_ROOT, 'orgs', org, 'tasks');
   }
   return path.join(CTX_ROOT, 'tasks');
@@ -50,6 +53,7 @@ export function getTaskDir(org?: string): string {
 
 export function getApprovalDir(org?: string): string {
   if (org) {
+    assertSafeOrgIdent(org);
     return path.join(CTX_ROOT, 'orgs', org, 'approvals');
   }
   return path.join(CTX_ROOT, 'approvals');
@@ -57,16 +61,20 @@ export function getApprovalDir(org?: string): string {
 
 export function getAnalyticsDir(org?: string): string {
   if (org) {
+    assertSafeOrgIdent(org);
     return path.join(CTX_ROOT, 'orgs', org, 'analytics');
   }
   return path.join(CTX_ROOT, 'analytics');
 }
 
 export function getEventsDir(org: string, agent: string): string {
+  assertSafeOrgIdent(org);
+  assertSafeAgentIdent(agent);
   return path.join(CTX_ROOT, 'orgs', org, 'analytics', 'events', agent);
 }
 
 export function getGoalsPath(org: string): string {
+  assertSafeOrgIdent(org);
   // Check framework root first (where the repo/source lives), then state dir
   const frameworkPath = path.join(CTX_FRAMEWORK_ROOT, 'orgs', org, 'goals.json');
   if (fs.existsSync(frameworkPath)) return frameworkPath;
@@ -77,37 +85,43 @@ export function getGoalsPath(org: string): string {
 }
 
 export function getOrgContextPath(org: string): string {
-  // Org metadata lives in the framework root (the repo), not the state dir
+  assertSafeOrgIdent(org);
   return path.join(CTX_FRAMEWORK_ROOT, 'orgs', org, 'context.json');
 }
 
 export function getOrgBrandVoicePath(org: string): string {
+  assertSafeOrgIdent(org);
   return path.join(CTX_FRAMEWORK_ROOT, 'orgs', org, 'brand-voice.md');
 }
 
 // -- Agent-scoped paths (flat, not org-nested) --
 
 export function getAgentStateDir(agent: string): string {
+  assertSafeAgentIdent(agent);
   return path.join(CTX_ROOT, 'state', agent);
 }
 
 export function getHeartbeatPath(agent: string): string {
+  assertSafeAgentIdent(agent);
   return path.join(CTX_ROOT, 'state', agent, 'heartbeat.json');
 }
 
 export function getInboxDir(agent: string): string {
+  assertSafeAgentIdent(agent);
   return path.join(CTX_ROOT, 'inbox', agent);
 }
 
 export function getLogDir(agent: string): string {
+  assertSafeAgentIdent(agent);
   return path.join(CTX_ROOT, 'logs', agent);
 }
 
 // -- Agent dir within org (IDENTITY.md, SOUL.md, MEMORY.md, .env) --
 
 export function getAgentDir(name: string, org?: string): string {
-  // Check project root first (where agent markdown files live), then state dir
+  assertSafeAgentIdent(name);
   if (org) {
+    assertSafeOrgIdent(org);
     const projectPath = path.join(CTX_FRAMEWORK_ROOT, 'orgs', org, 'agents', name);
     if (fs.existsSync(projectPath)) return projectPath;
     return path.join(CTX_ROOT, 'orgs', org, 'agents', name);
