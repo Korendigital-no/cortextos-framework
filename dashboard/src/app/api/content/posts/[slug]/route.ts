@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { getPostBySlug, updatePost } from "@/lib/content";
+import { getPostBySlug, setStatus, updatePost, type ContentStatus } from "@/lib/content";
 
 export const dynamic = "force-dynamic";
 
@@ -54,7 +54,22 @@ export async function PATCH(
   }
 
   try {
-    const updated = await updatePost(slug, updates);
+    // Route a status change through setStatus so the audit trail
+    // (publishedAt/publishedBy or approvedAt/approvedBy) gets stamped. A bare
+    // updatePost({status}) would flip the status WITHOUT stamping, leaving a
+    // published/approved post with no audit record. If other fields change in
+    // the same request, apply them first (without status), then flip status.
+    const { status, ...rest } = updates as { status?: ContentStatus } & Record<string, unknown>;
+    let updated = await getPostBySlug(slug);
+    if (Object.keys(rest).length > 0) {
+      updated = await updatePost(slug, rest);
+    }
+    if (status !== undefined) {
+      updated = await setStatus(slug, status);
+    }
+    if (!updated) {
+      return Response.json({ error: "Not found" }, { status: 404 });
+    }
     return Response.json({ post: updated });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

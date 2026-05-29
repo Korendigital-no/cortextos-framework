@@ -46,6 +46,14 @@ const FrontmatterSchema = z.object({
   excerpt: z.string().min(1).max(500),
   ogImage: z.string().optional(),
   status: z.enum(STATUS_VALUES).default("draft"),
+  // Audit trail. Optional so older posts (and posts authored outside the
+  // dashboard) still parse. The website blog loader (Korendigital-nettside
+  // PR #4) ACCEPTS these as optional frontmatter and ignores them for
+  // rendering — they exist purely to record who flipped a status and when.
+  publishedAt: z.string().optional(),
+  publishedBy: z.string().optional(),
+  approvedAt: z.string().optional(),
+  approvedBy: z.string().optional(),
 });
 
 export type PostFrontmatter = z.infer<typeof FrontmatterSchema>;
@@ -64,6 +72,14 @@ export interface ContentPost {
   wordCount: number;
   /** Open PR URL if this post is "published" via the sidecar (PR awaiting merge). */
   pendingPrUrl?: string;
+  /** Audit: ISO datetime the post was flipped to published. */
+  publishedAt?: string;
+  /** Audit: actor who flipped the post to published (e.g. "dashboard"). */
+  publishedBy?: string;
+  /** Audit: ISO datetime the post was flipped to approved. */
+  approvedAt?: string;
+  /** Audit: actor who flipped the post to approved (e.g. "dashboard"). */
+  approvedBy?: string;
 }
 
 function toIsoDate(d: string | Date): string {
@@ -112,6 +128,10 @@ async function loadPostFromFile(filename: string): Promise<ContentPost> {
     status: fm.status,
     body: parsed.content,
     wordCount: parsed.content.trim().split(/\s+/).filter(Boolean).length,
+    publishedAt: fm.publishedAt,
+    publishedBy: fm.publishedBy,
+    approvedAt: fm.approvedAt,
+    approvedBy: fm.approvedBy,
   };
 }
 
@@ -218,6 +238,14 @@ interface UpdatePostFields {
   status?: ContentStatus;
   author?: string;
   ogImage?: string;
+  // Audit fields. Pass a string to SET, pass `null` to explicitly CLEAR
+  // (drops the key from frontmatter), omit (undefined) to PRESERVE whatever
+  // `current` already has. The explicit-clear path is what rollback uses to
+  // strip a failed-publish stamp without re-stamping the approval trail.
+  publishedAt?: string | null;
+  publishedBy?: string | null;
+  approvedAt?: string | null;
+  approvedBy?: string | null;
 }
 
 /**
@@ -246,6 +274,21 @@ export async function updatePost(slug: string, fields: UpdatePostFields): Promis
   const og = fields.ogImage ?? current.ogImage;
   if (og !== undefined) merged.ogImage = og;
 
+  // Audit fields follow the same guard plus an explicit-clear path:
+  //   - field === undefined  → PRESERVE current[field] (unrelated edit)
+  //   - field === null       → CLEAR (omit the key from frontmatter)
+  //   - field === string     → SET
+  // Never emit `undefined` (js-yaml would throw). This keeps the
+  // approval/publish trail intact across title/body/tag edits, while still
+  // letting rollback strip a failed-publish stamp.
+  const auditFields = ["publishedAt", "publishedBy", "approvedAt", "approvedBy"] as const;
+  for (const key of auditFields) {
+    const supplied = fields[key];
+    if (supplied === null) continue; // explicit clear → omit the key
+    const value = supplied ?? current[key];
+    if (value !== undefined) merged[key] = value;
+  }
+
   // Re-validate against schema before writing — catches caller misuse.
   FrontmatterSchema.parse(merged);
 
@@ -259,8 +302,79 @@ export async function updatePost(slug: string, fields: UpdatePostFields): Promis
   return (await getPostBySlug(slug))!;
 }
 
-export async function setStatus(slug: string, status: ContentStatus): Promise<ContentPost> {
-  return updatePost(slug, { status });
+/**
+ * Flip a post's status, stamping the audit trail when entering a gated state.
+ *
+ * - → published: stamp publishedAt (now) + publishedBy (actor) ONLY IF not
+ *   already stamped. Re-publishing an already-published post preserves the
+ *   ORIGINAL publish audit (we never overwrite a real first-publish time with
+ *   a later no-op flip). The approval trail (approvedAt/approvedBy) is left
+ *   untouched, so an approved→published flip preserves who approved it
+ *   (updatePost defaults each audit field from `current` when not supplied).
+ * - → approved: stamp approvedAt (now) + approvedBy (actor) ONLY IF not
+ *   already stamped, for the same reason.
+ * - → draft: no stamp.
+ *
+ * `actor` defaults to "dashboard" so existing single-arg call sites keep
+ * working; pass an agent name to attribute the flip to a specific actor.
+ *
+ * NOTE: status changes MUST go through setStatus (not a bare updatePost with
+ * `{status}`) so the audit stamp is applied. The PATCH API route enforces this.
+ */
+export async function setStatus(
+  slug: string,
+  status: ContentStatus,
+  actor = "dashboard",
+): Promise<ContentPost> {
+  const current = await getPostBySlug(slug);
+  if (!current) throw new Error(`Post not found: ${slug}`);
+
+  const fields: UpdatePostFields = { status };
+  if (status === "published") {
+    // Preserve the original first-publish stamp if one already exists.
+    if (!current.publishedAt) fields.publishedAt = new Date().toISOString();
+    if (!current.publishedBy) fields.publishedBy = actor;
+  } else if (status === "approved") {
+    if (!current.approvedAt) fields.approvedAt = new Date().toISOString();
+    if (!current.approvedBy) fields.approvedBy = actor;
+  }
+  return updatePost(slug, fields);
+}
+
+/**
+ * Roll a post back to "approved", clearing any publish stamp written by a
+ * publish attempt that subsequently failed. The APPROVAL trail
+ * (approvedAt/approvedBy) is preserved — only the publish stamp is cleared —
+ * so a failed publish leaves the post exactly as it was when approved, with
+ * no stale publishedAt/publishedBy. Used by the publish-flow rollback paths.
+ */
+export async function revertToApproved(slug: string): Promise<ContentPost> {
+  return updatePost(slug, { status: "approved", publishedAt: null, publishedBy: null });
+}
+
+/**
+ * Read a post's status DIRECTLY from disk, bypassing getAllPosts +
+ * applyPublishSidecar. The sidecar can override an on-disk "approved" post to
+ * report "published" (PR-awaiting-merge UI state), which would make a naive
+ * status check lie. The pre-publish guardrail needs the literal bytes on
+ * disk, so it uses this. Returns null if the file is missing or unparseable.
+ */
+export async function readStatusFromDisk(slug: string): Promise<ContentStatus | null> {
+  if (!SLUG_REGEX.test(slug)) return null;
+  let filepath: string | null;
+  try {
+    filepath = await resolvePostPath(slug);
+  } catch {
+    return null;
+  }
+  if (!filepath) return null;
+  try {
+    const raw = await fs.readFile(filepath, "utf-8");
+    const fm = FrontmatterSchema.parse(matter(raw).data);
+    return fm.status;
+  } catch {
+    return null;
+  }
 }
 
 export function postUrl(slug: string): string {
