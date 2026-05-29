@@ -27,9 +27,19 @@ export function resolvePaths(
   agentName: string,
   instanceId: string = 'default',
   org?: string,
+  ctxRootOverride?: string,
 ): BusPaths {
   validateInstanceId(instanceId);
-  const ctxRoot = join(homedir(), '.cortextos', instanceId);
+  // Honor an explicit override, otherwise derive from instanceId. This stays
+  // a PURE function of its arguments — it deliberately does NOT read
+  // process.env.CTX_ROOT. The authoritative ctxRoot is resolved once by
+  // resolveEnv() (which honors CTX_ROOT and the agent .env) and threaded in
+  // by callers as `ctxRootOverride`; the daemon similarly derives its own
+  // instance-scoped root and passes it explicitly. Reading the ambient
+  // env var here would silently redirect writes for any caller that did not
+  // opt in — including the daemon, which intentionally ignores a parent
+  // shell's inherited CTX_ROOT — causing split-brain state/IPC roots.
+  const ctxRoot = ctxRootOverride || join(homedir(), '.cortextos', instanceId);
 
   // Org-scoped paths for tasks, approvals, analytics
   const orgBase = org ? join(ctxRoot, 'orgs', org) : ctxRoot;
