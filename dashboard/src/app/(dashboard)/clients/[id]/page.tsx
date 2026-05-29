@@ -5,9 +5,12 @@ import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { ToastProvider, useToast } from '@/components/ui/toast';
+import DeleteTaskDialog from '@/components/clients/delete-task-dialog';
+import { deleteClientTask } from '@/lib/client-tasks';
 import {
   IconArrowLeft, IconClock, IconPlus, IconFolder, IconChecklist,
-  IconNote, IconCircleCheck, IconCircle,
+  IconNote, IconCircleCheck, IconCircle, IconTrash,
 } from '@tabler/icons-react';
 
 interface Client {
@@ -38,7 +41,16 @@ function formatNOK(value: number): string {
 }
 
 export default function ClientDetailPage() {
+  return (
+    <ToastProvider>
+      <ClientDetailView />
+    </ToastProvider>
+  );
+}
+
+function ClientDetailView() {
   const { id } = useParams<{ id: string }>();
+  const { toast } = useToast();
   const [tab, setTab] = useState<Tab>('overview');
   const [client, setClient] = useState<Client | null>(null);
   const [timeEntries, setTimeEntries] = useState<TimeEntry[]>([]);
@@ -61,6 +73,7 @@ export default function ClientDetailPage() {
   const [taskTitle, setTaskTitle] = useState('');
   const [taskDue, setTaskDue] = useState('');
   const [taskPriority, setTaskPriority] = useState('normal');
+  const [taskToDelete, setTaskToDelete] = useState<ClientTask | null>(null);
 
   const [showAddNote, setShowAddNote] = useState(false);
   const [noteBody, setNoteBody] = useState('');
@@ -136,6 +149,22 @@ export default function ClientDetailPage() {
       body: JSON.stringify({ status: newStatus }),
     });
     fetchAll();
+  }
+
+  async function confirmDeleteTask() {
+    if (!taskToDelete) return;
+    const target = taskToDelete;
+    const result = await deleteClientTask(id, target.id);
+    setTaskToDelete(null);
+    if (result.ok) {
+      // Optimistically drop the row for instant feedback, then refetch so
+      // dependent views stay correct: project open-task counts, overview
+      // stats, and any task created in another tab since the last load.
+      setTasks(prev => prev.filter(t => t.id !== target.id));
+      fetchAll();
+    } else {
+      toast({ message: result.error, variant: 'error' });
+    }
   }
 
   if (loading) return <div className="space-y-4"><div className="h-8 w-48 rounded bg-muted/30 animate-pulse" /><div className="h-64 rounded-lg bg-muted/30 animate-pulse" /></div>;
@@ -284,11 +313,24 @@ export default function ClientDetailPage() {
                         {t.priority !== 'normal' && <span>{t.priority}</span>}
                       </div>
                     </div>
+                    <button
+                      onClick={() => setTaskToDelete(t)}
+                      aria-label={`Delete task ${t.title}`}
+                      className="shrink-0 rounded-md p-1.5 text-muted-foreground transition-colors hover:text-destructive hover:bg-destructive/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      <IconTrash className="size-4" />
+                    </button>
                   </div>
                 );
               })}
             </div>
           )}
+          <DeleteTaskDialog
+            open={taskToDelete !== null}
+            taskTitle={taskToDelete?.title ?? ''}
+            onConfirm={confirmDeleteTask}
+            onCancel={() => setTaskToDelete(null)}
+          />
         </div>
       )}
 
