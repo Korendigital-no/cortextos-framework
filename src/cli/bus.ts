@@ -3164,6 +3164,16 @@ busCommand.command('crm-process-webhooks')
     console.log(`Processed: ${result.processed} | Failed: ${result.failed} | Retrying: ${result.skipped}`);
   });
 
+busCommand.command('content-status-audit')
+  .description('Scan the website blog for publish drift (posts marked published that would NOT render). Exits non-zero if drift is found.')
+  .action(async () => {
+    const { auditContentStatus, formatAuditReport } = await import('../bus/content-status-audit.js');
+    const report = auditContentStatus();
+    console.log(formatAuditReport(report));
+    // Non-zero exit on drift so a cron/CI step can detect failure.
+    if (!report.ok) process.exitCode = 1;
+  });
+
 function sleepMs(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
