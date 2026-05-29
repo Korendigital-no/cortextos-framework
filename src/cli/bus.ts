@@ -3161,7 +3161,7 @@ busCommand.command('crm-process-webhooks')
   .action(async () => {
     const db = getCrmDb();
     const result = await processWebhookQueue(db);
-    console.log(`Processed: ${result.processed} | Failed: ${result.failed} | Retrying: ${result.skipped}`);
+    console.log(`Processed: ${result.processed} | Failed: ${result.failed} | Retrying: ${result.skipped} | Skipped (test): ${result.skippedTest}`);
   });
 
 busCommand.command('content-status-audit')
