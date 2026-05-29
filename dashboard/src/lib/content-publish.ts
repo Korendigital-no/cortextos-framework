@@ -18,6 +18,7 @@
 
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { getAllPosts, getWebsiteRepoPath, setStatus, type ContentPost } from "@/lib/content";
+import { upsertPending } from "@/lib/content-publish-pending";
 
 const RATE_LIMIT_WINDOW_MS = 30_000;
 let lastPublishAt = 0;
@@ -287,7 +288,31 @@ export async function publishApproved(opts: PublishOptions = {}): Promise<Publis
   }
   const prUrl = bufferToString(prResult.stdout).trim().split("\n").pop() ?? "";
 
-  // 7. Return to starting branch so the working tree is clean for the next
+  // 7. Record pending PR state in the dashboard's sidecar so the list view
+  //    can show these posts as "published" until the PR merges. Without
+  //    this, the upcoming `git checkout startBranch` reverts the working
+  //    tree to startBranch's state (status: approved), and the UI would
+  //    show the post in the Approved tab even though the PR is open and
+  //    awaiting merge. Sidecar lives outside the website repo so it's
+  //    immune to git checkouts/pulls. Self-heals via gh pr view in
+  //    content.ts when state == MERGED or CLOSED.
+  if (prUrl) {
+    const publishedAt = new Date().toISOString();
+    const entries: Record<string, { prUrl: string; branch: string; publishedAt: string }> = {};
+    for (const p of flipped) {
+      entries[p.slug] = { prUrl, branch: actualBranch, publishedAt };
+    }
+    try {
+      await upsertPending(entries);
+    } catch (err) {
+      // Sidecar write failure is non-fatal: PR is created either way.
+      // Log + continue. UI will be wrong (post shows as approved) but
+      // git state is correct and Vilhelm can still merge the PR.
+      console.error("[content-publish] sidecar upsert failed:", err);
+    }
+  }
+
+  // 8. Return to starting branch so the working tree is clean for the next
   //    publish (or for manual git activity).
   runGit(cwd, ["checkout", startBranch]);
 
