@@ -44,7 +44,10 @@ export default async function OverviewPage({
     Promise.resolve(getPendingCount(org || undefined)),
     Promise.resolve(getTasks({ status: 'blocked', org: org || undefined })),
     Promise.resolve(getTasks({ org: org || undefined })),
-    Promise.resolve(getGoals(org || 'default')),
+    // Goals are per-org; when no org is selected, fall back to the first
+    // available org so Current Focus mirrors what Strategy shows by default.
+    // (Other widgets accept undefined / aggregate across orgs.)
+    Promise.resolve(getGoals(org || orgs[0] || 'default')),
     getHealthSummary(org || undefined),
     Promise.resolve(getTasksCompletedToday(org || undefined)),
     Promise.resolve(getRecentEvents(20, org || undefined)),
@@ -121,9 +124,12 @@ export default async function OverviewPage({
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
         <div className="lg:col-span-3">
           <CurrentFocus
-            org={org || 'default'}
+            org={org || orgs[0] || 'default'}
             bottleneck={goalsData.bottleneck}
+            bottleneckBlocks={goalsData.bottleneck_blocks ?? []}
             goals={goalsData.goals}
+            dailyFocus={goalsData.daily_focus}
+            dailyFocusSetAt={goalsData.daily_focus_set_at}
           />
         </div>
         <div className="lg:col-span-2">

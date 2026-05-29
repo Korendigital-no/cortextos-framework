@@ -11,6 +11,7 @@ import type { Goal } from '@/lib/types';
 export default function StrategyPage() {
   const { currentOrg, orgs } = useOrg();
   const [bottleneck, setBottleneck] = useState('');
+  const [bottleneckBlocks, setBottleneckBlocks] = useState<string[]>([]);
   const [goals, setGoals] = useState<Goal[]>([]);
   const [history, setHistory] = useState<Array<{ timestamp: string; change: string }>>([]);
   const [loading, setLoading] = useState(true);
@@ -35,6 +36,7 @@ export default function StrategyPage() {
     ]);
 
     setBottleneck(goalsData.bottleneck);
+    setBottleneckBlocks(goalsData.bottleneck_blocks ?? []);
     setGoals(goalsData.goals);
     setDailyFocus(goalsData.daily_focus);
     setDailyFocusSetAt(goalsData.daily_focus_set_at);
@@ -93,17 +95,22 @@ export default function StrategyPage() {
 
       <BottleneckSection
         bottleneck={bottleneck}
+        blocks={bottleneckBlocks}
+        goals={goals}
         org={effectiveOrg}
         history={history.filter(
           (h) =>
             h.change.toLowerCase().includes('bottleneck'),
         )}
+        onChange={loadData}
       />
 
       <GoalsList
         goals={goals}
         org={effectiveOrg}
         onRefresh={loadData}
+        blockedGoalIds={bottleneckBlocks}
+        bottleneck={bottleneck}
       />
 
       <GoalHistory events={history} />

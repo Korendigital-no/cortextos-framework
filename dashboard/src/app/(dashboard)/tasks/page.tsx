@@ -211,6 +211,7 @@ export default function TasksPage() {
           tasks={displayTasks}
           completedTodayTasks={completedToday}
           onTaskClick={handleTaskClick}
+          onStatusChange={handleStatusChange}
         />
       ) : (
         <TaskListTable tasks={displayTasks} onTaskClick={handleTaskClick} />
