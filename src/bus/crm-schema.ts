@@ -244,4 +244,11 @@ export function initializeCrmSchema(db: Database.Database): void {
   safeAlter(db, 'CREATE INDEX IF NOT EXISTS idx_crm_documents_client ON crm_documents(client_id)');
   safeAlter(db, 'CREATE INDEX IF NOT EXISTS idx_crm_documents_project ON crm_documents(project_id)');
   safeAlter(db, 'CREATE INDEX IF NOT EXISTS idx_crm_time_entries_project ON crm_time_entries(project_id)');
+  // Source-based test isolation (#5): a Cal.com webhook signed with
+  // CALCOM_TEST_WEBHOOK_SECRET is stamped is_test=1 at ingestion. The queue
+  // processor drops is_test=1 jobs to skipped_test before any CRM write or
+  // sales notification, so no contact/deal/activity is ever created from test
+  // traffic — the marker lives only on the audit row, nothing to filter
+  // downstream.
+  safeAlter(db, 'ALTER TABLE crm_webhook_log ADD COLUMN is_test INTEGER DEFAULT 0');
 }

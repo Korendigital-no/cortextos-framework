@@ -358,6 +358,11 @@ function initializeSchema(db: Database.Database): void {
   // built from this file alone still satisfy queries on contact match metadata.
   safeAddColumn(db, 'crm_contacts', 'match_confidence', 'REAL DEFAULT 1.0');
   safeAddColumn(db, 'crm_contacts', 'needs_review', 'INTEGER DEFAULT 0');
+  // Source-based test isolation (#5): the calcom webhook route stamps is_test=1
+  // when a request is signed with CALCOM_TEST_WEBHOOK_SECRET. The framework
+  // queue processor then drops those jobs to skipped_test (no CRM rows created),
+  // so only this audit column is needed. Mirror it so dashboard-built DBs match.
+  safeAddColumn(db, 'crm_webhook_log', 'is_test', 'INTEGER DEFAULT 0');
 
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_accounting_invoices_account ON accounting_invoices(account_id);
