@@ -34,6 +34,11 @@ interface WebhookJob {
   payload: string;
   status: string;
   attempt_count: number;
+  // Source-based test isolation (#5): 1 when the ingestion route verified the
+  // signature against CALCOM_TEST_WEBHOOK_SECRET. Such jobs are dropped to
+  // skipped_test before any CRM write or sales notification — the canonical,
+  // content-independent classifier (the heuristic below is the fallback).
+  is_test?: number;
 }
 
 const DEFAULT_TEST_EMAIL_DOMAINS = [
@@ -432,10 +437,18 @@ export async function processWebhookQueue(db: Database.Database): Promise<{ proc
   let skippedTest = 0;
 
   for (const job of jobs) {
-    // Drop test-runner fixtures before any CRM write or sales notification.
+    // Drop test fixtures before any CRM write or sales notification.
     // status='skipped_test' is terminal (the pending query never re-selects
     // it) and auditable in crm_webhook_log.
-    if (isTestFixtureJob(job)) {
+    //
+    // Two classifiers, source-gate first (#5): job.is_test === 1 means the
+    // ingestion route verified the signature against CALCOM_TEST_WEBHOOK_SECRET
+    // — a content-independent, structural verdict that holds even when a fixture
+    // is indistinguishable from a real booking by payload. isTestFixtureJob is
+    // the legacy content heuristic, kept as a fallback for untagged traffic
+    // (e.g. no test secret configured yet). Nothing is created for either, so
+    // there is zero downstream surface to leak from.
+    if (job.is_test === 1 || isTestFixtureJob(job)) {
       db.prepare("UPDATE crm_webhook_log SET status = 'skipped_test', processed_at = datetime('now'), locked_at = NULL WHERE id = ?").run(job.id);
       skippedTest++;
       continue;
