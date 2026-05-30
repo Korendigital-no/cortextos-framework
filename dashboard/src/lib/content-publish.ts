@@ -204,6 +204,18 @@ export async function publishApproved(opts: PublishOptions = {}): Promise<Publis
     };
   }
 
+  // CLOBBER PROTECTION (#edit-body): this flow ends with `git checkout
+  // startBranch`, which reverts the working tree — so an UNCOMMITTED body edit
+  // sitting in content/blog would be silently destroyed. The fix is policy A
+  // itself: every "edit body" save now commits the file to origin/main
+  // immediately (commitAndPushContentFile), so a body edit is never an
+  // uncommitted working-tree change and cannot be clobbered here. We do NOT add
+  // a blanket "refuse if content/blog is dirty" guard, because the normal
+  // approve→publish path INTENTIONALLY leaves the approve status-flip
+  // uncommitted for this function to read and commit (codex: such a guard would
+  // block the very file it is meant to publish). If a save's commit step fails,
+  // the dashboard already surfaces sync.ok=false so the user resolves it.
+
   // 1. Flip each approved → published in frontmatter (atomic per file).
   //    Preflight has already cleared, so any failure here can roll back
   //    just the disk mutations.

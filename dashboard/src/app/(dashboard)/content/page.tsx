@@ -127,7 +127,20 @@ export default function ContentPage() {
       if (!res.ok) throw new Error(data.error ?? 'Save failed');
       setSelected(data.post);
       setEditingBody(null);
-      setActionMessage({ kind: 'ok', text: 'Saved.' });
+      // Surface canonical-sync status (#edit-body): a body edit is only live
+      // once it reaches origin/main. If the commit/push did not happen, the
+      // edit is saved locally but NOT on the public site — show that as an
+      // error so it is never silently treated as published.
+      const sync = data.sync as { kind: 'pushed' | 'no-change' | 'not-live' | 'error'; message: string } | null | undefined;
+      if (sync && (sync.kind === 'not-live' || sync.kind === 'error')) {
+        // Saved locally but not canonical — surface so it's never mistaken for live.
+        setActionMessage({ kind: 'err', text: sync.message });
+      } else {
+        // "pushed" and "no-change" are both fine; relay the accurate message
+        // rather than claiming "live" (a push to main only renders on the public
+        // blog once the post's status is published).
+        setActionMessage({ kind: 'ok', text: sync?.message ?? 'Saved.' });
+      }
       fetchPosts();
     } catch (err) {
       setActionMessage({ kind: 'err', text: String(err instanceof Error ? err.message : err) });
