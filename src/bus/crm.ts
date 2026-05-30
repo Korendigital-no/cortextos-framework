@@ -388,6 +388,41 @@ export function getFollowUps(
   `).all() as CrmActivity[];
 }
 
+export function getActivity(db: Database.Database, id: string): CrmActivity | null {
+  return (db.prepare('SELECT * FROM crm_activities WHERE id = ?').get(id) as CrmActivity | undefined) ?? null;
+}
+
+/**
+ * True when an activity is a pending follow-up: a task with a due date that
+ * has not yet been completed — the same predicate getFollowUps lists by. The
+ * `crm-follow-ups resolve` command uses this so it only ever completes rows
+ * that are actually follow-ups, never an unrelated note/email/booking.
+ */
+export function isPendingFollowUp(activity: CrmActivity): boolean {
+  return activity.type === 'task' && activity.due_at != null && activity.completed_at == null;
+}
+
+/**
+ * Mark an activity complete by stamping completed_at. Task-type activities
+ * (follow-ups) drop out of getFollowUps once completed. Returns the updated
+ * row, or null if no activity has that id (caller decides how to report).
+ */
+export function completeActivity(db: Database.Database, id: string): CrmActivity | null {
+  const existing = db.prepare('SELECT * FROM crm_activities WHERE id = ?').get(id) as CrmActivity | undefined;
+  if (!existing) return null;
+  db.prepare('UPDATE crm_activities SET completed_at = ? WHERE id = ?').run(now(), id);
+  return db.prepare('SELECT * FROM crm_activities WHERE id = ?').get(id) as CrmActivity;
+}
+
+/**
+ * Permanently delete an activity. Returns true if a row was removed, false if
+ * the id did not exist (idempotent — deleting an absent row is not an error).
+ */
+export function deleteActivity(db: Database.Database, id: string): boolean {
+  const res = db.prepare('DELETE FROM crm_activities WHERE id = ?').run(id);
+  return res.changes > 0;
+}
+
 // --- Meetings ---
 
 export function createMeeting(

@@ -2978,6 +2978,31 @@ crmActivities.command('create')
     console.log(activity.id);
   });
 
+crmActivities.command('complete')
+  .description('Mark a task/follow-up activity complete (stamps completed_at)')
+  .argument('<id>')
+  .action((id: string) => {
+    const db = getCrmDb();
+    const done = crm.completeActivity(db, id);
+    if (!done) { console.error(`Activity ${id} not found`); process.exit(1); }
+    console.log(`Completed ${id}${done.subject ? ` (${done.subject})` : ''}`);
+  });
+
+crmActivities.command('delete')
+  .description('Permanently delete an activity (requires --force; data deletion)')
+  .argument('<id>')
+  .option('--force', 'Confirm permanent deletion')
+  .action((id: string, opts: { force?: boolean }) => {
+    const db = getCrmDb();
+    if (!opts.force) {
+      console.error(`Refusing to delete activity ${id} without --force. This permanently removes the row (data deletion). Re-run with --force to confirm.`);
+      process.exit(1);
+    }
+    const deleted = crm.deleteActivity(db, id);
+    if (!deleted) { console.error(`Activity ${id} not found`); process.exit(1); }
+    console.log(`Deleted activity ${id}`);
+  });
+
 const crmMeetings = busCommand.command('crm-meetings').description('CRM meeting records');
 
 crmMeetings.command('list')
@@ -3016,8 +3041,10 @@ busCommand.command('crm-pipeline')
     console.log(`${'TOTAL'.padEnd(14)} ${String(totalCount).padStart(3)} deals  ${String(totalValue).padStart(10)} NOK`);
   });
 
-busCommand.command('crm-follow-ups')
-  .description('Pending follow-up tasks')
+const crmFollowUps = busCommand.command('crm-follow-ups').description('Pending follow-up tasks');
+
+crmFollowUps.command('list', { isDefault: true })
+  .description('List pending follow-up tasks')
   .option('--due <filter>', 'today|overdue|week')
   .action((opts: { due?: string }) => {
     const db = getCrmDb();
@@ -3029,6 +3056,27 @@ busCommand.command('crm-follow-ups')
       console.log(`${f.id}  due:${due}  ${f.subject ?? '-'}`);
     }
     console.log(`\n${followUps.length} follow-up(s)`);
+  });
+
+// A follow-up is a task-type activity; resolving one stamps completed_at so it
+// drops out of the pending list. Alias of `crm-activities complete`.
+crmFollowUps.command('resolve')
+  .alias('complete')
+  .description('Resolve (complete) a pending follow-up task by id')
+  .argument('<id>')
+  .action((id: string) => {
+    const db = getCrmDb();
+    const activity = crm.getActivity(db, id);
+    if (!activity) { console.error(`Follow-up ${id} not found`); process.exit(1); }
+    // Scope guard: this command only resolves rows that are actually pending
+    // follow-ups. Use `crm-activities complete` for arbitrary activities.
+    if (!crm.isPendingFollowUp(activity)) {
+      const why = activity.completed_at ? 'already completed' : `not a pending follow-up (type=${activity.type}, due_at=${activity.due_at ?? 'none'})`;
+      console.error(`${id} is ${why}. Use \`crm-activities complete\` to complete a non-follow-up activity.`);
+      process.exit(1);
+    }
+    const done = crm.completeActivity(db, id);
+    console.log(`Resolved follow-up ${id}${done?.subject ? ` (${done.subject})` : ''}`);
   });
 
 const crmDocs = busCommand.command('crm-documents').description('CRM document attachments');

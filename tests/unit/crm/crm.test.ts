@@ -8,7 +8,8 @@ import {
   createContact, getContact, listContacts, updateContact, upsertContactByEmail,
   createCompany, getCompany, listCompanies, updateCompany,
   createDeal, getDeal, listDeals, updateDeal, getPipeline,
-  createActivity, listActivities, getFollowUps,
+  createActivity, listActivities, getFollowUps, completeActivity, deleteActivity,
+  getActivity, isPendingFollowUp,
   createMeeting, getMeeting, listMeetings,
   logWebhook,
 } from '../../../src/bus/crm.js';
@@ -204,6 +205,61 @@ describe('Follow-ups', () => {
     const overdue = getFollowUps(db, { due: 'overdue' });
     expect(overdue.length).toBe(1);
     expect(overdue[0].subject).toBe('Overdue');
+  });
+});
+
+describe('completeActivity', () => {
+  it('sets completed_at and removes the task from pending follow-ups', () => {
+    const yesterday = new Date(Date.now() - 86400000).toISOString();
+    const task = createActivity(db, { type: 'task', subject: 'Send proposal', due_at: yesterday });
+    expect(task.completed_at).toBeNull();
+    expect(getFollowUps(db).length).toBe(1);
+
+    const done = completeActivity(db, task.id);
+    expect(done).not.toBeNull();
+    expect(done!.completed_at).toBeTruthy();
+
+    // Completed task no longer surfaces as a pending follow-up.
+    expect(getFollowUps(db).length).toBe(0);
+  });
+
+  it('returns null for a non-existent id (no throw)', () => {
+    expect(completeActivity(db, 'does-not-exist')).toBeNull();
+  });
+});
+
+describe('isPendingFollowUp / getActivity (resolve scope guard)', () => {
+  it('isPendingFollowUp is true only for incomplete task rows with a due date', () => {
+    const yesterday = new Date(Date.now() - 86400000).toISOString();
+    const followUp = createActivity(db, { type: 'task', subject: 'fu', due_at: yesterday });
+    const note = createActivity(db, { type: 'note', subject: 'just a note' });
+    const taskNoDue = createActivity(db, { type: 'task', subject: 'no due' });
+
+    expect(isPendingFollowUp(getActivity(db, followUp.id)!)).toBe(true);
+    expect(isPendingFollowUp(getActivity(db, note.id)!)).toBe(false); // wrong type
+    expect(isPendingFollowUp(getActivity(db, taskNoDue.id)!)).toBe(false); // no due date
+
+    // Once completed, it is no longer a pending follow-up.
+    completeActivity(db, followUp.id);
+    expect(isPendingFollowUp(getActivity(db, followUp.id)!)).toBe(false);
+  });
+
+  it('getActivity returns null for a missing id', () => {
+    expect(getActivity(db, 'nope')).toBeNull();
+  });
+});
+
+describe('deleteActivity', () => {
+  it('deletes an existing activity and returns true', () => {
+    const a = createActivity(db, { type: 'task', subject: 'orphan' });
+    expect(listActivities(db).length).toBe(1);
+
+    expect(deleteActivity(db, a.id)).toBe(true);
+    expect(listActivities(db).length).toBe(0);
+  });
+
+  it('returns false when the id does not exist (idempotent, no throw)', () => {
+    expect(deleteActivity(db, 'does-not-exist')).toBe(false);
   });
 });
 
