@@ -79,47 +79,56 @@ async function fetchFresh(): Promise<QuotaSnapshot | null> {
   const auth = getOAuthToken();
   if (!auth) return null;
 
-  const response = await fetch(ANTHROPIC_USAGE_URL, {
-    headers: {
-      Authorization: `Bearer ${auth.token}`,
-      'anthropic-beta': 'oauth-2025-04-20',
-    },
-  });
-  if (!response.ok) return null;
+  try {
+    const response = await fetch(ANTHROPIC_USAGE_URL, {
+      headers: {
+        Authorization: `Bearer ${auth.token}`,
+        'anthropic-beta': 'oauth-2025-04-20',
+      },
+    });
+    if (!response.ok) return null;
 
-  // The Anthropic OAuth usage API actually returns NESTED objects:
-  //   { five_hour: { utilization: 77.0, resets_at: "..." }, seven_day: {...}, ... }
-  // We previously parsed flat fields (five_hour_utilization) which always
-  // returned undefined → normalize → 0 → "100% remaining" regardless of
-  // real usage. Hence the "stuck at 100%" UX bug. Keep the flat fallbacks
-  // in case the API ever returns either shape.
-  const data = (await response.json()) as {
-    five_hour?: { utilization?: number };
-    seven_day?: { utilization?: number };
-    five_hour_utilization?: number;
-    seven_day_utilization?: number;
-    fiveHourUtilization?: number;
-    sevenDayUtilization?: number;
-  };
+    // The Anthropic OAuth usage API actually returns NESTED objects:
+    //   { five_hour: { utilization: 77.0, resets_at: "..." }, seven_day: {...}, ... }
+    // We previously parsed flat fields (five_hour_utilization) which always
+    // returned undefined → normalize → 0 → "100% remaining" regardless of
+    // real usage. Hence the "stuck at 100%" UX bug. Keep the flat fallbacks
+    // in case the API ever returns either shape.
+    const data = (await response.json()) as {
+      five_hour?: { utilization?: number };
+      seven_day?: { utilization?: number };
+      five_hour_utilization?: number;
+      seven_day_utilization?: number;
+      fiveHourUtilization?: number;
+      sevenDayUtilization?: number;
+    };
 
-  const normalize = (v: number | undefined): number => {
-    if (v === undefined || v === null) return 0;
-    return v > 1 ? v / 100 : v;
-  };
+    const normalize = (v: number | undefined): number => {
+      if (v === undefined || v === null) return 0;
+      return v > 1 ? v / 100 : v;
+    };
 
-  const fiveH = normalize(
-    data.five_hour?.utilization ?? data.five_hour_utilization ?? data.fiveHourUtilization,
-  );
-  const sevenD = normalize(
-    data.seven_day?.utilization ?? data.seven_day_utilization ?? data.sevenDayUtilization,
-  );
+    const fiveH = normalize(
+      data.five_hour?.utilization ?? data.five_hour_utilization ?? data.fiveHourUtilization,
+    );
+    const sevenD = normalize(
+      data.seven_day?.utilization ?? data.seven_day_utilization ?? data.sevenDayUtilization,
+    );
 
-  return {
-    five_hour_remaining_pct: Math.round((1 - fiveH) * 100),
-    seven_day_remaining_pct: Math.round((1 - sevenD) * 100),
-    fetched_at: new Date().toISOString(),
-    source: auth.source,
-  };
+    return {
+      five_hour_remaining_pct: Math.round((1 - fiveH) * 100),
+      seven_day_remaining_pct: Math.round((1 - sevenD) * 100),
+      fetched_at: new Date().toISOString(),
+      source: auth.source,
+    };
+  } catch {
+    // Connection-level failures (EHOSTUNREACH, DNS, TLS, abort) reject the
+    // fetch promise rather than returning a non-ok response. Swallow them and
+    // return null so fetchQuotaSnapshot falls through to the last-good cache —
+    // the documented contract. Without this, a transient network blip becomes
+    // an unhandled 500 on /api/quota and a Sentry error (JAVASCRIPT-NEXTJS-2).
+    return null;
+  }
 }
 
 /**
