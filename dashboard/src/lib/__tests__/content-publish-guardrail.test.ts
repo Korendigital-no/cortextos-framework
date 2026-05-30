@@ -234,4 +234,29 @@ describe("publishApproved verify-on-disk guardrail", () => {
     );
     expect(committed).toBe(true);
   });
+
+  // Regression (#edit-body): the approve→publish path leaves the approve
+  // status-flip uncommitted in content/blog for publishApproved to read and
+  // commit. Publishing must NOT be blocked by that expected dirty state (an
+  // earlier over-broad clobber guard did exactly that). Clobber protection
+  // comes from policy A instead — body-edit saves commit immediately, so no
+  // uncommitted body edit ever exists to clobber.
+  it("PUBLISHES normally even though the approve status-flip is uncommitted on disk", async () => {
+    diskState.set("post-x", makePost("post-x", "approved"));
+    setStatusPersists = true;
+    spawnSync.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === "git" && args[0] === "status") {
+        // approve left an uncommitted frontmatter change — the normal state.
+        return { status: 0, stdout: Buffer.from(" M content/blog/post-x.md\n"), stderr: Buffer.from("") };
+      }
+      return defaultSpawnImpl(cmd, args);
+    });
+
+    const { publishApproved } = await importPublish();
+    const result = await publishApproved();
+
+    expect(result.ok).toBe(true);
+    const committed = spawnSync.mock.calls.some(([cmd, args]) => cmd === "git" && args[0] === "commit");
+    expect(committed).toBe(true);
+  });
 });

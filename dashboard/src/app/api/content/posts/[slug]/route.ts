@@ -1,5 +1,7 @@
 import { NextRequest } from "next/server";
-import { getPostBySlug, setStatus, updatePost, type ContentStatus } from "@/lib/content";
+import path from "node:path";
+import { getPostBySlug, setStatus, updatePost, getWebsiteRepoPath, resolvePostPath, readStatusFromDisk, type ContentStatus } from "@/lib/content";
+import { commitAndPushContentFile } from "@/lib/content-git";
 
 export const dynamic = "force-dynamic";
 
@@ -60,17 +62,42 @@ export async function PATCH(
     // published/approved post with no audit record. If other fields change in
     // the same request, apply them first (without status), then flip status.
     const { status, ...rest } = updates as { status?: ContentStatus } & Record<string, unknown>;
+    // A status flip belongs to the publish PR flow, not a direct push to main.
+    // But a `status` that EQUALS the on-disk status is not a flip (codex P2) —
+    // a full-form save like { body, status: "draft" } on a draft post must
+    // still canonicalise the body edit, not skip it.
+    const diskStatus = await readStatusFromDisk(slug);
+    const statusChanges = status !== undefined && status !== diskStatus;
+
     let updated = await getPostBySlug(slug);
+    let sync: Awaited<ReturnType<typeof commitAndPushContentFile>> | null = null;
     if (Object.keys(rest).length > 0) {
       updated = await updatePost(slug, rest);
+      // Policy A (#edit-body): a content edit is canonical only once it reaches
+      // origin/main — otherwise the editor and the public site (Vercel from
+      // origin/main) diverge, which is exactly the bug this fixes. Commit +
+      // push JUST this file and return the outcome so the UI can warn if the
+      // edit was saved locally but did not reach the canonical repo. Skip only
+      // when this request actually changes status (the publish flow owns that).
+      if (!statusChanges) {
+        const absPath = await resolvePostPath(slug);
+        if (absPath) {
+          const relPath = path.relative(getWebsiteRepoPath(), absPath);
+          sync = await commitAndPushContentFile(
+            getWebsiteRepoPath(),
+            relPath,
+            `content: edit ${slug} via dashboard`,
+          );
+        }
+      }
     }
-    if (status !== undefined) {
+    if (statusChanges) {
       updated = await setStatus(slug, status);
     }
     if (!updated) {
       return Response.json({ error: "Not found" }, { status: 404 });
     }
-    return Response.json({ post: updated });
+    return Response.json({ post: updated, sync });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes("Post not found")) {

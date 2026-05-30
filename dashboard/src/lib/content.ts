@@ -259,6 +259,15 @@ export async function updatePost(slug: string, fields: UpdatePostFields): Promis
   const current = await getPostBySlug(slug);
   if (!current) throw new Error(`Post not found: ${slug}`);
 
+  // Status must come from the RAW on-disk frontmatter, never from `current`
+  // (codex P1): getPostBySlug overlays the sidecar status as "published" for a
+  // post with an open publish PR while the file on disk is still "approved".
+  // Serializing that overlaid status would flip the post to published and — via
+  // the policy-A commit+push — make it live from a mere body edit, bypassing
+  // the publish PR merge. readStatusFromDisk reads the literal bytes, so a body
+  // edit preserves the real on-disk status.
+  const diskStatus = await readStatusFromDisk(slug);
+
   const merged: Record<string, unknown> = {
     title: fields.title ?? current.title,
     date: current.date,
@@ -266,7 +275,7 @@ export async function updatePost(slug: string, fields: UpdatePostFields): Promis
     tags: fields.tags ?? current.tags,
     author: fields.author ?? current.author,
     excerpt: fields.excerpt ?? current.excerpt,
-    status: fields.status ?? current.status,
+    status: fields.status ?? diskStatus ?? current.status,
   };
   // Only include ogImage when it's set — js-yaml dumper rejects `undefined`
   // values with "unacceptable kind of an object to dump [object Undefined]"
