@@ -101,8 +101,3 @@ self.addEventListener("fetch", (event) => {
     );
   }
 });
-
-// Let the page trigger an immediate update (skip the waiting state).
-self.addEventListener("message", (event) => {
-  if (event.data === "SKIP_WAITING") self.skipWaiting();
-});
