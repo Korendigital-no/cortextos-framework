@@ -8,7 +8,27 @@ import {
   logWebhook,
 } from './crm.js';
 
+/**
+ * True when running inside the test suite. Vitest sets `VITEST=true` and
+ * `NODE_ENV=test` automatically; either signal is sufficient.
+ */
+function isTestRun(): boolean {
+  return Boolean(process.env.VITEST) || process.env.NODE_ENV === 'test';
+}
+
 function notifySales(message: string): void {
+  // Source-level kill for the recurring "test-fixture leak" to the live sales
+  // agent. The CRM processor functions (processCalcomWebhook / processFathomWebhook
+  // / processWebhookQueue) are exercised directly by the unit suite with fixture
+  // payloads. Without this guard, ANY test run in an environment that happens to
+  // have CTX_FRAMEWORK_ROOT set (e.g. an agent or cron running `npm test` on the
+  // live host) execFiles the real CLI and pings the live sales inbox with fixture
+  // data — leaving NO row in crm_webhook_log because tests use a temp DB. That is
+  // why the leak was intermittent (fires only when the suite runs) and untraceable.
+  // The #5 signature gate, the isTestFixtureJob content heuristic, and the
+  // sales-side filter only mask the symptom; this is the source. Tests must never
+  // produce real outbound notifications.
+  if (isTestRun()) return;
   const frameworkRoot = process.env.CTX_FRAMEWORK_ROOT;
   if (!frameworkRoot) return;
   const cliPath = join(frameworkRoot, 'dist', 'cli.js');
