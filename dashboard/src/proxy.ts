@@ -66,16 +66,27 @@ function applyCorsHeaders(headers: Headers, allowedOrigin: string | null): void 
  * Public path predicate. Uses segment-exact comparison so `/login` matches
  * `/login` and `/login/<anything>` but NOT `/login-bypass` or `/loginx`.
  */
-function isPublicPath(pathname: string): boolean {
-  // Static segment whitelist
-  const publicSegments = ['/login', '/api/auth', '/_next'];
+export function isPublicPath(pathname: string): boolean {
+  // Static segment whitelist. `/icons` + `/offline` are PWA assets: the browser
+  // fetches them on first load (often from the unauthenticated /login screen) to
+  // register the service worker and render the offline shell. Gating them behind
+  // auth makes the SW script + manifest resolve to a /login redirect (HTML),
+  // which the browser rejects — breaking install/offline. They carry no
+  // user data, so they are safe to serve publicly.
+  const publicSegments = ['/login', '/api/auth', '/_next', '/icons', '/offline'];
   for (const seg of publicSegments) {
     if (pathname === seg || pathname.startsWith(seg + '/')) return true;
   }
   // Webhook endpoints under /api/crm/webhooks/<provider>
   if (pathname.startsWith('/api/crm/webhooks/')) return true;
-  // Special files
-  if (pathname === '/favicon.ico') return true;
+  // Special files — favicon + PWA root assets (service worker + web manifest).
+  if (
+    pathname === '/favicon.ico' ||
+    pathname === '/sw.js' ||
+    pathname === '/manifest.webmanifest'
+  ) {
+    return true;
+  }
   return false;
 }
 
