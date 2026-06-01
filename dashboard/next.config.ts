@@ -20,6 +20,13 @@ const allowedDevOrigins = (process.env.DASHBOARD_ALLOWED_DEV_ORIGINS ?? '')
 const nextConfig: NextConfig = {
   serverExternalPackages: ['better-sqlite3'],
   ...(allowedDevOrigins.length > 0 && { allowedDevOrigins }),
+  async redirects() {
+    return [
+      // Research moved from a CRM sub-route to a top-level page. Preserve old
+      // bookmarks/links with a permanent (308) redirect.
+      { source: '/crm/research', destination: '/research', permanent: true },
+    ];
+  },
   async headers() {
     return [
       {

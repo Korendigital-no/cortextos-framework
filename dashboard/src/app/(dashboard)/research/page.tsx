@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useMemo, useState, useCallback } from 'react';
-import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { IconArrowLeft, IconFileText, IconSearch, IconArrowsSort, IconCalendar } from '@tabler/icons-react';
@@ -158,11 +157,6 @@ export default function ResearchPage() {
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-3">
-        <Link href="/crm">
-          <Button variant="ghost" size="icon-sm">
-            <IconArrowLeft className="size-4" />
-          </Button>
-        </Link>
         <div className="flex-1">
           <h1 className="text-2xl font-semibold">Research</h1>
           <p className="text-sm text-muted-foreground">
