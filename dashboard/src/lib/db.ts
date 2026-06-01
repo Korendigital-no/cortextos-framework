@@ -376,13 +376,24 @@ function initializeSchema(db: Database.Database): void {
   `);
 }
 
-function safeAddColumn(db: Database.Database, table: string, column: string, ddl: string): void {
+export function safeAddColumn(db: Database.Database, table: string, column: string, ddl: string): void {
   // Identifiers are caller-controlled (constants), not user input. Parameter binding
   // is not supported for DDL identifiers in SQLite, so concatenation is correct here.
-  const cols = db.prepare('PRAGMA table_info(' + table + ')').all() as Array<{ name: string }>;
-  if (cols.some(c => c.name === column)) return;
+  //
+  // Race-safety: a PRAGMA table_info check followed by ALTER is NOT atomic across
+  // processes. `next build` collects page data in parallel worker processes that
+  // each open this same SQLite file and run migrations; two workers can both see
+  // the column absent and both ALTER, so the loser throws "duplicate column name"
+  // and fails the build intermittently. Attempt the ALTER and treat duplicate-
+  // column as the benign idempotent outcome it is — the column exists afterward
+  // either way. Mirrors the framework's safeAlter (src/bus/crm-schema.ts).
   const sql = 'ALTER TABLE ' + table + ' ADD COLUMN ' + column + ' ' + ddl;
-  db.exec(sql);
+  try {
+    db.exec(sql);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!/duplicate column name|already exists/i.test(msg)) throw err;
+  }
 }
 
 function migrateAccountsForPersonalType(db: Database.Database): void {
