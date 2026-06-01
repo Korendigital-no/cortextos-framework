@@ -5,6 +5,7 @@ import { atomicWriteSync, ensureDir } from '../utils/atomic.js';
 import { randomDigits } from '../utils/random.js';
 import { validatePriority } from '../utils/validate.js';
 import { logEvent } from './event.js';
+import { buildTaskHandledMeta, type MeasurementOutcome } from './measurement.js';
 
 /**
  * Create a new task. Identical JSON format to bash create-task.sh.
@@ -23,6 +24,8 @@ export function createTask(
     dueDate?: string;
     blockedBy?: string[];
     blocks?: string[];
+    /** Måle-garanti context — present only for client-work tasks (auto-emits on complete). */
+    measurement?: Task['measurement'];
   } = {},
 ): string {
   const {
@@ -34,6 +37,7 @@ export function createTask(
     dueDate = '',
     blockedBy = [],
     blocks = [],
+    measurement,
   } = options;
 
   validatePriority(priority);
@@ -80,6 +84,7 @@ export function createTask(
     archived: false,
     ...(blockedBy.length ? { blocked_by: [...blockedBy] } : {}),
     ...(blocks.length ? { blocks: [...blocks] } : {}),
+    ...(measurement ? { measurement } : {}),
   };
 
   ensureDir(paths.taskDir);
@@ -456,6 +461,13 @@ export function completeTask(
   paths: BusPaths,
   taskId: string,
   result?: string,
+  /**
+   * Completion-time measurement facts. Only used when the task carries a
+   * `measurement` block (client work); ignored for internal tasks. Lets the
+   * caller record the residual human time and a non-`completed` outcome at the
+   * moment of completion.
+   */
+  measurementOpts?: { human_touch_seconds?: number; outcome?: MeasurementOutcome },
 ): void {
   const filePath = findTaskFile(paths, taskId);
   if (!filePath) {
@@ -466,15 +478,19 @@ export function completeTask(
   let prevStatus: TaskStatus | undefined;
   let assignee: string | undefined;
   let taskOrg: string = '';
+  let taskMeasurement: Task['measurement'];
+  let completedAt = '';
   try {
     const content = readFileSync(filePath, 'utf-8');
     const task: Task = JSON.parse(content);
     prevStatus = task.status;
     assignee = task.assigned_to;
     taskOrg = task.org || '';
+    taskMeasurement = task.measurement;
     task.status = 'completed';
     task.updated_at = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
     task.completed_at = task.updated_at;
+    completedAt = task.updated_at;
     if (result) {
       task.result = result;
     }
@@ -493,6 +509,38 @@ export function completeTask(
       });
     } catch {
       // Never let observability break task completion.
+    }
+
+    // Måle-garanti auto-emission: a client-work task (one carrying `measurement`)
+    // emits a measurement/task_handled event on completion, so the guarantee is
+    // measured live instead of via a manual log-measurement call. Internal tasks
+    // (no measurement block) never emit, keeping guarantee data to real client
+    // work only. Gated on an ACTUAL transition into completed (prevStatus !==
+    // 'completed') so a retry / accidental second complete-task can't emit a
+    // duplicate and double-count saved time (codex P2). Best-effort — never let
+    // it break completion.
+    if (taskMeasurement && prevStatus !== 'completed') {
+      try {
+        const meta = buildTaskHandledMeta(taskMeasurement, {
+          agent_id: assignee,
+          completed_at: completedAt,
+          human_touch_seconds: measurementOpts?.human_touch_seconds,
+          outcome: measurementOpts?.outcome,
+        });
+        // Emit into the TASK's org analytics tree, not the completing agent's.
+        // completeTask resolves tasks across orgs (findTaskFile), so an agent in
+        // a sibling org can complete a client task; the event must land where
+        // `measurement-report` for that client/org scans it. Mirrors resolvePaths'
+        // org layout ({ctxRoot}/orgs/{org}/analytics) — same dir when same org
+        // (codex P2).
+        const emitPaths = taskOrg
+          ? { ...paths, analyticsDir: join(paths.ctxRoot, 'orgs', taskOrg, 'analytics') }
+          : paths;
+        logEvent(emitPaths, assignee, taskOrg, 'measurement', 'task_handled', 'info', JSON.stringify(meta));
+      } catch {
+        // A malformed measurement must not block task completion; the task is
+        // already persisted. (validateMeasurementMeta throwing lands here.)
+      }
     }
   }
 }
