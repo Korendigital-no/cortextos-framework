@@ -58,6 +58,7 @@ const navItems: NavItem[] = [
   { label: 'Content', href: '/content', icon: IconNotes, section: 'ops' },
 
   // Intelligence
+  { label: 'Research', href: '/research', icon: IconSearch, section: 'intel' },
   { label: 'Knowledge Base', href: '/knowledge-base', icon: IconBook2, section: 'intel' },
   { label: 'Wiki', href: '/wiki', icon: IconNotes, section: 'intel' },
   { label: 'Experiments', href: '/experiments', icon: IconFlask, section: 'intel' },
