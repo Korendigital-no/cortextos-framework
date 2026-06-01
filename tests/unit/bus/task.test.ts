@@ -793,3 +793,96 @@ describe('compactTasks — semantic compaction of old completed tasks', () => {
     expect(existsSync(join(paths.taskDir, `${id}.json`))).toBe(true);
   });
 });
+
+describe('completeTask måle-garanti auto-emission', () => {
+  let dir: string;
+  let p: BusPaths;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'cortextos-emit-test-'));
+    p = {
+      ctxRoot: dir,
+      inbox: join(dir, 'inbox', 'a'),
+      inflight: join(dir, 'inflight', 'a'),
+      processed: join(dir, 'processed', 'a'),
+      logDir: join(dir, 'logs', 'a'),
+      stateDir: join(dir, 'state', 'a'),
+      taskDir: join(dir, 'tasks'),
+      approvalDir: join(dir, 'approvals'),
+      analyticsDir: join(dir, 'analytics'),
+      heartbeatDir: join(dir, 'heartbeats'),
+    };
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  // Reads from the TASK's org analytics tree ({ctxRoot}/orgs/{org}/analytics),
+  // NOT p.analyticsDir. This doubles as the cross-org regression check: the emit
+  // must land in the task's org tree (where measurement-report scans) regardless
+  // of the completing agent's paths (codex P2).
+  function measurementEvents(agent: string, org = 'acme'): Array<Record<string, unknown>> {
+    const evDir = join(p.ctxRoot, 'orgs', org, 'analytics', 'events', agent);
+    if (!existsSync(evDir)) return [];
+    return readdirSync(evDir)
+      .flatMap(f => readFileSync(join(evDir, f), 'utf-8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l)))
+      .filter(e => e.category === 'measurement' && e.event === 'task_handled');
+  }
+
+  it('emits one measurement/task_handled when the task carries measurement context', () => {
+    const id = createTask(p, 'paul', 'acme', 'Book demo', {
+      assignee: 'booking-agent',
+      measurement: { client_id: '912345678', task_type: 'booking', baseline_seconds: 600 },
+    });
+    completeTask(p, id, 'done', { human_touch_seconds: 60, outcome: 'completed' });
+
+    const events = measurementEvents('booking-agent');
+    expect(events).toHaveLength(1);
+    const meta = events[0].metadata as Record<string, unknown>;
+    expect(meta.client_id).toBe('912345678');
+    expect(meta.agent_id).toBe('booking-agent'); // the assignee that handled it
+    expect(meta.task_type).toBe('booking');
+    expect(meta.baseline_seconds_per_task).toBe(600);
+    expect(meta.human_touch_seconds).toBe(60);
+    expect(meta.outcome).toBe('completed');
+  });
+
+  it('does NOT emit a measurement event for an internal task (no measurement context)', () => {
+    const id = createTask(p, 'paul', 'acme', 'Internal refactor', { assignee: 'builder' });
+    completeTask(p, id, 'done');
+    expect(measurementEvents('builder')).toHaveLength(0);
+  });
+
+  it('does not double-emit when an already-completed task is completed again (codex P2)', () => {
+    const id = createTask(p, 'paul', 'acme', 'Book demo', {
+      assignee: 'booking-agent',
+      measurement: { client_id: '912345678', task_type: 'booking', baseline_seconds: 600 },
+    });
+    completeTask(p, id, 'done', { human_touch_seconds: 60 });
+    // A retry / accidental second completion must NOT emit a duplicate.
+    completeTask(p, id, 'done again', { human_touch_seconds: 60 });
+    expect(measurementEvents('booking-agent')).toHaveLength(1);
+  });
+
+  it('emits with nullable baseline (0 + low confidence) when baseline is omitted', () => {
+    const id = createTask(p, 'paul', 'acme', 'Chase no-show', {
+      assignee: 'booking-agent',
+      measurement: { client_id: '912345678', task_type: 'no_show_chase' },
+    });
+    completeTask(p, id, 'done');
+    const meta = measurementEvents('booking-agent')[0].metadata as Record<string, unknown>;
+    expect(meta.baseline_seconds_per_task).toBe(0);
+    expect(meta.baseline_confidence).toBe('low');
+    expect(meta.outcome).toBe('completed'); // default
+  });
+
+  it('does not throw / still completes when measurement context is malformed', () => {
+    const id = createTask(p, 'paul', 'acme', 'Bad', {
+      assignee: 'booking-agent',
+      measurement: { client_id: '912345678', task_type: '' } as never, // empty task_type → validate throws internally
+    });
+    // Completion must succeed; the malformed measurement is swallowed, not fatal.
+    expect(() => completeTask(p, id, 'done')).not.toThrow();
+    const task = JSON.parse(readFileSync(join(p.taskDir, `${id}.json`), 'utf-8'));
+    expect(task.status).toBe('completed');
+    expect(measurementEvents('booking-agent')).toHaveLength(0); // nothing emitted
+  });
+});

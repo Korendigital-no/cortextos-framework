@@ -5,6 +5,7 @@ import { join } from 'path';
 import { sendMessage, checkInbox, ackInbox } from '../bus/message.js';
 import { validateAgentName } from '../utils/validate.js';
 import { createTask, updateTask, completeTask, claimTask, readTaskAudit, checkTaskDependencies, compactTasks, listTasks, checkStaleTasks, archiveTasks, checkHumanTasks } from '../bus/task.js';
+import type { MeasurementOutcome } from '../bus/measurement.js';
 import { saveOutput } from '../bus/save-output.js';
 import { logEvent } from '../bus/event.js';
 import { updateHeartbeat, readAllHeartbeats } from '../bus/heartbeat.js';
@@ -155,10 +156,43 @@ busCommand
   .option('--needs-approval', 'Require human approval before execution')
   .option('--blocked-by <ids>', 'Comma-separated task IDs that must complete before this task can progress')
   .option('--blocks <ids>', 'Comma-separated task IDs that this new task will block (symmetric reverse edge)')
-  .action((title: string, opts: { desc?: string; assignee?: string; priority: string; project?: string; needsApproval?: boolean; blockedBy?: string; blocks?: string }) => {
+  .option('--client <orgnr>', 'Måle-garanti: client org number — marks this as a guarantee-measured client task (auto-emits measurement on complete)')
+  .option('--task-type <type>', 'Måle-garanti: task type (booking|doc_review|nav_oppgjor|...) — required with --client')
+  .option('--baseline-seconds <n>', 'Måle-garanti: signed uke-0 baseline seconds per task (optional; filled later if omitted)')
+  .option('--confidence <c>', 'Måle-garanti baseline confidence: high | medium | low')
+  .action((title: string, opts: { desc?: string; assignee?: string; priority: string; project?: string; needsApproval?: boolean; blockedBy?: string; blocks?: string; client?: string; taskType?: string; baselineSeconds?: string; confidence?: string }) => {
     const env = resolveEnv();
     const paths = resolvePaths(env.agentName, env.instanceId, env.org, env.ctxRoot);
     const parseList = (raw?: string) => (raw ? raw.split(',').map(s => s.trim()).filter(Boolean) : []);
+    // Måle-garanti: a task is guarantee-measured iff --client is given. Validate
+    // the measurement flags at create-time (like log-measurement) so a typo can
+    // never bake malformed context into a task that later emits wrong/dropped
+    // guarantee data (codex P2).
+    let measurement: { client_id: string; task_type: string; baseline_seconds?: number; baseline_confidence?: 'high' | 'medium' | 'low' } | undefined;
+    if (opts.client) {
+      if (!opts.taskType) {
+        console.error('ERROR: --task-type is required when --client is set (måle-garanti measurement context)');
+        process.exit(1);
+      }
+      let baselineSeconds: number | undefined;
+      if (opts.baselineSeconds !== undefined) {
+        baselineSeconds = Number(opts.baselineSeconds);
+        if (!Number.isFinite(baselineSeconds) || baselineSeconds < 0) {
+          console.error('ERROR: --baseline-seconds must be a non-negative number');
+          process.exit(1);
+        }
+      }
+      if (opts.confidence !== undefined && !['high', 'medium', 'low'].includes(opts.confidence)) {
+        console.error('ERROR: --confidence must be one of: high | medium | low');
+        process.exit(1);
+      }
+      measurement = {
+        client_id: opts.client,
+        task_type: opts.taskType,
+        ...(baselineSeconds !== undefined ? { baseline_seconds: baselineSeconds } : {}),
+        ...(opts.confidence ? { baseline_confidence: opts.confidence as 'high' | 'medium' | 'low' } : {}),
+      };
+    }
     const taskId = createTask(paths, env.agentName, env.org, title, {
       description: opts.desc,
       assignee: opts.assignee,
@@ -167,6 +201,7 @@ busCommand
       needsApproval: opts.needsApproval ?? false,
       blockedBy: parseList(opts.blockedBy),
       blocks: parseList(opts.blocks),
+      measurement,
     });
     console.log(taskId);
     // Auto-notify assignee so the task is visible immediately (issue #78)
@@ -298,7 +333,9 @@ busCommand
   .argument('<id>', 'Task ID')
   .argument('[result]', 'Completion result (optional positional form)')
   .option('--result <text>', 'Completion result')
-  .action((id: string, resultArg: string | undefined, opts: { result?: string }) => {
+  .option('--human-touch-seconds <n>', 'Måle-garanti: residual human seconds on this task (only emitted if the task carries measurement context)')
+  .option('--outcome <o>', 'Måle-garanti outcome: completed | escalated_to_human | failed (default: completed)')
+  .action((id: string, resultArg: string | undefined, opts: { result?: string; humanTouchSeconds?: string; outcome?: string }) => {
     // Accept result as either positional arg or --result flag (P1 fix #8)
     const effectiveResult = opts.result ?? resultArg;
     const env = resolveEnv();
@@ -313,7 +350,31 @@ busCommand
       }
     }
 
-    completeTask(paths, id, effectiveResult);
+    // Måle-garanti completion facts — only consumed when the task carries a
+    // measurement block (client work); harmless otherwise. Validate up front so
+    // a typo (bad number / unknown outcome) fails loudly here instead of being
+    // silently swallowed by the best-effort auto-emit, which would mark the task
+    // done while dropping its guarantee event (codex P2).
+    let humanTouchSeconds: number | undefined;
+    if (opts.humanTouchSeconds !== undefined) {
+      humanTouchSeconds = Number(opts.humanTouchSeconds);
+      if (!Number.isFinite(humanTouchSeconds) || humanTouchSeconds < 0) {
+        console.error('ERROR: --human-touch-seconds must be a non-negative number');
+        process.exit(1);
+      }
+    }
+    if (opts.outcome !== undefined && !['completed', 'escalated_to_human', 'failed'].includes(opts.outcome)) {
+      console.error('ERROR: --outcome must be one of: completed | escalated_to_human | failed');
+      process.exit(1);
+    }
+    const measurementOpts = (humanTouchSeconds !== undefined || opts.outcome !== undefined)
+      ? {
+          ...(humanTouchSeconds !== undefined ? { human_touch_seconds: humanTouchSeconds } : {}),
+          ...(opts.outcome !== undefined ? { outcome: opts.outcome as MeasurementOutcome } : {}),
+        }
+      : undefined;
+
+    completeTask(paths, id, effectiveResult, measurementOpts);
     console.log(`Completed ${id}`);
   });
 

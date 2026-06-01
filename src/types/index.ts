@@ -68,6 +68,20 @@ export interface Task {
    */
   blocks?: string[];
   blocked_by?: string[];
+  /**
+   * Måle-garanti measurement context. Present ONLY on client-work tasks; its
+   * presence is what makes completion auto-emit a `measurement/task_handled`
+   * event (internal tasks omit it → never emit, keeping guarantee data clean).
+   * Set at create-time. `baseline_seconds` is optional — the signed uke-0
+   * baseline is wired in later. Structurally mirrors `TaskMeasurement` in
+   * src/bus/measurement.ts (kept inline here so types/ stays a leaf module).
+   */
+  measurement?: {
+    client_id: string;
+    task_type: string;
+    baseline_seconds?: number;
+    baseline_confidence?: 'high' | 'medium' | 'low';
+  };
 }
 
 // Event Types

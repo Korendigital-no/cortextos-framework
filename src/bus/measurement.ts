@@ -38,8 +38,61 @@ export interface MeasurementMeta {
   outcome: MeasurementOutcome;
 }
 
+/**
+ * Measurement context carried ON a task (set at create-time for client work).
+ * Its presence is what marks a task as guarantee-measured: internal tasks omit
+ * it and never emit. `baseline_seconds` is intentionally optional — the signed
+ * uke-0 baseline is filled in later (from the baseline register / Vilhelm's
+ * capture decision); the emission mechanism is built now with baseline nullable.
+ * Structurally mirrors `Task.measurement` in src/types/index.ts.
+ */
+export interface TaskMeasurement {
+  client_id: string;
+  task_type: string;
+  baseline_seconds?: number;
+  baseline_confidence?: BaselineConfidence;
+}
+
+/** Completion-time facts known only when the task finishes. */
+export interface TaskCompletionFacts {
+  agent_id: string;
+  completed_at: string;
+  human_touch_seconds?: number;
+  outcome?: MeasurementOutcome;
+}
+
 const VALID_OUTCOMES: MeasurementOutcome[] = ['completed', 'escalated_to_human', 'failed'];
 const VALID_CONFIDENCE: BaselineConfidence[] = ['high', 'medium', 'low'];
+
+/**
+ * Build a validated `task_handled` MeasurementMeta from a task's measurement
+ * context plus the completion facts. This is the single place that turns a
+ * completed client task into a guarantee-measurement event, reused by both the
+ * auto-emit on completeTask and the manual log-measurement CLI.
+ *
+ * Baseline nullability (foundation, baseline source pending): when the task has
+ * no baseline yet, we record 0 seconds at `low` confidence rather than block the
+ * event — the task's volume/outcome/human-touch are still captured honestly, and
+ * 0 baseline credits 0 saving (the conservative direction) until the real uke-0
+ * baseline is wired in. A caller can pass an explicit confidence to override.
+ */
+export function buildTaskHandledMeta(m: TaskMeasurement, c: TaskCompletionFacts): MeasurementMeta {
+  const humanTouch = c.human_touch_seconds ?? 0;
+  const baselineKnown = typeof m.baseline_seconds === 'number';
+  const meta: MeasurementMeta = {
+    client_id: m.client_id,
+    agent_id: c.agent_id,
+    task_type: m.task_type,
+    completed_at: c.completed_at,
+    human_touch_required: humanTouch > 0,
+    human_touch_seconds: humanTouch,
+    baseline_seconds_per_task: baselineKnown ? (m.baseline_seconds as number) : 0,
+    baseline_confidence: m.baseline_confidence ?? (baselineKnown ? 'medium' : 'low'),
+    outcome: c.outcome ?? 'completed',
+  };
+  validateMeasurementMeta(meta);
+  return meta;
+}
 
 /**
  * Validate a measurement event's metadata. Throws on anything that would make

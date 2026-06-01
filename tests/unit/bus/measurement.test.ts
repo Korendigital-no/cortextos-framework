@@ -3,8 +3,10 @@ import {
   validateMeasurementMeta,
   aggregateMeasurements,
   formatMeasurementReport,
+  buildTaskHandledMeta,
   GUARANTEE_WEEKLY_HOURS,
   type MeasurementMeta,
+  type TaskMeasurement,
 } from '../../../src/bus/measurement';
 
 function ev(overrides: Partial<MeasurementMeta> = {}): MeasurementMeta {
@@ -179,5 +181,78 @@ describe('formatMeasurementReport', () => {
     expect(met).toContain('912345678');
     const notMet = formatMeasurementReport(aggregateMeasurements([ev()], win));
     expect(notMet).toContain('NOT MET');
+  });
+});
+
+describe('buildTaskHandledMeta', () => {
+  const tm = (o: Partial<TaskMeasurement> = {}): TaskMeasurement => ({
+    client_id: '912345678',
+    task_type: 'booking',
+    ...o,
+  });
+  const completedAt = '2026-06-01T09:00:00Z';
+
+  it('builds a valid event from task measurement + completion facts', () => {
+    const meta = buildTaskHandledMeta(tm({ baseline_seconds: 600 }), {
+      agent_id: 'booking-agent',
+      completed_at: completedAt,
+      human_touch_seconds: 60,
+      outcome: 'completed',
+    });
+    expect(meta.client_id).toBe('912345678');
+    expect(meta.agent_id).toBe('booking-agent');
+    expect(meta.task_type).toBe('booking');
+    expect(meta.completed_at).toBe(completedAt);
+    expect(meta.baseline_seconds_per_task).toBe(600);
+    expect(meta.human_touch_seconds).toBe(60);
+    expect(meta.human_touch_required).toBe(true);
+    expect(meta.baseline_confidence).toBe('medium'); // baseline known → medium default
+    expect(meta.outcome).toBe('completed');
+  });
+
+  it('defaults outcome to completed and human_touch to 0 when omitted', () => {
+    const meta = buildTaskHandledMeta(tm({ baseline_seconds: 300 }), {
+      agent_id: 'a', completed_at: completedAt,
+    });
+    expect(meta.outcome).toBe('completed');
+    expect(meta.human_touch_seconds).toBe(0);
+    expect(meta.human_touch_required).toBe(false);
+  });
+
+  it('nullable baseline: missing baseline → 0 seconds at low confidence (no overclaim)', () => {
+    const meta = buildTaskHandledMeta(tm(), { agent_id: 'a', completed_at: completedAt });
+    expect(meta.baseline_seconds_per_task).toBe(0);
+    expect(meta.baseline_confidence).toBe('low');
+  });
+
+  it('respects an explicit baseline_confidence over the default', () => {
+    const meta = buildTaskHandledMeta(tm({ baseline_seconds: 600, baseline_confidence: 'high' }), {
+      agent_id: 'a', completed_at: completedAt,
+    });
+    expect(meta.baseline_confidence).toBe('high');
+  });
+
+  it('carries a non-completed outcome through', () => {
+    const meta = buildTaskHandledMeta(tm({ baseline_seconds: 600 }), {
+      agent_id: 'a', completed_at: completedAt, outcome: 'escalated_to_human',
+    });
+    expect(meta.outcome).toBe('escalated_to_human');
+  });
+
+  it('validates: a bad agent_id (path traversal) throws', () => {
+    expect(() => buildTaskHandledMeta(tm({ baseline_seconds: 1 }), {
+      agent_id: '../../etc/passwd', completed_at: completedAt,
+    })).toThrow();
+  });
+
+  it('produces an event aggregateMeasurements can consume', () => {
+    const meta = buildTaskHandledMeta(tm({ baseline_seconds: 3600 }), {
+      agent_id: 'a', completed_at: completedAt, human_touch_seconds: 0,
+    });
+    const report = aggregateMeasurements([meta], {
+      client_id: '912345678', window_start: '2026-06-01T00:00:00Z', window_end: '2026-06-08T00:00:00Z',
+    });
+    expect(report.tasks_completed).toBe(1);
+    expect(report.time_saved_seconds).toBe(3600);
   });
 });
