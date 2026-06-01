@@ -29,6 +29,26 @@ export interface PendingEntry {
 /** Map keyed by post slug. */
 export type PendingMap = Record<string, PendingEntry>;
 
+/**
+ * Race-guard R2: warn when a slug being edited directly on main has an open
+ * publish PR. A direct edit (policy-A commit+push to main) for a slug that
+ * already has a publish PR in flight is exactly the incident this hardening
+ * addresses — the publish PR was branched from an older snapshot, so when it
+ * merges it can silently revert the just-pushed edit (or conflict). Returns a
+ * human-readable warning to surface in the edit response, or null when the slug
+ * has no pending publish PR.
+ */
+export function pendingPublishWarning(slug: string, pending: PendingMap): string | null {
+  const entry = pending[slug];
+  if (!entry) return null;
+  return (
+    `Denne posten har en åpen publiser-PR (${entry.prUrl}). ` +
+    `Endringen din ble pushet direkte til main — når den PR-en merges kan den ` +
+    `overskrive denne endringen (den ble branchet fra et eldre snapshot). ` +
+    `Reconcile publiser-PR-en mot main før den merges.`
+  );
+}
+
 function sidecarPath(): string {
   return path.join(CTX_ROOT, "state", "dashboard", "content-publish-pending.json");
 }

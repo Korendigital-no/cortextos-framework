@@ -132,9 +132,15 @@ export default function ContentPage() {
       // edit is saved locally but NOT on the public site — show that as an
       // error so it is never silently treated as published.
       const sync = data.sync as { kind: 'pushed' | 'no-change' | 'not-live' | 'error'; message: string } | null | undefined;
+      // Race-guard R2: the edit pushed to main but this slug has an open publish
+      // PR that may revert it on merge. Surface as an error (amber/red) so it's
+      // not mistaken for a clean save.
+      const warning = data.warning as string | null | undefined;
       if (sync && (sync.kind === 'not-live' || sync.kind === 'error')) {
         // Saved locally but not canonical — surface so it's never mistaken for live.
         setActionMessage({ kind: 'err', text: sync.message });
+      } else if (warning) {
+        setActionMessage({ kind: 'err', text: warning });
       } else {
         // "pushed" and "no-change" are both fine; relay the accurate message
         // rather than claiming "live" (a push to main only renders on the public
