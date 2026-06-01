@@ -176,6 +176,52 @@ status: published
     expect(updated.publishedBy).toBe("original-actor");
   });
 
+  it("setStatus(→published) sets the public date to the Oslo publish date on first publish", async () => {
+    await writePost("date-a.md", BASE()); // BASE has the 2026-05-29 WRITE date
+    const { setStatus, osloPublishDate, getPostBySlug } = await import("../content");
+    const updated = await setStatus("date-a", "published");
+    const expected = osloPublishDate(new Date(updated.publishedAt!));
+    expect(updated.date).toBe(expected);
+    // Persisted (read back through the loader, which normalizes date to a string).
+    const reloaded = await getPostBySlug("date-a");
+    expect(reloaded!.date).toBe(expected);
+  });
+
+  it("approved→published (no prior publishedAt) stamps date = publish date", async () => {
+    await writePost(
+      "date-d.md",
+      BASE(`approvedAt: "2026-04-30T09:00:00.000Z"
+approvedBy: bob
+status: approved
+`).replace("status: draft\n", ""),
+    );
+    const { setStatus, osloPublishDate } = await import("../content");
+    const updated = await setStatus("date-d", "published");
+    expect(updated.date).toBe(osloPublishDate(new Date(updated.publishedAt!)));
+  });
+
+  it("re-publishing preserves the ORIGINAL publish date (no bump)", async () => {
+    await writePost(
+      "date-b.md",
+      BASE(`publishedAt: "2026-01-15T12:00:00.000Z"
+publishedBy: original
+status: published
+`)
+        .replace("status: draft\n", "")
+        .replace("date: 2026-05-29", "date: 2026-01-15"),
+    );
+    const { setStatus } = await import("../content");
+    const updated = await setStatus("date-b", "published", "second");
+    expect(updated.date).toBe("2026-01-15"); // unchanged — guarded on !publishedAt
+  });
+
+  it("a title/body edit never changes the displayed date", async () => {
+    await writePost("date-c.md", BASE()); // date 2026-05-29
+    const { updatePost } = await import("../content");
+    const updated = await updatePost("date-c", { title: "New Title" });
+    expect(updated.date).toBe("2026-05-29");
+  });
+
   it("re-approving an already-approved post preserves the ORIGINAL approval stamp", async () => {
     await writePost(
       "post-h.md",
@@ -188,6 +234,39 @@ status: approved
     const updated = await setStatus("post-h", "approved", "second-approver");
     expect(updated.approvedAt).toBe("2026-01-01T00:00:00.000Z");
     expect(updated.approvedBy).toBe("original-approver");
+  });
+
+  it("revertToApproved(restoreDate) undoes the first-publish date stamp (codex P2)", async () => {
+    // A post published then rolled back: setStatus stamped date=publish-date;
+    // a failed publish must restore the original write date, not leave the
+    // post wearing a publish-date it never published under. Freeze time to a
+    // fixed instant so the stamped publish date is deterministic and distinct
+    // from the fixture write date regardless of when the suite runs (codex P3).
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-15T12:00:00.000Z"));
+    try {
+      await writePost("date-rb.md", BASE()); // write date 2026-05-29
+      const { setStatus, revertToApproved, getPostBySlug } = await import("../content");
+      const published = await setStatus("date-rb", "published");
+      expect(published.date).toBe("2026-06-15"); // deterministic Oslo publish date
+      const reverted = await revertToApproved("date-rb", "2026-05-29");
+      expect(reverted.status).toBe("approved");
+      expect(reverted.date).toBe("2026-05-29"); // original write date restored
+      expect(reverted.publishedAt).toBeUndefined();
+      // Persisted.
+      expect((await getPostBySlug("date-rb"))!.date).toBe("2026-05-29");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("revertToApproved without restoreDate leaves date untouched (back-compat)", async () => {
+    await writePost("date-rb2.md", BASE());
+    const { updatePost, revertToApproved } = await import("../content");
+    // Simulate a publish-date already on disk.
+    await updatePost("date-rb2", { date: "2026-06-01" });
+    const reverted = await revertToApproved("date-rb2");
+    expect(reverted.date).toBe("2026-06-01"); // unchanged when no restoreDate given
   });
 
   it("revertToApproved clears the publish stamp but preserves the approval trail", async () => {
@@ -224,5 +303,25 @@ status: published
   it("readStatusFromDisk returns null for a missing post", async () => {
     const { readStatusFromDisk } = await import("../content");
     expect(await readStatusFromDisk("does-not-exist")).toBeNull();
+  });
+});
+
+describe("osloPublishDate", () => {
+  it("returns the Oslo calendar date (YYYY-MM-DD) for a daytime UTC instant", async () => {
+    const { osloPublishDate } = await import("../content");
+    // 2026-06-01 08:58:30Z = 10:58 CEST → still 2026-06-01.
+    expect(osloPublishDate(new Date("2026-06-01T08:58:30.940Z"))).toBe("2026-06-01");
+  });
+
+  it("rolls to the next Norwegian day for a late-evening UTC instant (summer, CEST +02:00)", async () => {
+    const { osloPublishDate } = await import("../content");
+    // 2026-06-01 23:30Z = 2026-06-02 01:30 CEST → 2026-06-02 in Oslo.
+    expect(osloPublishDate(new Date("2026-06-01T23:30:00.000Z"))).toBe("2026-06-02");
+  });
+
+  it("handles the winter boundary (CET +01:00)", async () => {
+    const { osloPublishDate } = await import("../content");
+    // 2026-01-15 23:30Z = 2026-01-16 00:30 CET → 2026-01-16 in Oslo.
+    expect(osloPublishDate(new Date("2026-01-15T23:30:00.000Z"))).toBe("2026-01-16");
   });
 });

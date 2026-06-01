@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import path from "node:path";
 import { getPostBySlug, setStatus, updatePost, getWebsiteRepoPath, resolvePostPath, readStatusFromDisk, type ContentStatus } from "@/lib/content";
 import { commitAndPushContentFile } from "@/lib/content-git";
+import { readPending, pendingPublishWarning } from "@/lib/content-publish-pending";
 
 export const dynamic = "force-dynamic";
 
@@ -71,6 +72,12 @@ export async function PATCH(
 
     let updated = await getPostBySlug(slug);
     let sync: Awaited<ReturnType<typeof commitAndPushContentFile>> | null = null;
+    // Race-guard R2: a direct-to-main edit of a slug that already has an open
+    // publish PR can be silently reverted when that PR (branched from an older
+    // snapshot) merges. Surface a warning so the operator reconciles. Only
+    // meaningful for the policy-A direct-push path (an edit that actually
+    // reaches main), so it's computed alongside the push below.
+    let warning: string | null = null;
     if (Object.keys(rest).length > 0) {
       updated = await updatePost(slug, rest);
       // Policy A (#edit-body): a content edit is canonical only once it reaches
@@ -89,6 +96,11 @@ export async function PATCH(
             `content: edit ${slug} via dashboard`,
           );
         }
+        // Only warn when the edit actually went out to main (pushed). A
+        // not-live/error sync never reached main, so there's no race to flag.
+        if (sync?.kind === "pushed") {
+          warning = pendingPublishWarning(slug, await readPending());
+        }
       }
     }
     if (statusChanges) {
@@ -97,7 +109,7 @@ export async function PATCH(
     if (!updated) {
       return Response.json({ error: "Not found" }, { status: 404 });
     }
-    return Response.json({ post: updated, sync });
+    return Response.json({ post: updated, sync, warning });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes("Post not found")) {

@@ -204,6 +204,41 @@ export async function publishApproved(opts: PublishOptions = {}): Promise<Publis
     };
   }
 
+  // SNAPSHOT-FRESHNESS GUARD (race-guard R1): the publish branch is cut from
+  // the current local HEAD (startBranch) a few lines down. If origin/<startBranch>
+  // has advanced since this clone last synced, that snapshot is STALE — the PR
+  // would be based on an old main and could publish content that silently reverts
+  // newer commits. This is the "publish raced a later edit" class: a publish PR
+  // opened against an old main while a direct edit landed newer commits; only
+  // GitHub's 3-way merge reconciled it last time, which was luck, not design.
+  // Fetch the latest ref and refuse to publish from a stale base — before any
+  // mutation, so failure is a clean exit. (Read-only: git fetch + rev-list don't
+  // touch the working tree, so the intentionally-uncommitted approve flip is
+  // safe.)
+  const fetchRes = runGit(cwd, ["fetch", "origin", startBranch]);
+  if (fetchRes.status !== 0) {
+    return {
+      ok: false,
+      published: [],
+      message:
+        `git fetch origin ${startBranch} failed — cannot verify the publish base is current, ` +
+        `refusing to publish from a possibly-stale snapshot. ${bufferToString(fetchRes.stderr).trim()}`,
+    };
+  }
+  const behindRes = runGit(cwd, ["rev-list", "--count", `${startBranch}..origin/${startBranch}`]);
+  const behindCount = Number.parseInt(bufferToString(behindRes.stdout).trim(), 10);
+  if (behindRes.status === 0 && Number.isFinite(behindCount) && behindCount > 0) {
+    return {
+      ok: false,
+      published: [],
+      message:
+        `origin/${startBranch} has ${behindCount} new commit(s) since this clone last synced. ` +
+        `Publishing now would branch from a stale snapshot and could race a newer edit ` +
+        `(silently reverting it on merge). Fast-forward first, then retry:\n` +
+        `  cd ${cwd}\n  git pull --ff-only origin ${startBranch}`,
+    };
+  }
+
   // CLOBBER PROTECTION (#edit-body): this flow ends with `git checkout
   // startBranch`, which reverts the working tree — so an UNCOMMITTED body edit
   // sitting in content/blog would be silently destroyed. The fix is policy A
@@ -215,6 +250,12 @@ export async function publishApproved(opts: PublishOptions = {}): Promise<Publis
   // uncommitted for this function to read and commit (codex: such a guard would
   // block the very file it is meant to publish). If a save's commit step fails,
   // the dashboard already surfaces sync.ok=false so the user resolves it.
+
+  // Capture each post's pre-flip date BEFORE setStatus stamps the publish date
+  // onto it (codex P2). Every rollback path restores these so a failed publish
+  // can never leave an approved post wearing a publish-date it never published
+  // under. Captured from `approved` (the pre-flip snapshot).
+  const originalDates = new Map(approved.map((p) => [p.slug, p.date] as const));
 
   // 1. Flip each approved → published in frontmatter (atomic per file).
   //    Preflight has already cleared, so any failure here can roll back
@@ -229,7 +270,8 @@ export async function publishApproved(opts: PublishOptions = {}): Promise<Publis
     for (const f of flipped) {
       // revertToApproved (not setStatus) so the failed-publish stamp is
       // cleared and the approval trail is preserved — see codex HIGH#3.
-      try { await revertToApproved(f.slug); } catch { /* best effort */ }
+      // Pass the original date so the publish-date stamp is undone too.
+      try { await revertToApproved(f.slug, originalDates.get(f.slug)); } catch { /* best effort */ }
     }
     return {
       ok: false,
@@ -261,7 +303,7 @@ export async function publishApproved(opts: PublishOptions = {}): Promise<Publis
     }
   }
   if (notPublished.length > 0) {
-    await rollbackStatusOnly(flipped);
+    await rollbackStatusOnly(flipped, originalDates);
     return {
       ok: false,
       published: [],
@@ -299,7 +341,7 @@ export async function publishApproved(opts: PublishOptions = {}): Promise<Publis
     }
   }
   if (!actualBranch) {
-    await rollbackStatusOnly(flipped);
+    await rollbackStatusOnly(flipped, originalDates);
     return {
       ok: false,
       published: [],
@@ -311,7 +353,7 @@ export async function publishApproved(opts: PublishOptions = {}): Promise<Publis
   //    would sweep unapproved drafts and bypass the approve gate.
   const addResult = runGit(cwd, ["add", "--", ...filePaths]);
   if (addResult.status !== 0) {
-    return rollback(flipped, "git add failed", bufferToString(addResult.stderr), cwd, startBranch, actualBranch);
+    return rollback(flipped, "git add failed", bufferToString(addResult.stderr), cwd, startBranch, actualBranch, originalDates);
   }
 
   // 4b. VERIFY-STAGED-BLOB guardrail (closes the TOCTTOU window — codex
@@ -336,7 +378,7 @@ export async function publishApproved(opts: PublishOptions = {}): Promise<Publis
       flipped,
       `staged content for ${badStaged.join(", ")} is not "published" (concurrent edit?) — refusing to commit`,
       "",
-      cwd, startBranch, actualBranch,
+      cwd, startBranch, actualBranch, originalDates,
     );
   }
 
@@ -345,21 +387,21 @@ export async function publishApproved(opts: PublishOptions = {}): Promise<Publis
   if (commitResult.status !== 0) {
     const stderr = bufferToString(commitResult.stderr);
     if (!stderr.includes("nothing to commit")) {
-      return rollback(flipped, "git commit failed", stderr, cwd, startBranch, actualBranch);
+      return rollback(flipped, "git commit failed", stderr, cwd, startBranch, actualBranch, originalDates);
     }
     // nothing to commit → status flips already matched HEAD; clean up branch.
     return rollback(
       flipped,
       "git commit: nothing to commit (status already published on disk)",
       stderr,
-      cwd, startBranch, actualBranch,
+      cwd, startBranch, actualBranch, originalDates,
     );
   }
 
   // 6. Push branch to origin (NOT to main — branch only).
   const pushResult = runGit(cwd, ["push", "-u", "origin", actualBranch]);
   if (pushResult.status !== 0) {
-    return rollback(flipped, "git push (branch) failed", bufferToString(pushResult.stderr), cwd, startBranch, actualBranch);
+    return rollback(flipped, "git push (branch) failed", bufferToString(pushResult.stderr), cwd, startBranch, actualBranch, originalDates);
   }
 
   // 7. Open PR via gh CLI. NO auto-merge — Vilhelm reviews + merges on GitHub.
@@ -442,12 +484,18 @@ export async function publishApproved(opts: PublishOptions = {}): Promise<Publis
  * Status-only rollback. Used in preflight-failure paths where no git mutation
  * has happened yet (so there's no branch to clean up).
  */
-async function rollbackStatusOnly(flipped: ContentPost[]): Promise<void> {
+async function rollbackStatusOnly(
+  flipped: ContentPost[],
+  originalDates?: Map<string, string>,
+): Promise<void> {
   for (const f of flipped) {
     // revertToApproved clears the failed-publish stamp (publishedAt/By) and
     // preserves the approval trail — a plain setStatus(slug,"approved") would
     // re-stamp approvedAt/By and leave stale publish metadata (codex HIGH#3).
-    try { await revertToApproved(f.slug); } catch { /* best effort */ }
+    // The original date (when supplied) also undoes the publish-date stamp
+    // (codex P2), so a pre-branch failure leaves the file byte-identical to its
+    // pre-publish state.
+    try { await revertToApproved(f.slug, originalDates?.get(f.slug)); } catch { /* best effort */ }
   }
 }
 
@@ -458,6 +506,7 @@ async function rollback(
   cwd?: string,
   startBranch?: string,
   branchToDelete?: string | null,
+  originalDates?: Map<string, string>,
 ): Promise<PublishResult> {
   // Per codex HIGH#2: only delete the publish branch AFTER we've confirmed
   // the checkout back to startBranch succeeded. Without that confirmation,
@@ -479,9 +528,12 @@ async function rollback(
       }
     }
   }
-  // Only mutate status back if working tree is on the right branch.
+  // Only mutate status back if working tree is on the right branch. The
+  // checkout above already restored each file to startBranch's version (original
+  // date included), so passing originalDates here is defensive/uniform — it
+  // keeps the revert correct even if checkout semantics change (codex P2).
   if (checkoutOk) {
-    await rollbackStatusOnly(flipped);
+    await rollbackStatusOnly(flipped, originalDates);
   }
   return {
     ok: false,

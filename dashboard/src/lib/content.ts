@@ -238,6 +238,11 @@ interface UpdatePostFields {
   status?: ContentStatus;
   author?: string;
   ogImage?: string;
+  // The public post date (YYYY-MM-DD). Threaded through so setStatus can stamp
+  // the publish date on first publish (see osloPublishDate). NOT exposed via the
+  // PATCH route's VALID_FIELDS whitelist — only setStatus sets it — so a body
+  // edit can never silently rewrite the displayed date.
+  date?: string;
   // Audit fields. Pass a string to SET, pass `null` to explicitly CLEAR
   // (drops the key from frontmatter), omit (undefined) to PRESERVE whatever
   // `current` already has. The explicit-clear path is what rollback uses to
@@ -270,7 +275,10 @@ export async function updatePost(slug: string, fields: UpdatePostFields): Promis
 
   const merged: Record<string, unknown> = {
     title: fields.title ?? current.title,
-    date: current.date,
+    // date is preserved unless a caller explicitly supplies one. Only setStatus
+    // does (the first-publish stamp); the PATCH route never forwards date, so an
+    // ordinary title/body edit always falls through to current.date.
+    date: fields.date ?? current.date,
     slug: current.slug,
     tags: fields.tags ?? current.tags,
     author: fields.author ?? current.author,
@@ -312,14 +320,33 @@ export async function updatePost(slug: string, fields: UpdatePostFields): Promis
 }
 
 /**
+ * The calendar date (YYYY-MM-DD) of a publish instant, in Europe/Oslo — the
+ * site's audience timezone. Using the local calendar date rather than the UTC
+ * date means a post published just after midnight Oslo time shows the correct
+ * Norwegian date even though the stored publishedAt is UTC (e.g. 2026-06-01
+ * 23:30Z is already 2026-06-02 in Oslo). `en-CA` formats as YYYY-MM-DD, exactly
+ * the `date` frontmatter shape the website renders.
+ */
+export function osloPublishDate(instant: Date): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Europe/Oslo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(instant);
+}
+
+/**
  * Flip a post's status, stamping the audit trail when entering a gated state.
  *
- * - → published: stamp publishedAt (now) + publishedBy (actor) ONLY IF not
- *   already stamped. Re-publishing an already-published post preserves the
- *   ORIGINAL publish audit (we never overwrite a real first-publish time with
- *   a later no-op flip). The approval trail (approvedAt/approvedBy) is left
- *   untouched, so an approved→published flip preserves who approved it
- *   (updatePost defaults each audit field from `current` when not supplied).
+ * - → published: stamp publishedAt (now) + publishedBy (actor) AND set the
+ *   public `date` to the publish date (Europe/Oslo, via osloPublishDate) ONLY
+ *   IF not already published. Re-publishing an already-published post preserves
+ *   the ORIGINAL publish audit AND date (we never overwrite a real first-publish
+ *   time/date with a later no-op flip). The approval trail (approvedAt/
+ *   approvedBy) is left untouched, so an approved→published flip preserves who
+ *   approved it (updatePost defaults each audit field from `current` when not
+ *   supplied).
  * - → approved: stamp approvedAt (now) + approvedBy (actor) ONLY IF not
  *   already stamped, for the same reason.
  * - → draft: no stamp.
@@ -340,8 +367,28 @@ export async function setStatus(
 
   const fields: UpdatePostFields = { status };
   if (status === "published") {
-    // Preserve the original first-publish stamp if one already exists.
-    if (!current.publishedAt) fields.publishedAt = new Date().toISOString();
+    // First publish: stamp the audit time AND set the public `date` to the
+    // publish date, so every surface that renders `date` (blog index, post
+    // page, RSS, OG, JSON-LD) shows when the post was published — not when it
+    // was written. Both derive from the SAME instant. Guarded on !publishedAt so
+    // a re-publish (or any later no-op flip) preserves the original publish date
+    // instead of bumping it. Authors no longer need a manual frontmatter PR to
+    // correct the displayed date.
+    //
+    // SEMANTICS (deliberate, codex P2): this stamps the publish-ACTION date —
+    // the moment the operator clicks publish (publishApproved opens the PR) —
+    // not the later PR-merge/go-live date. Reasons: (1) it matches the intent
+    // "the date I published it"; (2) the merge-date alternative is impractical
+    // under our PR-only rule — correcting the date after merge would need a
+    // SECOND PR just for the date field; (3) the workflow is publish→self-merge
+    // in one session, so action-date == merge-date in practice. The only gap is
+    // a PR left open across a midnight boundary before merge; the now-working
+    // edit-body flow can correct that rare case.
+    if (!current.publishedAt) {
+      const publishInstant = new Date();
+      fields.publishedAt = publishInstant.toISOString();
+      fields.date = osloPublishDate(publishInstant);
+    }
     if (!current.publishedBy) fields.publishedBy = actor;
   } else if (status === "approved") {
     if (!current.approvedAt) fields.approvedAt = new Date().toISOString();
@@ -355,10 +402,19 @@ export async function setStatus(
  * publish attempt that subsequently failed. The APPROVAL trail
  * (approvedAt/approvedBy) is preserved — only the publish stamp is cleared —
  * so a failed publish leaves the post exactly as it was when approved, with
- * no stale publishedAt/publishedBy. Used by the publish-flow rollback paths.
+ * no stale publishedAt/publishedBy. Pass `restoreDate` to also undo the
+ * first-publish date stamp (the original pre-flip date), so a failed publish
+ * does not leave the post with a publish-date it never published under. Used by
+ * the publish-flow rollback paths.
  */
-export async function revertToApproved(slug: string): Promise<ContentPost> {
-  return updatePost(slug, { status: "approved", publishedAt: null, publishedBy: null });
+export async function revertToApproved(slug: string, restoreDate?: string): Promise<ContentPost> {
+  const fields: UpdatePostFields = { status: "approved", publishedAt: null, publishedBy: null };
+  // On a FAILED publish, also restore the pre-flip date. setStatus(→published)
+  // stamps the publish date onto `date`; clearing only the publish audit would
+  // leave an approved post wearing a publish-date it never actually published
+  // under (codex P2). Callers that captured the original date pass it here.
+  if (restoreDate !== undefined) fields.date = restoreDate;
+  return updatePost(slug, fields);
 }
 
 /**
