@@ -35,6 +35,7 @@ export default function ProjectDetailPage() {
   const [checklists, setChecklists] = useState<Checklist[]>([]);
   const [totals, setTotals] = useState({ total_hours: 0, entry_count: 0 });
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
 
   const [showAddTime, setShowAddTime] = useState(false);
   const [timeDesc, setTimeDesc] = useState('');
@@ -65,8 +66,17 @@ export default function ProjectDetailPage() {
         setTasks(data.tasks);
         setNotes(data.notes);
         setTotals(data.totals);
+        setLoadError(false);
+      } else {
+        // A 404 means the project genuinely does not belong to this client.
+        // Any other status (e.g. a 500 from a server-side query error) must NOT
+        // masquerade as "not found" — surface it as a load error so the real
+        // failure is visible instead of a misleading empty state.
+        setLoadError(pRes.status !== 404);
       }
       if (clRes.ok) setChecklists(await clRes.json());
+    } catch {
+      setLoadError(true);
     } finally { setLoading(false); }
   }, [id, pid]);
 
@@ -131,7 +141,19 @@ export default function ProjectDetailPage() {
   }
 
   if (loading) return <div className="space-y-4"><div className="h-8 w-48 rounded bg-muted/30 animate-pulse" /><div className="h-64 rounded-lg bg-muted/30 animate-pulse" /></div>;
-  if (!project) return <div className="space-y-4"><Link href={`/clients/${id}`}><Button variant="ghost" size="sm"><IconArrowLeft className="size-4 mr-1" />Back</Button></Link><p className="text-sm text-muted-foreground">Project not found.</p></div>;
+  if (!project) return (
+    <div className="space-y-4">
+      <Link href={`/clients/${id}`}><Button variant="ghost" size="sm"><IconArrowLeft className="size-4 mr-1" />Back</Button></Link>
+      {loadError ? (
+        <div className="space-y-2">
+          <p className="text-sm text-muted-foreground">Could not load this project. Something went wrong on our end.</p>
+          <Button variant="outline" size="sm" onClick={() => { setLoading(true); fetchAll(); }}>Try again</Button>
+        </div>
+      ) : (
+        <p className="text-sm text-muted-foreground">Project not found.</p>
+      )}
+    </div>
+  );
 
   return (
     <div className="space-y-6">
