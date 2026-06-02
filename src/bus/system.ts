@@ -43,7 +43,114 @@ const EXCLUDED_DIR_PREFIXES = [
   '.venv/',
 ];
 
-const CREDENTIAL_PATTERNS = /(?:token=|key=|password=|secret=|sk-|ghp_|xoxb-|AKIA)/;
+// High-confidence secret token formats. Length-bounded on purpose so that
+// substrings inside package names (e.g. "queue-microtask-" matching "sk-") or
+// base64 hashes (random "AKIA"/"key=" runs) do NOT trip the scanner. These are
+// the shapes real leaked tokens actually take.
+// Leading \b only: a trailing \b would reject tokens ending in base64 padding
+// (e.g. AccountKey=...== ). Each branch is length-bounded so it cannot over-match.
+const HIGH_CONFIDENCE_TOKEN =
+  /\b(?:sk-ant-[A-Za-z0-9_-]{20,}|sk-proj-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{36}|gho_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{60,}|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|AccountKey=[A-Za-z0-9+/=]{40,})/;
+
+const SECRET_KEYWORD =
+  '(?:api[_-]?key|secret|token|passwo?rd|access[_-]?key|client[_-]?secret|auth[_-]?token|private[_-]?key)';
+
+// A secret keyword assigned a QUOTED string literal (JSON/YAML/code). The
+// matching-quote backreference means only an actual hardcoded literal trips it.
+// The value is any run of >=16 non-whitespace characters that are not the
+// opening quote, so password specials (@ ! $ :) are covered while multi-word
+// prose (which contains spaces) is not. Group 1 = quote, group 2 = value.
+const QUOTED_ASSIGNMENT_SOURCE =
+  SECRET_KEYWORD + '["\'`]?\\s*[:=]\\s*(["\'`])((?:(?!\\1)\\S){16,})\\1';
+
+// A secret keyword assigned an UNQUOTED value (INI / properties / .env-style
+// `password=value`). Applied ONLY to config-format files (see
+// UNQUOTED_SCAN_EXTENSIONS), so the value can be captured broadly — any run of
+// non-whitespace, non-quote characters, which includes password specials like
+// @ ! $ : that real credentials use. Code files are never unquoted-scanned, so
+// expressions such as `token = authHeader.slice(7)` cannot reach this. Group 1
+// = value. Compiled fresh per call to avoid the global-regex `lastIndex` hazard.
+const UNQUOTED_ASSIGNMENT_SOURCE =
+  SECRET_KEYWORD + '\\s*[:=]\\s*([^\\s"\'`]{16,})';
+
+// npm/yarn lockfile integrity hashes — base64 sha digests, never secrets.
+const LOCKFILE_INTEGRITY_LINE =
+  /^\s*"integrity":\s*"sha(?:256|384|512)-[A-Za-z0-9+/=]+"\s*,?\s*$/;
+
+// Code / structured-data formats where a real secret is written as a QUOTED
+// string literal. Unquoted-value scanning is skipped for these so that variable
+// references and code expressions (`password = hashedValue`,
+// `token = authHeader.slice(7)`) don't false-positive. Everything else —
+// config formats (.ini/.conf/.yaml/.toml/…), extensionless credential files
+// (`credentials`), and dotfiles (`.npmrc`, `.netrc`) — IS scanned for unquoted
+// `key=value` secrets, matching the auto-commit blocker's original coverage.
+const QUOTED_ONLY_EXTENSIONS = new Set([
+  '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.json', '.json5',
+  '.py', '.go', '.java', '.kt', '.kts', '.scala', '.rb', '.rs',
+  '.c', '.cc', '.cpp', '.cxx', '.h', '.hpp', '.cs', '.php', '.swift',
+  '.dart', '.lua', '.pl', '.pm', '.groovy', '.gradle', '.vue', '.svelte',
+  '.md', '.markdown', '.html', '.htm',
+]);
+
+/** Shannon entropy in bits per character. */
+function shannonEntropy(value: string): number {
+  if (value.length === 0) return 0;
+  const freq: Record<string, number> = {};
+  for (const ch of value) freq[ch] = (freq[ch] || 0) + 1;
+  let entropy = 0;
+  for (const ch in freq) {
+    const p = freq[ch] / value.length;
+    entropy -= p * Math.log2(p);
+  }
+  return entropy;
+}
+
+/**
+ * Whether a captured assignment value looks like a real secret rather than an
+ * env-var reference, placeholder, or low-entropy filler. Length is already
+ * guaranteed >= 16 by the capture group.
+ */
+function looksLikeSecretValue(value: string): boolean {
+  // Env-var / template references are not literal secrets.
+  if (/^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$/.test(value)) return false;
+  if (/^(?:process\.env|import\.meta\.env)\./.test(value)) return false;
+  // Obvious placeholders.
+  if (/^(?:your|example|placeholder|change[_-]?me|x{4,}|test|dummy|redacted|none|null|undefined|sample|fake)/i.test(value)) {
+    return false;
+  }
+  // Real secrets mix character classes and carry entropy; long English-ish
+  // prose with one class (e.g. a sentence) should not trip.
+  return shannonEntropy(value) >= 3.0;
+}
+
+/**
+ * Detect whether file content contains a leaked credential. Precise by design:
+ * flags real token formats and secret-keyword assignments with high-entropy
+ * literal values, while ignoring identifiers, cookie names, comments, and
+ * lockfile integrity hashes that previously caused false positives.
+ */
+export function containsCredential(content: string, filename: string = ''): boolean {
+  const isLockfile = /(?:^|[\\/])[^\\/]*-lock\.json$/.test(filename);
+  const scanUnquoted = !QUOTED_ONLY_EXTENSIONS.has(extname(filename).toLowerCase());
+  const quoted = new RegExp(QUOTED_ASSIGNMENT_SOURCE, 'gi');
+  const unquoted = new RegExp(UNQUOTED_ASSIGNMENT_SOURCE, 'gi');
+  for (const line of content.split('\n')) {
+    if (isLockfile && LOCKFILE_INTEGRITY_LINE.test(line)) continue;
+    if (HIGH_CONFIDENCE_TOKEN.test(line)) return true;
+    let match: RegExpExecArray | null;
+    quoted.lastIndex = 0;
+    while ((match = quoted.exec(line)) !== null) {
+      if (looksLikeSecretValue(match[2])) return true;
+    }
+    if (scanUnquoted) {
+      unquoted.lastIndex = 0;
+      while ((match = unquoted.exec(line)) !== null) {
+        if (looksLikeSecretValue(match[1])) return true;
+      }
+    }
+  }
+  return false;
+}
 
 const SCRIPT_EXTENSIONS = new Set(['.sh', '.py', '.js']);
 
@@ -128,8 +235,12 @@ export function autoCommit(projectDir: string, dryRun: boolean = false): AutoCom
   for (const file of changedFiles) {
     if (!file) continue;
 
-    // Block .env files
-    if (file.endsWith('.env') || file.includes('/.env')) {
+    // Block all dot-env files and variants regardless of directory depth:
+    // the `.env` dotfile, suffixed variants (.env.local, .env.production,
+    // .env.example, …), and `.env`-extension files (app.env, prod.env). These
+    // are credential files and must never be auto-committed.
+    const basename = file.split(/[\\/]/).pop() || file;
+    if (basename === '.env' || basename.startsWith('.env.') || extname(basename) === '.env') {
       blocked.push(`${file}:contains_credentials`);
       continue;
     }
@@ -174,7 +285,7 @@ export function autoCommit(projectDir: string, dryRun: boolean = false): AutoCom
         const stat = statSync(fullPath);
         if (stat.isFile() && stat.size < MAX_FILE_SIZE) {
           const content = readFileSync(fullPath, 'utf-8');
-          if (CREDENTIAL_PATTERNS.test(content)) {
+          if (containsCredential(content, file)) {
             blocked.push(`${file}:credential_pattern_detected`);
             continue;
           }
