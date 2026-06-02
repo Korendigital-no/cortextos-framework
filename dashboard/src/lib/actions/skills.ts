@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { revalidatePath } from 'next/cache';
 import { getFrameworkRoot, CTX_ROOT, getOrgs, getAgentsForOrg } from '@/lib/config';
+import { requireSession } from '@/lib/require-session';
 import type { ActionResult } from '@/lib/types';
 
 // ---------------------------------------------------------------------------
@@ -88,6 +89,7 @@ function getInstalledAgents(slug: string): string[] {
 // ---------------------------------------------------------------------------
 
 export async function fetchSkills(): Promise<SkillInfo[]> {
+  await requireSession();
   try {
     const frameworkRoot = getFrameworkRoot();
     const catalogDir = path.join(frameworkRoot, 'skills');
@@ -140,6 +142,7 @@ export async function installSkill(
   org: string,
   agent: string,
 ): Promise<ActionResult> {
+  await requireSession();
   try {
     const frameworkRoot = getFrameworkRoot();
     const catalogDir = path.join(frameworkRoot, 'skills', slug);
@@ -187,6 +190,7 @@ export async function uninstallSkill(
   org: string,
   agent: string,
 ): Promise<ActionResult> {
+  await requireSession();
   try {
     const linkPath = path.join(getFrameworkRoot(), 'orgs', org, 'agents', agent, 'skills', slug);
 

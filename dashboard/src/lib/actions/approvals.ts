@@ -5,6 +5,7 @@ import path from 'path';
 import { revalidatePath } from 'next/cache';
 import { getFrameworkRoot, getCTXRoot } from '@/lib/config';
 import { syncAll } from '@/lib/sync';
+import { requireSession } from '@/lib/require-session';
 import type { ActionResult } from '@/lib/types';
 
 // ---------------------------------------------------------------------------
@@ -20,6 +21,7 @@ export async function resolveApproval(
   decision: 'approved' | 'rejected',
   note?: string,
 ): Promise<ActionResult> {
+  await requireSession();
   // Validate inputs
   if (!id || !/^[a-zA-Z0-9_-]+$/.test(id)) {
     return { success: false, error: 'Invalid approval ID' };
