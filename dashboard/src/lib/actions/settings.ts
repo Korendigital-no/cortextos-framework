@@ -6,6 +6,7 @@ import bcrypt from 'bcryptjs';
 import { revalidatePath } from 'next/cache';
 import { CTX_ROOT, getOrgs, getAgentsForOrg, getAgentDir, getOrgContextPath, getOrgBrandVoicePath, getAllowedRootsConfigPath } from '@/lib/config';
 import { db } from '@/lib/db';
+import { requireSession } from '@/lib/require-session';
 import type { ActionResult, User } from '@/lib/types';
 
 // ---------------------------------------------------------------------------
@@ -38,6 +39,7 @@ function maskToken(token: string): string {
 }
 
 export async function fetchTelegramConfigs(): Promise<TelegramConfig[]> {
+  await requireSession();
   try {
     const configs: TelegramConfig[] = [];
     const orgs = getOrgs();
@@ -92,6 +94,7 @@ export async function getFullToken(
   agent: string,
   org: string,
 ): Promise<{ botToken: string; chatId: string } | null> {
+  await requireSession();
   try {
     const agentDir = getAgentDir(agent, org);
     const envPath = path.join(agentDir, '.env');
@@ -131,6 +134,7 @@ export async function saveTelegramConfig(
   botToken: string,
   chatId: string,
 ): Promise<ActionResult> {
+  await requireSession();
   try {
     const agentDir = getAgentDir(agent, org);
     const envPath = path.join(agentDir, '.env');
@@ -194,6 +198,7 @@ const DEFAULT_SYSTEM_CONFIG: SystemConfig = {
 };
 
 export async function fetchSystemConfig(): Promise<SystemConfig> {
+  await requireSession();
   try {
     if (fs.existsSync(SYSTEM_CONFIG_PATH)) {
       const raw = fs.readFileSync(SYSTEM_CONFIG_PATH, 'utf-8');
@@ -207,6 +212,7 @@ export async function fetchSystemConfig(): Promise<SystemConfig> {
 }
 
 export async function saveSystemConfig(config: SystemConfig): Promise<ActionResult> {
+  await requireSession();
   try {
     const validated: SystemConfig = {
       heartbeatStalenessThreshold: Math.max(10, Math.min(3600, Math.round(config.heartbeatStalenessThreshold))),
@@ -229,6 +235,7 @@ export async function saveSystemConfig(config: SystemConfig): Promise<ActionResu
 // ---------------------------------------------------------------------------
 
 export async function fetchUsers(): Promise<Array<{ id: number; username: string; created_at: string }>> {
+  await requireSession();
   try {
     const rows = db.prepare('SELECT id, username, created_at FROM users ORDER BY id').all() as User[];
     return rows.map((r) => ({ id: r.id, username: r.username, created_at: r.created_at }));
@@ -238,6 +245,7 @@ export async function fetchUsers(): Promise<Array<{ id: number; username: string
 }
 
 export async function addUser(username: string, password: string): Promise<ActionResult> {
+  await requireSession();
   try {
     const trimmed = username.trim();
     if (!trimmed) return { success: false, error: 'Username is required' };
@@ -260,6 +268,7 @@ export async function addUser(username: string, password: string): Promise<Actio
 }
 
 export async function deleteUser(userId: number): Promise<ActionResult> {
+  await requireSession();
   try {
     // Prevent deleting the last user
     const count = db.prepare('SELECT COUNT(*) as count FROM users').get() as { count: number };
@@ -284,6 +293,7 @@ export async function deleteUser(userId: number): Promise<ActionResult> {
 // ---------------------------------------------------------------------------
 
 export async function fetchOrgMetadata() {
+  await requireSession();
   const orgs = getOrgs();
   // Find the first org that has a context.json (skip empty/unconfigured orgs)
   const org = orgs.find(o => fs.existsSync(getOrgContextPath(o))) ?? orgs[0] ?? '';
@@ -364,6 +374,7 @@ function normalizeFsPath(p: string): string {
 }
 
 export async function fetchAllowedRoots(): Promise<AllowedRootsView> {
+  await requireSession();
   const ctxRoot = normalizeFsPath(CTX_ROOT);
   const configPath = getAllowedRootsConfigPath();
 
@@ -389,6 +400,7 @@ export async function fetchAllowedRoots(): Promise<AllowedRootsView> {
 }
 
 export async function addAllowedRoot(rawPath: string): Promise<ActionResult> {
+  await requireSession();
   const trimmed = rawPath.trim();
   if (!trimmed) return { success: false, error: 'Path is required' };
   if (!path.isAbsolute(trimmed)) {
@@ -448,6 +460,7 @@ export async function addAllowedRoot(rawPath: string): Promise<ActionResult> {
 }
 
 export async function removeAllowedRoot(rawPath: string): Promise<ActionResult> {
+  await requireSession();
   const normalized = normalizeFsPath(rawPath.trim());
   const configPath = getAllowedRootsConfigPath();
 

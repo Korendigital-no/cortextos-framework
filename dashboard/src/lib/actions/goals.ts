@@ -5,6 +5,7 @@ import path from 'path';
 import { revalidatePath } from 'next/cache';
 import { getFrameworkRoot, getOrgs } from '@/lib/config';
 import { getGoals, writeGoals, getGoalHistory } from '@/lib/data/goals';
+import { requireSession } from '@/lib/require-session';
 import type { ActionResult, Goal, GoalsData } from '@/lib/types';
 
 // ---------------------------------------------------------------------------
@@ -46,6 +47,7 @@ export async function updateBottleneck(
   bottleneck: string,
   blocks?: string[],
 ): Promise<ActionResult> {
+  await requireSession();
   try {
     const orgErr = validateOrg(org);
     if (orgErr) return { success: false, error: orgErr };
@@ -79,6 +81,7 @@ export async function updateGoals(
   org: string,
   goals: Goal[],
 ): Promise<ActionResult> {
+  await requireSession();
   try {
     const orgErr = validateOrg(org);
     if (orgErr) return { success: false, error: orgErr };
@@ -117,6 +120,7 @@ export async function addGoal(
   org: string,
   title: string,
 ): Promise<ActionResult> {
+  await requireSession();
   try {
     const orgErr = validateOrg(org);
     if (orgErr) return { success: false, error: orgErr };
@@ -158,6 +162,7 @@ export async function deleteGoal(
   org: string,
   goalId: string,
 ): Promise<ActionResult> {
+  await requireSession();
   try {
     const orgErr = validateOrg(org);
     if (orgErr) return { success: false, error: orgErr };
@@ -185,6 +190,7 @@ export async function reorderGoals(
   org: string,
   goalIds: string[],
 ): Promise<ActionResult> {
+  await requireSession();
   try {
     const orgErr = validateOrg(org);
     if (orgErr) return { success: false, error: orgErr };
@@ -228,6 +234,7 @@ export async function reorderGoals(
 // ---------------------------------------------------------------------------
 
 export async function fetchGoals(org: string): Promise<GoalsData> {
+  await requireSession();
   try {
     const orgErr = validateOrg(org);
     if (orgErr) return { bottleneck: '', goals: [] };
@@ -240,6 +247,7 @@ export async function fetchGoals(org: string): Promise<GoalsData> {
 export async function fetchGoalHistory(
   org: string,
 ): Promise<Array<{ timestamp: string; change: string }>> {
+  await requireSession();
   try {
     const orgErr = validateOrg(org);
     if (orgErr) return [];
