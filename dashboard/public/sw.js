@@ -9,10 +9,17 @@
 //   - /api/* is NEVER intercepted — auth-sensitive + dynamic, always live.
 //   - Navigations: network-first, fall back to the cached /offline shell when
 //     the network is down. Authed HTML is never cached, so no stale-data risk.
-//   - Build assets (/_next/static) + icons: cache-first (fast, offline-capable).
+//   - Build assets (/_next/static) + icons: stale-while-revalidate. Turbopack
+//     reuses chunk filenames across builds (module-id based, not content-hash)
+//     while Next serves them `immutable, max-age=1y`. A plain cache-first — or
+//     the browser's own HTTP cache — therefore pins STALE JS under a still-live
+//     filename after a deploy (e.g. a nav change shipped but not seen). We serve
+//     the cached copy instantly for speed, but always revalidate from the
+//     network bypassing the HTTP cache (cache: "reload") and update the cache,
+//     so a changed-content same-name chunk self-heals on the next load.
 //
 // Bump CACHE_VERSION to invalidate old caches on the next activate.
-const CACHE_VERSION = "v1";
+const CACHE_VERSION = "v2";
 const CACHE_PREFIX = "cortextos-";
 const CACHE = `${CACHE_PREFIX}${CACHE_VERSION}`;
 const OFFLINE_URL = "/offline";
@@ -80,23 +87,30 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // Build assets + icons: cache-first, populate on miss.
+  // Build assets + icons: stale-while-revalidate (see header note). Always
+  // revalidate from the network with cache: "reload" so the browser's own
+  // `immutable` HTTP cache can't pin a stale chunk under a reused filename.
   if (url.pathname.startsWith("/_next/static") || url.pathname.startsWith("/icons/")) {
     event.respondWith(
       (async () => {
         const cache = await caches.open(CACHE);
         const cached = await cache.match(request);
-        if (cached) return cached;
-        try {
-          const res = await fetch(request);
-          // Keep the cache write alive past respondWith via waitUntil — without
-          // it the worker can be terminated (notably on mobile) before the put
-          // finishes, so the asset is never persisted for offline use (codex P2).
-          if (res.ok) event.waitUntil(cache.put(request, res.clone()));
-          return res;
-        } catch {
-          return cached ?? Response.error();
+        const revalidate = fetch(request, { cache: "reload" })
+          .then((res) => {
+            // Keep the cache write alive past respondWith via waitUntil — without
+            // it the worker can be terminated (notably on mobile) before the put
+            // finishes, so the asset is never persisted for offline use (codex P2).
+            if (res.ok) event.waitUntil(cache.put(request, res.clone()));
+            return res;
+          })
+          .catch(() => undefined);
+        // Serve cache instantly when present, but let the refresh finish in the
+        // background so the next load gets the new content. On a miss, await it.
+        if (cached) {
+          event.waitUntil(revalidate);
+          return cached;
         }
+        return (await revalidate) ?? Response.error();
       })(),
     );
   }
