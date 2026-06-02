@@ -19,7 +19,7 @@
 //     so a changed-content same-name chunk self-heals on the next load.
 //
 // Bump CACHE_VERSION to invalidate old caches on the next activate.
-const CACHE_VERSION = "v2";
+const CACHE_VERSION = "v3";
 const CACHE_PREFIX = "cortextos-";
 const CACHE = `${CACHE_PREFIX}${CACHE_VERSION}`;
 const OFFLINE_URL = "/offline";
