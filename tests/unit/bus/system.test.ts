@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, existsSync, readFileSync, mkdirSync, writeFileSync
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { execSync } from 'child_process';
-import { selfRestart, hardRestart, autoCommit, checkGoalStaleness, postActivity } from '../../../src/bus/system';
+import { selfRestart, hardRestart, autoCommit, checkGoalStaleness, postActivity, containsCredential } from '../../../src/bus/system';
 import type { BusPaths } from '../../../src/types';
 
 function makePaths(testDir: string, agent: string = 'test-agent'): BusPaths {
@@ -107,13 +107,44 @@ describe('Bus System', () => {
       expect(report.blocked.some(b => b.includes('app.env'))).toBe(true);
     });
 
+    it('blocks all dot-env variants (.env.local, .env.production)', () => {
+      writeFileSync(join(gitDir, '.env.local'), 'token=A8kQ2mZ9pL4vX7wR1tB6nC3dF5gH0jY');
+      writeFileSync(join(gitDir, '.env.production'), 'API_KEY=kJ8mN2pQ7rT4wX9zB1cD6fH3g');
+
+      const report = autoCommit(gitDir, true);
+      expect(report.staged).not.toContain('.env.local');
+      expect(report.staged).not.toContain('.env.production');
+      expect(report.blocked.some(b => b.includes('.env.local'))).toBe(true);
+      expect(report.blocked.some(b => b.includes('.env.production'))).toBe(true);
+    });
+
     it('filters out files with credential patterns', () => {
-      writeFileSync(join(gitDir, 'config.json'), '{"token=abc123"}');
+      // Realistic leaked secret: keyword assignment with a high-entropy value.
+      writeFileSync(join(gitDir, 'config.json'), '{"api_secret": "A8kQ2mZ9pL4vX7wR1tB6nC3dF5gH0jY"}');
       writeFileSync(join(gitDir, 'readme.md'), 'just a readme');
 
       const report = autoCommit(gitDir, true);
       expect(report.blocked.some(b => b.includes('config.json') && b.includes('credential'))).toBe(true);
       expect(report.staged).toContain('readme.md');
+    });
+
+    it('does not flag false positives (cookie-name comments, package-lock substrings)', () => {
+      // proxy.ts regression: a comment mentioning a query param is not a secret.
+      writeFileSync(
+        join(gitDir, 'proxy.ts'),
+        '// SSE endpoints require ?token=<jwt> auth\nconst name = "__Secure-authjs.session-token";\n',
+      );
+      // package-lock regression: "microtask-" contains "sk-"; integrity is base64.
+      writeFileSync(
+        join(gitDir, 'package-lock.json'),
+        '{\n  "resolved": "https://registry.npmjs.org/queue-microtask/-/queue-microtask-1.2.3.tgz",\n  "integrity": "sha512-AKIAabc123token=secretkey=NkO8RvCxxQ9z+mD7w0pLqWeRtYuIoP2aSdFgHjKl=="\n}\n',
+      );
+
+      const report = autoCommit(gitDir, true);
+      expect(report.staged).toContain('proxy.ts');
+      expect(report.staged).toContain('package-lock.json');
+      expect(report.blocked.some(b => b.includes('proxy.ts'))).toBe(false);
+      expect(report.blocked.some(b => b.includes('package-lock.json'))).toBe(false);
     });
 
     it('allows script files even with credential-like patterns', () => {
@@ -284,6 +315,83 @@ describe('Bus System', () => {
 
       const result = await postActivity(orgDir, testDir, 'myorg', 'hello');
       expect(result).toBe(false);
+    });
+  });
+
+  describe('containsCredential', () => {
+    // --- False positives that previously blocked auto-commit (2026-06-01) ---
+    it('ignores cookie-name comments in source (proxy.ts regression)', () => {
+      expect(containsCredential('// SSE endpoints require ?token=<jwt> auth', 'proxy.ts')).toBe(false);
+      expect(containsCredential('const COOKIE = "__Secure-authjs.session-token";', 'proxy.ts')).toBe(false);
+    });
+
+    it('ignores "sk-" substring inside package names (package-lock regression)', () => {
+      const line = '"resolved": "https://registry.npmjs.org/queue-microtask/-/queue-microtask-1.2.3.tgz",';
+      expect(containsCredential(line, 'package-lock.json')).toBe(false);
+    });
+
+    it('ignores base64 integrity hashes in lockfiles', () => {
+      const line = '      "integrity": "sha512-AKIAtoken=secretkey=NkO8RvCxxQ9z+mD7w0pLqWeRtYuIoP2aSdFgHjKl==",';
+      expect(containsCredential(line, 'package-lock.json')).toBe(false);
+    });
+
+    it('ignores bare identifiers and env-var references', () => {
+      expect(containsCredential('const token = getToken();', 'a.ts')).toBe(false);
+      expect(containsCredential('apiKey: process.env.API_KEY', 'a.ts')).toBe(false);
+      expect(containsCredential('secret: "${VAULT_SECRET}"', 'a.ts')).toBe(false);
+      expect(containsCredential('password = "your-password-here"', 'a.ts')).toBe(false);
+    });
+
+    // --- True positives that MUST still be caught ---
+    it('flags real token formats', () => {
+      expect(containsCredential('const k = "sk-' + 'a'.repeat(40) + '"', 'a.ts')).toBe(true);
+      expect(containsCredential('GH=ghp_' + 'b'.repeat(36), 'a.ts')).toBe(true);
+      expect(containsCredential('aws = AKIA' + 'ABCDEFGH12345678', 'a.ts')).toBe(true);
+      // Azure connection string ending in base64 padding.
+      expect(containsCredential('DefaultEndpointsProtocol=https;AccountKey=' + 'a'.repeat(86) + '==;', 'app.config')).toBe(true);
+      // Anthropic key (hyphenated) in a plain source literal, no secret-keyword LHS.
+      expect(containsCredential('const anthropic = "sk-ant-api03-' + 'x'.repeat(90) + '"', 'client.ts')).toBe(true);
+    });
+
+    it('flags unquoted secret assignments in YAML config', () => {
+      expect(containsCredential('password: A8kQ2mZ9pL4vX7wR1tB6nC3dF5gH0jY', 'values.yaml')).toBe(true);
+      expect(containsCredential('api_token=kJ8mN2pQ7rT4wX9zB1cD6fH3g', 'config.yml')).toBe(true);
+    });
+
+    it('flags unquoted secrets in extensionless + dotfile credential files', () => {
+      expect(containsCredential('password=A8kQ2mZ9pL4vX7wR1tB6nC3dF5gH0jY', 'credentials')).toBe(true);
+      expect(containsCredential('//registry.npmjs.org/:_authToken=npm_aB3kQ2mZ9pL4vX7wR1tB6nC3dF5gH0', '.npmrc')).toBe(true);
+    });
+
+    it('flags secret-keyword assignments with high-entropy literal values', () => {
+      expect(containsCredential('"api_secret": "A8kQ2mZ9pL4vX7wR1tB6nC3dF5gH0jY"', 'config.json')).toBe(true);
+      expect(containsCredential("auth_token = 'kJ8mN2pQ7rT4wX9zB1cD6fH3gL5vY0aS'", 'config.yaml')).toBe(true);
+      // Quoted passwords with special characters (@ ! $ :) are captured too.
+      expect(containsCredential('"password": "p@ssw0rd!ThisIsSecret"', 'config.json')).toBe(true);
+    });
+
+    it('does not flag quoted multi-word prose assigned to a secret-ish key', () => {
+      expect(containsCredential('"secret_note": "remember to rotate this later"', 'config.json')).toBe(false);
+    });
+
+    it('flags UNQUOTED secret assignments in ini/properties-style configs', () => {
+      // Regression: must not let unquoted config secrets slip through.
+      expect(containsCredential('password=A8kQ2mZ9pL4vX7wR1tB6nC3dF5gH0jY', 'credentials.ini')).toBe(true);
+      expect(containsCredential('api_key = kJ8mN2pQ7rT4wX9zB1cD6fH3g', 'app.properties')).toBe(true);
+      // Passwords with special characters (@ ! $ :) are captured too.
+      expect(containsCredential('password=p@ssw0rd!ThisIsSecret', 'app.conf')).toBe(true);
+    });
+
+    it('does NOT flag unquoted CODE expressions assigned to a secret keyword', () => {
+      // proxy.ts:186 regression — value is code, not a literal secret.
+      expect(containsCredential('const token = authHeader.slice(7);', 'proxy.ts')).toBe(false);
+      expect(containsCredential('const secret = getSecretFromVault();', 'a.ts')).toBe(false);
+      expect(containsCredential('password = hashedPasswordValue', 'a.ts')).toBe(false);
+    });
+
+    it('still flags a real token format even inside a lockfile (non-integrity line)', () => {
+      const line = '  "_authToken": "sk-' + 'z'.repeat(40) + '"';
+      expect(containsCredential(line, 'package-lock.json')).toBe(true);
     });
   });
 });
