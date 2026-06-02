@@ -157,10 +157,15 @@ describe("service worker", () => {
   });
 
   it("activate evicts ALL older cortextos-* caches, keeps current + foreign", async () => {
+    // Derive the current version from the SW source so this test stays correct
+    // across CACHE_VERSION bumps instead of hardcoding it (a bump must not break
+    // this test — only the eviction behaviour matters).
+    const current = SW_SRC.match(/CACHE_VERSION = "(v\d+)"/)?.[1];
+    expect(current).toBeTruthy();
     sw.caches.keys.mockResolvedValueOnce([
-      "cortextos-v0", // ours, old → delete
-      "cortextos-v1", // ours, old → delete (current is now v2)
-      "cortextos-v2", // ours, current → keep
+      "cortextos-v0", // ours, older → delete
+      "cortextos-v1", // ours, older → delete
+      `cortextos-${current}`, // ours, current → keep
       "some-other-app-cache", // not ours → keep (codex P3)
     ]);
     await runLifecycle(sw.listeners.activate);
