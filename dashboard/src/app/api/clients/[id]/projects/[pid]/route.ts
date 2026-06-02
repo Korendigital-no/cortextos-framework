@@ -10,7 +10,10 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
 
   const project = db.prepare('SELECT * FROM crm_client_projects WHERE id = ?').get(projectId);
   const timeEntries = db.prepare('SELECT * FROM crm_time_entries WHERE project_id = ? ORDER BY date DESC').all(projectId);
-  const tasks = db.prepare('SELECT * FROM crm_client_tasks WHERE project_id = ? ORDER BY status = "completed", due_at IS NULL, due_at').all(projectId);
+  // NOTE: 'completed' MUST be single-quoted. better-sqlite3 ships with
+  // SQLITE_DQS=0, so a double-quoted "completed" is parsed as a column name
+  // (not a string literal) and throws `no such column: "completed"` → 500.
+  const tasks = db.prepare("SELECT * FROM crm_client_tasks WHERE project_id = ? ORDER BY status = 'completed', due_at IS NULL, due_at").all(projectId);
   const notes = db.prepare('SELECT * FROM crm_client_notes WHERE project_id = ? ORDER BY created_at DESC').all(projectId);
   const documents = db.prepare('SELECT * FROM crm_documents WHERE project_id = ? ORDER BY created_at DESC').all(projectId);
   const checklists = db.prepare('SELECT * FROM crm_client_checklists WHERE project_id = ? ORDER BY created_at DESC').all(projectId);
