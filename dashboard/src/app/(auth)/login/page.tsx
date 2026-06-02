@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import * as Sentry from '@sentry/nextjs';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -140,6 +141,9 @@ export default function LoginPage() {
       setError(`Sign-in failed with status ${res.status}`);
       setLoading(false);
     } catch (err) {
+      // Surface auth submit failures (network/CORS/unexpected) in Sentry — these
+      // are user-blocking and were previously invisible (only shown in the UI).
+      Sentry.captureException(err, { tags: { area: 'login-submit' } });
       console.error('[login] submit error:', err);
       setError('Network error. Please try again.');
       setLoading(false);
