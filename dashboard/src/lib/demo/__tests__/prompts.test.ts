@@ -39,6 +39,10 @@ describe('P3 scripts validator', () => {
   it('rejects a script missing hook/body/cta', () => {
     expect(P3_SCRIPTS.validate({ scripts: [{ concept_title: 'c', platform: 'TikTok' }] })).toBe(false);
   });
+  it('rejects a script missing concept_title or platform (cards would render undefined)', () => {
+    expect(P3_SCRIPTS.validate({ scripts: [{ hook: 'h', body: 'b', cta: 'c' }] })).toBe(false);
+    expect(P3_SCRIPTS.validate({ scripts: [{ concept_title: 'c', hook: 'h', body: 'b', cta: 'c' }] })).toBe(false);
+  });
 });
 
 describe('P4 ugc validator', () => {

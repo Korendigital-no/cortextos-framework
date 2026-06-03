@@ -1,4 +1,5 @@
 import { NextRequest } from 'next/server';
+import { auth } from '@/lib/auth';
 import { runStage, STAGE_ORDER, type StageKey } from '@/lib/demo/pipeline';
 import type { BriefInput } from '@/lib/demo/prompts';
 
@@ -14,6 +15,15 @@ function isBrief(v: unknown): v is BriefInput {
 }
 
 export async function POST(request: NextRequest) {
+  // This endpoint spends external LLM tokens (server-side key), so it must
+  // authenticate itself — do not rely on middleware alone (same lesson as the
+  // server-action hardening). Belt-and-suspenders with proxy.ts's /api 401, and
+  // it stays safe if the demo is later exposed on a public path.
+  const session = await auth();
+  if (!session?.user) {
+    return Response.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
   let body: unknown;
   try {
     body = await request.json();

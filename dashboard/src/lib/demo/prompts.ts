@@ -99,7 +99,9 @@ function validateConcepts(p: unknown): p is Concepts {
   return isObj(p) && Array.isArray(p.concepts) && p.concepts.every(c => isObj(c) && typeof c.title === 'string' && typeof c.angle === 'string' && typeof c.hook === 'string' && typeof c.why_it_lands === 'string');
 }
 function validateScripts(p: unknown): p is Scripts {
-  return isObj(p) && Array.isArray(p.scripts) && p.scripts.every(s => isObj(s) && typeof s.hook === 'string' && typeof s.body === 'string' && typeof s.cta === 'string');
+  return isObj(p) && Array.isArray(p.scripts) && p.scripts.every(s => isObj(s)
+    && typeof s.concept_title === 'string' && typeof s.platform === 'string'
+    && typeof s.hook === 'string' && typeof s.body === 'string' && typeof s.cta === 'string');
 }
 function validateUgc(p: unknown): p is UgcResult {
   if (!isObj(p) || !isObj(p.ugc_script) || !isObj(p.creator_persona)) return false;
