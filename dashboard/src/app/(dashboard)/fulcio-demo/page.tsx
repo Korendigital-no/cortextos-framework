@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { IconSparkles, IconCircleCheck, IconLoader2, IconChevronRight } from '@tabler/icons-react';
+import { IconSparkles, IconCircleCheck, IconLoader2, IconChevronRight, IconPhoto } from '@tabler/icons-react';
 import { NICHE_PRESETS, getPreset, DEFAULT_PRESET_ID } from '@/lib/demo/niches';
 import { STAGE_ORDER, type StageKey } from '@/lib/demo/pipeline';
 import type { Teardown, Concepts, Scripts, UgcResult } from '@/lib/demo/prompts';
@@ -40,6 +40,11 @@ export default function FulcioDemoPage() {
   const [scripts, setScripts] = useState<Scripts | null>(null);
   const [ugc, setUgc] = useState<UgcResult | null>(null);
 
+  // P5 static-ad image (on-demand; ~40s, kept out of the pipeline flow).
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const [imageLoading, setImageLoading] = useState(false);
+  const [imageError, setImageError] = useState<string | null>(null);
+
   const preset = getPreset(presetId);
 
   function applyPreset(id: string) {
@@ -61,9 +66,29 @@ export default function FulcioDemoPage() {
     return json as { data: unknown; provider: string; model: string };
   }
 
+  async function generateImage() {
+    const concept = concepts?.concepts?.[0];
+    if (!concept) return;
+    setImageLoading(true); setImageError(null); setImageUrl(null);
+    try {
+      const res = await fetch('/api/demo/image', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ produkt: brief.produkt, plattform: brief.plattform, conceptTitle: concept.title }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'Image generation failed');
+      setImageUrl(json.dataUrl);
+    } catch (e) {
+      setImageError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setImageLoading(false);
+    }
+  }
+
   async function generate() {
     setRunning(true); setError(null); setDone(new Set()); setMeta(null);
     setTeardown(null); setConcepts(null); setScripts(null); setUgc(null);
+    setImageUrl(null); setImageError(null);
     const t0 = Date.now();
     const ctx: Record<string, unknown> = {};
     let provider = '', model = '';
@@ -215,6 +240,28 @@ export default function FulcioDemoPage() {
                   </div>
                 ))}
               </div>
+            </Card>
+          )}
+
+          {concepts && concepts.concepts.length > 0 && (
+            <Card title="Statisk annonse" subtitle="Generert annonse-mockup i nisjens stil">
+              {imageUrl ? (
+                <div className="space-y-2">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={imageUrl} alt="Generert statisk annonse" className="rounded-lg border max-w-sm w-full" />
+                  <Button variant="ghost" size="sm" onClick={generateImage} disabled={imageLoading}>Generer på nytt</Button>
+                </div>
+              ) : imageLoading ? (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground py-6">
+                  <IconLoader2 className="size-4 animate-spin" /> Genererer statisk annonse (~40s)…
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <p className="text-sm text-muted-foreground">Lag en ferdig annonse-mockup for det sterkeste konseptet ({concepts.concepts[0].title}).</p>
+                  <Button variant="outline" size="sm" onClick={generateImage}><IconPhoto className="size-4 mr-1" />Generer statisk annonse</Button>
+                  {imageError && <p className="text-xs text-red-500">{imageError}</p>}
+                </div>
+              )}
             </Card>
           )}
 
