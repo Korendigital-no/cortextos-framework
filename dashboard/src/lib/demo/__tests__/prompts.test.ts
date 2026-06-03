@@ -30,6 +30,9 @@ describe('P2 concepts validator', () => {
     expect(P2_CONCEPTS.validate({ concepts: [{ title: 't', angle: 'a', hook: 'h' }] })).toBe(false);
     expect(P2_CONCEPTS.validate({ concepts: 'nope' })).toBe(false);
   });
+  it('rejects an empty concept batch (schema-shaped but useless)', () => {
+    expect(P2_CONCEPTS.validate({ concepts: [] })).toBe(false);
+  });
 });
 
 describe('P3 scripts validator', () => {
@@ -42,6 +45,9 @@ describe('P3 scripts validator', () => {
   it('rejects a script missing concept_title or platform (cards would render undefined)', () => {
     expect(P3_SCRIPTS.validate({ scripts: [{ hook: 'h', body: 'b', cta: 'c' }] })).toBe(false);
     expect(P3_SCRIPTS.validate({ scripts: [{ concept_title: 'c', hook: 'h', body: 'b', cta: 'c' }] })).toBe(false);
+  });
+  it('rejects an empty scripts batch', () => {
+    expect(P3_SCRIPTS.validate({ scripts: [] })).toBe(false);
   });
 });
 

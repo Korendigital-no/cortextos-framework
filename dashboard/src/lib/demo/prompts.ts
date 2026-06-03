@@ -96,10 +96,12 @@ function validateTeardown(p: unknown): p is Teardown {
   return isObj(p) && isStrArr(p.hook_patterns) && isStrArr(p.recurring_angles) && isStrArr(p.why_it_works) && isStrArr(p.house_voice_traits);
 }
 function validateConcepts(p: unknown): p is Concepts {
-  return isObj(p) && Array.isArray(p.concepts) && p.concepts.every(c => isObj(c) && typeof c.title === 'string' && typeof c.angle === 'string' && typeof c.hook === 'string' && typeof c.why_it_lands === 'string');
+  // Must be non-empty: an empty batch is schema-shaped but useless (empty card +
+  // downstream stages run with no selected concept). The prompt asks for 3-5.
+  return isObj(p) && Array.isArray(p.concepts) && p.concepts.length > 0 && p.concepts.every(c => isObj(c) && typeof c.title === 'string' && typeof c.angle === 'string' && typeof c.hook === 'string' && typeof c.why_it_lands === 'string');
 }
 function validateScripts(p: unknown): p is Scripts {
-  return isObj(p) && Array.isArray(p.scripts) && p.scripts.every(s => isObj(s)
+  return isObj(p) && Array.isArray(p.scripts) && p.scripts.length > 0 && p.scripts.every(s => isObj(s)
     && typeof s.concept_title === 'string' && typeof s.platform === 'string'
     && typeof s.hook === 'string' && typeof s.body === 'string' && typeof s.cta === 'string');
 }
@@ -157,6 +159,7 @@ Generer 3-5 DISTINKTE annonse-konsepter for denne kampanjen, i husstilen. Hvert 
     properties: {
       concepts: {
         type: 'array',
+        minItems: 1,
         items: {
           type: 'object',
           additionalProperties: false,
@@ -191,6 +194,7 @@ Skriv 2-3 ferdige annonse-manus basert på de sterkeste konseptene. Hvert manus:
     properties: {
       scripts: {
         type: 'array',
+        minItems: 1,
         items: {
           type: 'object',
           additionalProperties: false,
