@@ -363,8 +363,20 @@ function initializeSchema(db: Database.Database): void {
   // queue processor then drops those jobs to skipped_test (no CRM rows created),
   // so only this audit column is needed. Mirror it so dashboard-built DBs match.
   safeAddColumn(db, 'crm_webhook_log', 'is_test', 'INTEGER DEFAULT 0');
+  // Per-project v1: time entries can belong to a project (nullable — a NULL
+  // project_id is a client-level entry not yet assigned to any project). The
+  // framework's crm-schema.ts already adds project_id on the real DB; mirror it
+  // here so dashboard-built DBs match and the project-detail queries resolve.
+  safeAddColumn(db, 'crm_time_entries', 'project_id', 'TEXT REFERENCES crm_client_projects(id)');
+  // Billable model: the project carries the DEFAULT (billable=1), each time
+  // entry carries a NULLABLE override (NULL = inherit the project default,
+  // 1 = billable, 0 = non-billable). Effective billability is resolved in
+  // src/lib/billable.ts so the rule lives in exactly one place.
+  safeAddColumn(db, 'crm_client_projects', 'billable', 'INTEGER NOT NULL DEFAULT 1');
+  safeAddColumn(db, 'crm_time_entries', 'billable', 'INTEGER');
 
   db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_crm_time_entries_project ON crm_time_entries(project_id);
     CREATE INDEX IF NOT EXISTS idx_accounting_invoices_account ON accounting_invoices(account_id);
     CREATE INDEX IF NOT EXISTS idx_accounting_expenses_account ON accounting_expenses(account_id);
     CREATE INDEX IF NOT EXISTS idx_accounting_expenses_recurring ON accounting_expenses(recurring_id);

@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { db } from '@/lib/db';
 import { projectBelongsToClient } from '@/lib/crm-client-auth';
+import { splitBillableHours, type HoursEntry } from '@/lib/billable';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,10 +19,16 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
   const documents = db.prepare('SELECT * FROM crm_documents WHERE project_id = ? ORDER BY created_at DESC').all(projectId);
   const checklists = db.prepare('SELECT * FROM crm_client_checklists WHERE project_id = ? ORDER BY created_at DESC').all(projectId);
 
-  const totals = db.prepare(`
+  const totalsRow = db.prepare(`
     SELECT COALESCE(SUM(hours), 0) as total_hours, COUNT(*) as entry_count
     FROM crm_time_entries WHERE project_id = ?
-  `).get(projectId);
+  `).get(projectId) as { total_hours: number; entry_count: number };
+
+  // Billable split: per-entry override on top of the project default, resolved
+  // in lib/billable so API/UI agree. Surfaces invoiceable vs non-invoiceable hours.
+  const projectBillable = (project as { billable?: 0 | 1 | null } | undefined)?.billable;
+  const { billableHours, nonBillableHours } = splitBillableHours(timeEntries as HoursEntry[], projectBillable);
+  const totals = { ...totalsRow, billable_hours: billableHours, non_billable_hours: nonBillableHours };
 
   return Response.json({ project, timeEntries, tasks, notes, documents, checklists, totals });
 }
