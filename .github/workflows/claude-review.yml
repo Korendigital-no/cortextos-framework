@@ -10,6 +10,11 @@ permissions:
 
 jobs:
   security:
+    # Dependabot-triggered pull_request runs get NO repository secrets
+    # (GitHub policy) — ANTHROPIC_API_KEY is empty and the action fails on
+    # every version bump. Dependency bumps carry no reviewable app code, so
+    # skip honestly instead of failing red.
+    if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
