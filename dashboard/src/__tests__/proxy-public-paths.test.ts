@@ -21,6 +21,15 @@ describe("proxy isPublicPath — PWA assets reachable while unauthenticated", ()
     expect(isPublicPath(p)).toBe(true);
   });
 
+  it("liveness probe is public; the DETAILED health endpoint stays gated (GAP-0034, hardened)", () => {
+    expect(isPublicPath("/api/workflows/health/liveness")).toBe(true);
+    // the data-bearing endpoint must NOT be anonymous (fleet-wide operational data)
+    expect(isPublicPath("/api/workflows/health")).toBe(false);
+    expect(isPublicPath("/api/workflows")).toBe(false);
+    expect(isPublicPath("/api/workflows/health/liveness/extra")).toBe(false);
+    expect(isPublicPath("/api/workflows/run")).toBe(false);
+  });
+
   it("still gates real app routes behind auth", () => {
     expect(isPublicPath("/")).toBe(false);
     expect(isPublicPath("/content")).toBe(false);
