@@ -21,11 +21,12 @@ describe("proxy isPublicPath — PWA assets reachable while unauthenticated", ()
     expect(isPublicPath(p)).toBe(true);
   });
 
-  it("health probe is public — exact match only (GAP-0034, upstream #547 parity)", () => {
-    expect(isPublicPath("/api/workflows/health")).toBe(true);
-    // everything else under /api/workflows stays gated
+  it("liveness probe is public; the DETAILED health endpoint stays gated (GAP-0034, hardened)", () => {
+    expect(isPublicPath("/api/workflows/health/liveness")).toBe(true);
+    // the data-bearing endpoint must NOT be anonymous (fleet-wide operational data)
+    expect(isPublicPath("/api/workflows/health")).toBe(false);
     expect(isPublicPath("/api/workflows")).toBe(false);
-    expect(isPublicPath("/api/workflows/health/extra")).toBe(false);
+    expect(isPublicPath("/api/workflows/health/liveness/extra")).toBe(false);
     expect(isPublicPath("/api/workflows/run")).toBe(false);
   });
 

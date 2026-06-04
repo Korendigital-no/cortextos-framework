@@ -79,11 +79,11 @@ export function isPublicPath(pathname: string): boolean {
   }
   // Webhook endpoints under /api/crm/webhooks/<provider>
   if (pathname.startsWith('/api/crm/webhooks/')) return true;
-  // GAP-0034 (upstream #547 parity): the workflows health probe must be
-  // reachable from monitoring contexts (load balancers, watcher crons, external
-  // watchdogs) without a session cookie — auth-gating defeats its purpose.
-  // Exact match only; everything else under /api/workflows stays gated.
-  if (pathname === '/api/workflows/health') return true;
+  // GAP-0034 (upstream #547, DELIBERATE divergence): upstream made the full
+  // health endpoint public, but it returns fleet-wide operational data (every
+  // agent's cron health) — anonymous disclosure. We expose only a payload-free
+  // liveness probe; the detailed endpoint stays behind auth. Exact match only.
+  if (pathname === '/api/workflows/health/liveness') return true;
   // Special files — favicon + PWA root assets (service worker + web manifest).
   if (
     pathname === '/favicon.ico' ||
