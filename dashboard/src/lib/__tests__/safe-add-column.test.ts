@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import Database from "better-sqlite3";
-import { safeAddColumn } from "../db";
+import { safeAddColumn } from "../schema";
 
 // Race-safety regression: `next build` collects page data in parallel worker
 // processes sharing one SQLite file, so a check-then-ALTER column migration
