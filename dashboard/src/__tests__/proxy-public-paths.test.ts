@@ -21,6 +21,14 @@ describe("proxy isPublicPath — PWA assets reachable while unauthenticated", ()
     expect(isPublicPath(p)).toBe(true);
   });
 
+  it("health probe is public — exact match only (GAP-0034, upstream #547 parity)", () => {
+    expect(isPublicPath("/api/workflows/health")).toBe(true);
+    // everything else under /api/workflows stays gated
+    expect(isPublicPath("/api/workflows")).toBe(false);
+    expect(isPublicPath("/api/workflows/health/extra")).toBe(false);
+    expect(isPublicPath("/api/workflows/run")).toBe(false);
+  });
+
   it("still gates real app routes behind auth", () => {
     expect(isPublicPath("/")).toBe(false);
     expect(isPublicPath("/content")).toBe(false);
