@@ -3,18 +3,26 @@ import { join } from 'path';
 import { mkdirSync, existsSync } from 'fs';
 import { initializeCrmSchema } from './crm-schema.js';
 import { switchToWal } from './sqlite-wal.js';
+import { resolveEnv } from '../utils/env.js';
 
 let instance: Database.Database | null = null;
 
 export function getCrmDb(): Database.Database {
   if (instance) return instance;
 
-  const ctxRoot = process.env.CTX_ROOT;
-  const instanceId = process.env.CTX_INSTANCE_ID ?? 'default';
-
-  if (!ctxRoot) {
-    throw new Error('CTX_ROOT environment variable is required for CRM database access');
-  }
+  // resolveEnv, not raw process.env: honors .cortextos-env and falls back to
+  // the canonical default root (~/.cortextos/<instanceId>) like every other
+  // bus module — a CRM CLI command run from a normal checkout must not throw
+  // just because CTX_ROOT was not exported (task_1780606343419).
+  //
+  // agentName override: only ctxRoot/instanceId are consumed here, but
+  // resolveEnv defaults agentName to basename(cwd) AND validates it — without
+  // the override, running a CRM command from any directory with an uppercase
+  // name (~/Documents, ~/MyProject) would throw "CTX_AGENT_NAME is invalid",
+  // trading one spurious env failure for another. The constant is valid and
+  // discarded; the sandbox/live leak guards in resolveEnv still run on the
+  // real env values.
+  const { ctxRoot, instanceId } = resolveEnv({ agentName: 'crm-db' });
 
   const dbDir = join(ctxRoot, 'dashboard');
   if (!existsSync(dbDir)) {
