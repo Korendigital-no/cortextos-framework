@@ -340,7 +340,25 @@ export class AgentProcess {
     }
 
     injectMessage((data) => this.pty?.write(data), content);
+    this.injectionsSinceMark++;
     return { ok: true };
+  }
+
+  /**
+   * Self-inflicted-stale detection support (malformed-tool-call hang class):
+   * every successful injection increments; the fast-checker resets the mark
+   * whenever it sees an AGENT-originated heartbeat. Many injections with no
+   * agent heartbeat = the session is responding but its tool calls are
+   * dropping silently.
+   */
+  private injectionsSinceMark = 0;
+
+  getInjectionsSinceMark(): number {
+    return this.injectionsSinceMark;
+  }
+
+  markInjectionsSeen(): void {
+    this.injectionsSinceMark = 0;
   }
 
   /**
