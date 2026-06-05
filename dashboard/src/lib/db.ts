@@ -6,12 +6,19 @@ import path from 'path';
 import fs from 'fs';
 import { initializeSchema } from './schema';
 import { switchToWal } from './sqlite-wal';
+import { resolveDbPath } from './db-path';
 
-const instanceId = process.env.CTX_INSTANCE_ID ?? 'default';
-const ctxRoot = process.env.CTX_ROOT;
-const DB_PATH = ctxRoot
-  ? path.join(ctxRoot, 'dashboard', `cortextos-${instanceId}.db`)
-  : path.join(process.cwd(), '.data', `cortextos-${instanceId}.db`);
+// Path contract (incl. per-process CI isolation for parallel next-build
+// workers) lives in db-path.ts where it is unit-tested side-effect-free.
+const DB_PATH = resolveDbPath(
+  {
+    ctxRoot: process.env.CTX_ROOT,
+    instanceId: process.env.CTX_INSTANCE_ID,
+    buildIsolationId: process.env.CORTEXTOS_BUILD_DB_ISOLATION,
+    pid: process.pid,
+  },
+  process.cwd(),
+);
 
 function createDatabase(): Database.Database {
   // Ensure .data directory exists

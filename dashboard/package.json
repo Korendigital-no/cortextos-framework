@@ -5,11 +5,11 @@
   "scripts": {
     "predev": "bash scripts/kill-port.sh",
     "dev": "next dev",
-    "build": "next build",
+    "build": "rm -f .data/cortextos-*-build-*.db* && CORTEXTOS_BUILD_DB_ISOLATION=$(node -p 'Date.now()') next build",
     "start": "next start",
     "prestart:prod": "bash scripts/kill-port.sh && bash scripts/ensure-built.sh",
     "start:prod": "next start -p ${PORT:-3000}",
-    "build:prod": "next build",
+    "build:prod": "rm -f .data/cortextos-*-build-*.db* && CORTEXTOS_BUILD_DB_ISOLATION=$(node -p 'Date.now()') next build",
     "postbuild:prod": "bash scripts/stamp-build-commit.sh",
     "lint": "eslint",
     "test": "vitest run --root .. dashboard/src",
