@@ -307,7 +307,7 @@ export class AgentProcess {
     // cap surfaced as a false-positive 'crash' on chief/analyst + the
     // crashes.log file.
     try {
-      const paths = resolvePaths(this.name, this.env.instanceId, this.env.org);
+      const paths = resolvePaths(this.name, this.env.instanceId, this.env.org, this.env.ctxRoot);
       writeFileSync(
         join(paths.stateDir, '.session-refresh'),
         'session-time-cap rollover\n',
@@ -340,7 +340,25 @@ export class AgentProcess {
     }
 
     injectMessage((data) => this.pty?.write(data), content);
+    this.injectionsSinceMark++;
     return { ok: true };
+  }
+
+  /**
+   * Self-inflicted-stale detection support (malformed-tool-call hang class):
+   * every successful injection increments; the fast-checker resets the mark
+   * whenever it sees an AGENT-originated heartbeat. Many injections with no
+   * agent heartbeat = the session is responding but its tool calls are
+   * dropping silently.
+   */
+  private injectionsSinceMark = 0;
+
+  getInjectionsSinceMark(): number {
+    return this.injectionsSinceMark;
+  }
+
+  markInjectionsSeen(): void {
+    this.injectionsSinceMark = 0;
   }
 
   /**
@@ -748,7 +766,7 @@ export class AgentProcess {
    */
   private buildReminderBlock(): string {
     try {
-      const paths = resolvePaths(this.name, this.env.instanceId, this.env.org);
+      const paths = resolvePaths(this.name, this.env.instanceId, this.env.org, this.env.ctxRoot);
       const overdue = getOverdueReminders(paths);
       if (overdue.length === 0) return '';
       const items = overdue.map(r =>

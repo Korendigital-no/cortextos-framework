@@ -3,6 +3,12 @@ import { execFile } from 'child_process';
 import { join } from 'path';
 import { createHash } from 'crypto';
 import { hardRestart } from '../bus/system.js';
+import { atomicWriteSync } from '../utils/atomic.js';
+import {
+  isSelfInflictedStale, isWatchdogHeartbeat, staleThresholdsFromEnv,
+  circuitAllowsRestart, recordCircuitRestart,
+  type StaleCircuit, type StaleThresholds,
+} from './stale-detector.js';
 import type { InboxMessage, BusPaths, TelegramMessage, TelegramCallbackQuery } from '../types/index.js';
 import { checkInbox, ackInbox } from '../bus/message.js';
 import { updateApproval } from '../bus/approval.js';
@@ -59,6 +65,15 @@ export class FastChecker {
   // Persisted to disk so --continue restarts don't reset the circuit breaker
   private ctxCircuitFile: string = '';
 
+  // Self-inflicted-stale detector (malformed-tool-call hang class)
+  private staleThresholds: StaleThresholds = staleThresholdsFromEnv();
+  private staleLastAgentBeatMs = 0;
+  private staleSessionStartMs = Date.now();
+  private staleLastCheckMs = 0;
+  private staleAlertedCircuitOpen = false;
+  private staleCircuit: StaleCircuit = { restarts: [] };
+  private staleCircuitFile: string = '';
+
   constructor(
     agent: AgentProcess,
     paths: BusPaths,
@@ -81,6 +96,12 @@ export class FastChecker {
     // Load persisted circuit breaker state so --continue restarts don't reset it
     this.ctxCircuitFile = join(paths.stateDir, '.ctx-circuit.json');
     this.loadCtxCircuit();
+
+    this.staleCircuitFile = join(paths.stateDir, '.stale-circuit.json');
+    try {
+      const raw = JSON.parse(readFileSync(this.staleCircuitFile, 'utf-8')) as StaleCircuit;
+      if (Array.isArray(raw?.restarts)) this.staleCircuit = { restarts: raw.restarts.filter(n => typeof n === 'number') };
+    } catch { /* fresh circuit */ }
   }
 
   /**
@@ -211,6 +232,89 @@ export class FastChecker {
 
     // Context monitor: check usage thresholds and fire warnings/handoffs
     await this.checkContextStatus();
+
+    // Self-inflicted-stale detector: prompts going IN, no agent heartbeat OUT
+    this.checkSelfInflictedStale();
+  }
+
+  /**
+   * Malformed-tool-call hang detector (analyst writeup, 3 recurrences): a
+   * degraded session keeps "responding" while every tool call — including
+   * update-heartbeat — drops silently. Signal: injections accumulate with no
+   * AGENT-originated heartbeat ('[watchdog]'-prefixed beats are the daemon's
+   * own idle writer and don't count). Action: force-fresh hard restart,
+   * circuit-broken at 3 per 6h so a hard-degrading session alerts instead of
+   * restart-looping.
+   */
+  private checkSelfInflictedStale(): void {
+    const now = Date.now();
+    if (now - this.staleLastCheckMs < 60_000) return; // 1/min is plenty
+    this.staleLastCheckMs = now;
+
+    // Refresh the agent-beat mark from heartbeat.json
+    try {
+      const hbPath = join(this.paths.stateDir, 'heartbeat.json');
+      const hb = JSON.parse(readFileSync(hbPath, 'utf-8')) as { status?: string; last_heartbeat?: string };
+      const ts = Date.parse(hb.last_heartbeat ?? '');
+      if (Number.isFinite(ts) && ts > this.staleLastAgentBeatMs && !isWatchdogHeartbeat(hb.status ?? '')) {
+        this.staleLastAgentBeatMs = ts;
+        this.agent.markInjectionsSeen();
+        this.staleAlertedCircuitOpen = false;
+      }
+    } catch { /* no heartbeat yet — sessionStart floors the window */ }
+
+    const stale = isSelfInflictedStale({
+      injectionsSinceAgentBeat: this.agent.getInjectionsSinceMark(),
+      lastAgentBeatMs: this.staleLastAgentBeatMs,
+      sessionStartMs: this.staleSessionStartMs,
+      nowMs: now,
+    }, this.staleThresholds);
+    if (!stale) return;
+
+    const detail = `${this.agent.getInjectionsSinceMark()} prompts injected without an agent heartbeat in ${Math.round((now - Math.max(this.staleLastAgentBeatMs, this.staleSessionStartMs)) / 60_000)} min`;
+
+    if (!circuitAllowsRestart(this.staleCircuit, now)) {
+      if (!this.staleAlertedCircuitOpen) {
+        this.staleAlertedCircuitOpen = true;
+        this.log(`SELF-INFLICTED-STALE circuit OPEN — ${detail}; auto-restart suppressed, manual intervention needed`);
+        void this.notifyStale(`⚠️ ${this.agent.name}: gjentatt degradert sesjon (${detail}). Auto-restart-grensen (3/6t) er nådd — manuell sjekk trengs.`);
+      }
+      return;
+    }
+
+    this.log(`SELF-INFLICTED-STALE detected — ${detail}; forcing fresh restart`);
+    this.staleCircuit = recordCircuitRestart(this.staleCircuit, now);
+    try {
+      atomicWriteSync(this.staleCircuitFile, JSON.stringify(this.staleCircuit));
+    } catch { /* circuit persistence is best-effort */ }
+    void this.notifyStale(`🔄 ${this.agent.name}: degradert sesjon oppdaget (${detail}) — restarter automatisk med fersk sesjon.`);
+    // Reset detector state for the fresh session
+    this.staleSessionStartMs = now;
+    this.agent.markInjectionsSeen();
+    // hardRestart writes the .force-fresh/.restart-planned markers; the
+    // RESTART itself is sessionRefresh() — stop()+start(), with
+    // shouldContinue() returning false off the marker (codex P1: markers
+    // alone leave the degraded process running forever, which is the exact
+    // failure this detector exists to end).
+    hardRestart(this.paths, this.agent.name, `self-inflicted stale: ${detail}`);
+    // Reset context_status.json like the context-restart canon (builder2 cross-
+    // review P2): a degraded session often carries HIGH ctx%, and the statusline
+    // hook is harness-side so the file can be <10 min fresh at restart-time —
+    // the freshness gate would let the OLD session's % through and hand the
+    // fresh session a spurious Tier-2/handoff inside its first minutes,
+    // burning a circuit slot on a restart loop of our own making.
+    const ctxStatusPath = join(this.paths.stateDir, 'context_status.json');
+    try {
+      writeFileSync(ctxStatusPath, JSON.stringify({ used_percentage: 0, exceeds_200k_tokens: false, written_at: new Date().toISOString() }));
+    } catch { /* non-fatal */ }
+    this.agent.sessionRefresh().catch(err => this.log(`Stale restart failed: ${err}`));
+  }
+
+  private async notifyStale(text: string): Promise<void> {
+    if (!this.telegramApi || !this.chatId) return;
+    try {
+      await this.telegramApi.sendMessage(this.chatId, text);
+    } catch { /* alert is best-effort; the log line is the record */ }
   }
 
   /**

@@ -1,0 +1,88 @@
+import { describe, it, expect } from 'vitest';
+import {
+  isSelfInflictedStale, isWatchdogHeartbeat, staleThresholdsFromEnv,
+  circuitAllowsRestart, recordCircuitRestart,
+  DEFAULT_STALE_THRESHOLDS, STALE_CIRCUIT_MAX, STALE_CIRCUIT_WINDOW_MS,
+} from '../../../src/daemon/stale-detector.js';
+
+/**
+ * Self-inflicted-stale detector (malformed-tool-call hang — analyst writeup,
+ * 3 recurrences). The defining signature: prompts keep going IN while no
+ * AGENT-originated heartbeat comes OUT.
+ */
+describe('isSelfInflictedStale', () => {
+  const T0 = 1_000_000_000_000;
+  const MIN = 60_000;
+  const base = { lastAgentBeatMs: T0, sessionStartMs: T0 - 120 * MIN };
+
+  it('fires on the analyst signature: many dropped prompts + long silence', () => {
+    expect(isSelfInflictedStale({
+      ...base, injectionsSinceAgentBeat: 6, nowMs: T0 + 46 * MIN,
+    })).toBe(true);
+  });
+
+  it('never fires on injections alone — a burst right after a real beat is healthy', () => {
+    expect(isSelfInflictedStale({
+      ...base, injectionsSinceAgentBeat: 20, nowMs: T0 + 10 * MIN,
+    })).toBe(false);
+  });
+
+  it('never fires on silence alone — a quiet night with no prompts is not degradation', () => {
+    expect(isSelfInflictedStale({
+      ...base, injectionsSinceAgentBeat: 2, nowMs: T0 + 600 * MIN,
+    })).toBe(false);
+  });
+
+  it('a fresh session gets its full window to boot before it can trip', () => {
+    const sessionStart = T0 + 100 * MIN;
+    expect(isSelfInflictedStale({
+      injectionsSinceAgentBeat: 10,
+      lastAgentBeatMs: 0,          // never beaten yet
+      sessionStartMs: sessionStart,
+      nowMs: sessionStart + 30 * MIN, // < 45 min window
+    })).toBe(false);
+    expect(isSelfInflictedStale({
+      injectionsSinceAgentBeat: 10,
+      lastAgentBeatMs: 0,
+      sessionStartMs: sessionStart,
+      nowMs: sessionStart + 46 * MIN,
+    })).toBe(true);
+  });
+});
+
+describe('isWatchdogHeartbeat', () => {
+  it('daemon idle-watchdog beats never reset the detector', () => {
+    expect(isWatchdogHeartbeat('[watchdog] analyst alive — idle session 2026-06-05T20:00:00Z')).toBe(true);
+    expect(isWatchdogHeartbeat('working on PR #69')).toBe(false);
+  });
+});
+
+describe('staleThresholdsFromEnv', () => {
+  it('defaults without env; env overrides parse with guards', () => {
+    expect(staleThresholdsFromEnv({})).toEqual(DEFAULT_STALE_THRESHOLDS);
+    expect(staleThresholdsFromEnv({ CTX_STALE_MIN_INJECTIONS: '4', CTX_STALE_WINDOW_MIN: '30' }))
+      .toEqual({ minInjections: 4, windowMs: 30 * 60_000 });
+    expect(staleThresholdsFromEnv({ CTX_STALE_MIN_INJECTIONS: '-1', CTX_STALE_WINDOW_MIN: 'abc' }))
+      .toEqual(DEFAULT_STALE_THRESHOLDS);
+  });
+});
+
+describe('stale circuit breaker', () => {
+  const T0 = 1_000_000_000_000;
+
+  it('allows up to MAX restarts in the window, then opens', () => {
+    let c = { restarts: [] as number[] };
+    for (let i = 0; i < STALE_CIRCUIT_MAX; i++) {
+      expect(circuitAllowsRestart(c, T0 + i)).toBe(true);
+      c = recordCircuitRestart(c, T0 + i);
+    }
+    expect(circuitAllowsRestart(c, T0 + STALE_CIRCUIT_MAX)).toBe(false);
+  });
+
+  it('old restarts age out of the window', () => {
+    let c = { restarts: [] as number[] };
+    for (let i = 0; i < STALE_CIRCUIT_MAX; i++) c = recordCircuitRestart(c, T0);
+    expect(circuitAllowsRestart(c, T0 + 1)).toBe(false);
+    expect(circuitAllowsRestart(c, T0 + STALE_CIRCUIT_WINDOW_MS + 1)).toBe(true);
+  });
+});

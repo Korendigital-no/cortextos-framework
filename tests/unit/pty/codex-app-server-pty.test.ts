@@ -832,36 +832,28 @@ describe('CodexAppServerPTY thread lifecycle', () => {
     });
   });
 
-  it('resumes the persisted thread in fresh mode when state exists', async () => {
+  it('fresh mode DISCARDS persisted state and starts a new thread (force-fresh contract)', async () => {
+    // A .force-fresh recovery (image-poison, self-inflicted-stale watchdog)
+    // exists to discard a degraded conversation — resuming it would loop the
+    // recovery forever. Fresh deletes the state file and calls thread/start.
     fsMocks.existsSync.mockReturnValue(true);
     fsMocks.readFileSync.mockReturnValue(JSON.stringify({
       threadId: 'persisted-fresh-thread',
       cwd: '/tmp/fw/orgs/acme/agents/codex-app-agent',
       updatedAt: '2026-05-07T00:00:00Z',
     }));
-    requestMock.mockResolvedValue({ result: { thread: { id: 'persisted-fresh-thread' } } });
+    requestMock.mockResolvedValue({ result: { thread: { id: 'brand-new-thread' } } });
     const pty = new CodexAppServerPTY(mockEnv, {});
     (pty as unknown as { _rpc: { request: typeof requestMock } })._rpc = { request: requestMock };
 
     await (pty as unknown as { startOrResumeThread(mode: 'fresh' | 'continue'): Promise<void> }).startOrResumeThread('fresh');
 
-    expect(requestMock).toHaveBeenCalledWith('thread/resume', {
-      threadId: 'persisted-fresh-thread',
+    expect(fsMocks.unlinkSync).toHaveBeenCalled(); // persisted state dropped
+    expect(requestMock).not.toHaveBeenCalledWith('thread/resume', expect.anything());
+    expect(requestMock).toHaveBeenCalledWith('thread/start', expect.objectContaining({
       cwd: '/tmp/fw/orgs/acme/agents/codex-app-agent',
-      approvalPolicy: 'never',
-      sandbox: 'danger-full-access',
-      config: { features: { goals: true } },
-      excludeTurns: true,
-      persistExtendedHistory: true,
-    });
-    expect(requestMock).not.toHaveBeenCalledWith(
-      'thread/start',
-      expect.anything(),
-    );
+    }));
   });
-});
-
-describe('CodexAppServerPTY event handling', () => {
   it('bootstraps on the app-server ready marker', () => {
     const pty = new CodexAppServerPTY(mockEnv, {});
     pty.getOutputBuffer().push('[codex-app-server] ready thread=abc\n');
