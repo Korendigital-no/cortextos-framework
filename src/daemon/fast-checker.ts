@@ -297,6 +297,16 @@ export class FastChecker {
     // alone leave the degraded process running forever, which is the exact
     // failure this detector exists to end).
     hardRestart(this.paths, this.agent.name, `self-inflicted stale: ${detail}`);
+    // Reset context_status.json like the context-restart canon (builder2 cross-
+    // review P2): a degraded session often carries HIGH ctx%, and the statusline
+    // hook is harness-side so the file can be <10 min fresh at restart-time —
+    // the freshness gate would let the OLD session's % through and hand the
+    // fresh session a spurious Tier-2/handoff inside its first minutes,
+    // burning a circuit slot on a restart loop of our own making.
+    const ctxStatusPath = join(this.paths.stateDir, 'context_status.json');
+    try {
+      writeFileSync(ctxStatusPath, JSON.stringify({ used_percentage: 0, exceeds_200k_tokens: false, written_at: new Date().toISOString() }));
+    } catch { /* non-fatal */ }
     this.agent.sessionRefresh().catch(err => this.log(`Stale restart failed: ${err}`));
   }
 
