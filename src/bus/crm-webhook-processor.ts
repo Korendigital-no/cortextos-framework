@@ -442,14 +442,30 @@ export function processFathomWebhook(
 }
 
 export async function processWebhookQueue(db: Database.Database): Promise<{ processed: number; failed: number; skipped: number; skippedTest: number }> {
+  // next_retry_at gate: a failed job waits out its exponential backoff instead
+  // of being retried on every cron tick until MAX_ATTEMPTS (codex P2).
   const jobs = db.prepare(`
     SELECT * FROM crm_webhook_log
     WHERE status = 'pending'
       AND attempt_count < ?
       AND (locked_at IS NULL OR locked_at < datetime('now', '-5 minutes'))
+      AND (next_retry_at IS NULL OR next_retry_at <= datetime('now'))
     ORDER BY received_at ASC
     LIMIT 10
   `).all(MAX_ATTEMPTS) as WebhookJob[];
+
+  // ATOMIC CLAIM (codex P1): two overlapping runs could both read the same
+  // pending rows above before either locked them — both would process the job
+  // and send DUPLICATE sales notifications. The claim is now conditional: only
+  // the worker whose UPDATE actually changes the row owns it; everyone else
+  // skips. (claim-then-classify: the test-skip below also runs post-claim.)
+  const claim = db.prepare(`
+    UPDATE crm_webhook_log
+    SET locked_at = datetime('now'), attempt_count = attempt_count + 1
+    WHERE id = ?
+      AND status = 'pending'
+      AND (locked_at IS NULL OR locked_at < datetime('now', '-5 minutes'))
+  `);
 
   let processed = 0;
   let failed = 0;
@@ -457,6 +473,8 @@ export async function processWebhookQueue(db: Database.Database): Promise<{ proc
   let skippedTest = 0;
 
   for (const job of jobs) {
+    if (claim.run(job.id).changes === 0) continue; // another worker owns it
+
     // Drop test fixtures before any CRM write or sales notification.
     // status='skipped_test' is terminal (the pending query never re-selects
     // it) and auditable in crm_webhook_log.
@@ -473,8 +491,6 @@ export async function processWebhookQueue(db: Database.Database): Promise<{ proc
       skippedTest++;
       continue;
     }
-
-    db.prepare('UPDATE crm_webhook_log SET locked_at = datetime(\'now\'), attempt_count = attempt_count + 1 WHERE id = ?').run(job.id);
 
     try {
       const txn = db.transaction(() => {
