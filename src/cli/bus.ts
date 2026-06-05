@@ -3296,7 +3296,7 @@ busCommand.command('log-measurement')
   .action(async (opts: { client: string; taskType: string; baselineSeconds: string; agent?: string; humanTouchSeconds: string; outcome: string; confidence?: string; completedAt?: string }) => {
     const { validateMeasurementMeta } = await import('../bus/measurement.js');
     const env = resolveEnv();
-    const paths = resolvePaths(env.agentName, env.instanceId, env.org);
+    const paths = resolvePaths(env.agentName, env.instanceId, env.org, env.ctxRoot);
     const baseline = Number(opts.baselineSeconds);
     const humanTouch = Number(opts.humanTouchSeconds);
     const meta = {
@@ -3331,7 +3331,7 @@ busCommand.command('measurement-report')
     const { join } = require('path');
     const { existsSync, readdirSync, readFileSync } = require('fs');
     const env = resolveEnv();
-    const paths = resolvePaths(env.agentName, env.instanceId, env.org);
+    const paths = resolvePaths(env.agentName, env.instanceId, env.org, env.ctxRoot);
 
     // A date-only --until means "include that whole day", so pin it to
     // end-of-day; new Date('2026-05-31') is midnight and would drop every

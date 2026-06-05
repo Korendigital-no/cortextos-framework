@@ -170,6 +170,22 @@ describe('Deals', () => {
     expect(proposalStage!.count).toBe(1);
     expect(proposalStage!.total_value).toBe(50000);
   });
+
+  it('pipeline excludes BOTH closed stages — parity with the dashboard pipeline route (task_1780606343485)', () => {
+    // The CLI previously filtered only closed_won, so a lost deal inflated
+    // active count/value while dashboard/src/app/api/crm/pipeline/route.ts
+    // excludes both closed_won AND closed_lost — the two surfaces disagreed
+    // for any pipeline containing lost deals. Codex bycatch, PR #64 R1.
+    createDeal(db, { title: 'active', value_nok: 10000, stage: 'lead' });
+    createDeal(db, { title: 'won', value_nok: 100000, stage: 'closed_won' });
+    createDeal(db, { title: 'lost', value_nok: 999999, stage: 'closed_lost' });
+
+    const pipeline = getPipeline(db);
+    expect(pipeline.map(p => p.stage)).toEqual(['lead']);
+    expect(pipeline.find(p => p.stage === 'closed_lost')).toBeUndefined();
+    // Total active value must not include the lost deal's 999999.
+    expect(pipeline.reduce((s, p) => s + p.total_value, 0)).toBe(10000);
+  });
 });
 
 describe('Activities', () => {
