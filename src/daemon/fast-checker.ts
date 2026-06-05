@@ -291,7 +291,13 @@ export class FastChecker {
     // Reset detector state for the fresh session
     this.staleSessionStartMs = now;
     this.agent.markInjectionsSeen();
+    // hardRestart writes the .force-fresh/.restart-planned markers; the
+    // RESTART itself is sessionRefresh() — stop()+start(), with
+    // shouldContinue() returning false off the marker (codex P1: markers
+    // alone leave the degraded process running forever, which is the exact
+    // failure this detector exists to end).
     hardRestart(this.paths, this.agent.name, `self-inflicted stale: ${detail}`);
+    this.agent.sessionRefresh().catch(err => this.log(`Stale restart failed: ${err}`));
   }
 
   private async notifyStale(text: string): Promise<void> {
