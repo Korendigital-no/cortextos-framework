@@ -475,7 +475,15 @@ export class CodexAppServerPTY {
   }
 
   private async startOrResumeThread(mode: 'fresh' | 'continue'): Promise<void> {
-    const persisted = this.readThreadState();
+    // FRESH means fresh (codex P1): a .force-fresh recovery (image-poison,
+    // self-inflicted-stale watchdog) exists precisely to DISCARD a degraded
+    // conversation. Resuming the persisted thread here would reload the
+    // poisoned state and loop the recovery forever — drop the state file and
+    // fall through to thread/start.
+    if (mode === 'fresh') {
+      try { unlinkSync(this._threadStatePath); } catch { /* nothing persisted */ }
+    }
+    const persisted = mode === 'fresh' ? null : this.readThreadState();
     if (persisted) {
       try {
         const resumed = await this.request<ThreadResponse>('thread/resume', {
