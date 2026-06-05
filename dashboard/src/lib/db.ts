@@ -5,6 +5,7 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 import { initializeSchema } from './schema';
+import { switchToWal } from './sqlite-wal';
 
 const instanceId = process.env.CTX_INSTANCE_ID ?? 'default';
 const ctxRoot = process.env.CTX_ROOT;
@@ -26,18 +27,12 @@ function createDatabase(): Database.Database {
   // processes (like Next.js build workers) hit SQLITE_BUSY immediately.
   db.pragma('busy_timeout = 10000');
 
-  // Switch to WAL mode (requires exclusive lock on the DB file).
-  // Guard against SQLITE_BUSY when multiple Next.js build workers open the DB
-  // simultaneously: if the switch fails, check whether another worker already
-  // succeeded. If so, continue; otherwise re-throw.
-  try {
-    db.pragma('journal_mode = WAL');
-  } catch (err: unknown) {
-    if ((err as NodeJS.ErrnoException & { code?: string }).code !== 'SQLITE_BUSY') throw err;
-    const rows = db.pragma('journal_mode') as { journal_mode: string }[];
-    if (rows[0]?.journal_mode !== 'wal') throw err;
-    // Another worker already switched to WAL — we're fine.
-  }
+  // Switch to WAL mode (requires exclusive lock on the DB file). Parallel
+  // Next.js build workers race here at module eval; both the switch AND the
+  // recovery read can return SQLITE_BUSY without consulting the busy handler
+  // during another worker's transition, so this is a bounded retry loop —
+  // see sqlite-wal.ts for the full story (task_1780568342981).
+  switchToWal(db);
   db.pragma('synchronous = NORMAL');
   db.pragma('foreign_keys = ON');
 
