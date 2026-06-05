@@ -312,7 +312,7 @@ export function getPipeline(db: Database.Database): PipelineStage[] {
   const rows = db.prepare(`
     SELECT stage, COUNT(*) as count, COALESCE(SUM(value_nok), 0) as total_value
     FROM crm_deals
-    WHERE stage NOT IN ('closed_won')
+    WHERE stage NOT IN ('closed_won', 'closed_lost')
     GROUP BY stage
     ORDER BY CASE stage
       WHEN 'lead' THEN 1
@@ -320,7 +320,6 @@ export function getPipeline(db: Database.Database): PipelineStage[] {
       WHEN 'qualified' THEN 3
       WHEN 'proposal' THEN 4
       WHEN 'negotiation' THEN 5
-      WHEN 'closed_lost' THEN 6
     END
   `).all() as PipelineStage[];
   return rows;
