@@ -1,11 +1,12 @@
 import { Command } from 'commander';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, cpSync } from 'fs';
 import { join, basename } from 'path';
-import { homedir, tmpdir } from 'os';
+import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
 import { validateAgentName } from '../utils/validate.js';
 import { IPCClient } from '../daemon/ipc-server.js';
 import { resolvePaths } from '../utils/paths.js';
+import { resolveEnv } from '../utils/env.js';
 
 interface ExportManifest {
   version: string;
@@ -39,6 +40,12 @@ export const importAgentCommand = new Command('import-agent')
       console.error('\n  Error: could not detect org. Pass --org <name>\n');
       process.exit(1);
     }
+
+    // resolveEnv, not hand-rolled homedir paths: honors CTX_ROOT and
+    // .cortextos-env (same class as task_1780542355208 / task_1780603297435).
+    // agentName here only dodges resolveEnv's cwd-basename validation — the
+    // imported agent's real name is threaded into resolvePaths below.
+    const env = resolveEnv({ agentName: 'import-agent', instanceId: options.instance, org });
 
     // Unpack into a temp dir
     const tmpDir = join(tmpdir(), `cortextos-import-${Date.now()}`);
@@ -134,8 +141,7 @@ export const importAgentCommand = new Command('import-agent')
     // Copy state (tasks, memory) from export if present
     const exportedStateDir = join(tmpDir, 'state');
     if (existsSync(exportedStateDir)) {
-      const ctxRoot = join(homedir(), '.cortextos', options.instance);
-      const paths = resolvePaths(agentName, options.instance, org);
+      const paths = resolvePaths(agentName, env.instanceId, org, env.ctxRoot);
 
       // Tasks
       const exportedTasks = join(exportedStateDir, 'tasks');
@@ -155,7 +161,7 @@ export const importAgentCommand = new Command('import-agent')
     }
 
     // Register in enabled-agents.json
-    const ctxRoot = join(homedir(), '.cortextos', options.instance);
+    const ctxRoot = env.ctxRoot;
     const enabledPath = join(ctxRoot, 'config', 'enabled-agents.json');
     let enabledAgents: Record<string, any> = {};
     try {
