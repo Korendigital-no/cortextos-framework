@@ -21,7 +21,7 @@
  * production runs.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import path from 'node:path';
 import { readFileSync } from 'node:fs';
 import { resolveDbPath } from '../../../dashboard/src/lib/db-path';
@@ -30,8 +30,33 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 const CWD = '/work/site';
 
 describe('resolveDbPath', () => {
-  it('honors explicit ctxRoot — isolation nonce is irrelevant there', () => {
+  it('HERMETIC BUILDS: the nonce beats ctxRoot — builds never touch the live DB (judgment flip, documented)', () => {
+    // Reverses the original "explicit CTX_ROOT wins" rule FOR BUILDS ONLY:
+    // dashboard/.env.local carries CTX_ROOT on crm-dev and Next auto-loads
+    // it into build workers (dotenv-injected, not chosen) — which ran
+    // schema-init against the LIVE prod DB on every local build
+    // (task_1780645402571). Runtime never sets the nonce, so runtime
+    // ctxRoot-resolution is unchanged.
     expect(resolveDbPath({ ctxRoot: '/srv/ctx', buildIsolationId: '17499', pid: 42 }, CWD)).toBe(
+      path.join(CWD, '.data', 'cortextos-default-build-17499-42.db'),
+    );
+  });
+
+  it('nonce path announces itself loudly on stderr (runtime-leak diagnosability)', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      resolveDbPath({ buildIsolationId: '17499', pid: 42 }, CWD);
+      expect(spy).toHaveBeenCalledWith(expect.stringContaining('[db-path] build-isolated DB:'));
+      spy.mockClear();
+      resolveDbPath({ ctxRoot: '/srv/ctx', pid: 42 }, CWD); // runtime path: silent
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('runtime (no nonce): explicit ctxRoot resolves the live DB exactly as before', () => {
+    expect(resolveDbPath({ ctxRoot: '/srv/ctx', pid: 42 }, CWD)).toBe(
       path.join('/srv/ctx', 'dashboard', 'cortextos-default.db'),
     );
   });

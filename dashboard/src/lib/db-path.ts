@@ -39,15 +39,36 @@ export interface DbPathEnv {
 
 export function resolveDbPath(env: DbPathEnv, cwd: string): string {
   const instanceId = env.instanceId || 'default';
-  if (env.ctxRoot) {
-    return path.join(env.ctxRoot, 'dashboard', `cortextos-${instanceId}.db`);
-  }
   // Nonce + pid: the nonce isolates RUNS (pid alone reuses numbers across
   // long-lived CI workspaces and could reopen a stale worker file), the pid
   // isolates parallel workers within the run. Sanitized defensively — it
   // becomes part of a filename. The build script also cleans old
   // *-build-*.db* files so cached workspaces cannot accumulate them.
   const isolationId = (env.buildIsolationId ?? '').trim().replace(/[^a-zA-Z0-9]/g, '');
-  const suffix = isolationId ? `-build-${isolationId}-${env.pid}` : '';
-  return path.join(cwd, '.data', `cortextos-${instanceId}${suffix}.db`);
+
+  // HERMETIC BUILDS (task_1780645402571, 5th member of the env-isolation
+  // class): during a build the nonce wins over ctxRoot — DELIBERATE flip of
+  // the original "explicit CTX_ROOT always wins" judgment. On the crm-dev
+  // host, dashboard/.env.local carries CTX_ROOT and Next auto-loads it into
+  // every build worker, so at build time ctxRoot is overwhelmingly
+  // dotenv-INJECTED, not chosen — and it pointed 9 page-data workers at the
+  // LIVE dashboard DB, running schema-init + migrations against prod on
+  // every local build. Builds need no live data (verified: a worktree build
+  // with no ctxRoot and no pre-existing DB produces a complete site), so
+  // build workers always get the throwaway staging file. Runtime is
+  // untouched: no runtime script sets the nonce (pinned by invariant).
+  if (isolationId) {
+    const isolated = path.join(cwd, '.data', `cortextos-${instanceId}-build-${isolationId}-${env.pid}.db`);
+    // One loud line (cross-review LOW): expected noise in build logs (one per
+    // worker), ANOMALY flag in server logs — if the nonce ever leaks into a
+    // runtime env (e.g. someone adds it to .env.local, which Next also loads
+    // at runtime and no source-invariant can pin), the server would silently
+    // serve an empty staging DB. This line makes that diagnosable in seconds.
+    console.error(`[db-path] build-isolated DB: ${isolated}`);
+    return isolated;
+  }
+  if (env.ctxRoot) {
+    return path.join(env.ctxRoot, 'dashboard', `cortextos-${instanceId}.db`);
+  }
+  return path.join(cwd, '.data', `cortextos-${instanceId}.db`);
 }
