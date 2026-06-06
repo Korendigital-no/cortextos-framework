@@ -21,7 +21,7 @@
  * production runs.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import path from 'node:path';
 import { readFileSync } from 'node:fs';
 import { resolveDbPath } from '../../../dashboard/src/lib/db-path';
@@ -30,8 +30,33 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 const CWD = '/work/site';
 
 describe('resolveDbPath', () => {
-  it('honors explicit ctxRoot — isolation nonce is irrelevant there', () => {
+  it('HERMETIC BUILDS: the nonce beats ctxRoot — builds never touch the live DB (judgment flip, documented)', () => {
+    // Reverses the original "explicit CTX_ROOT wins" rule FOR BUILDS ONLY:
+    // dashboard/.env.local carries CTX_ROOT on crm-dev and Next auto-loads
+    // it into build workers (dotenv-injected, not chosen) — which ran
+    // schema-init against the LIVE prod DB on every local build
+    // (task_1780645402571). Runtime never sets the nonce, so runtime
+    // ctxRoot-resolution is unchanged.
     expect(resolveDbPath({ ctxRoot: '/srv/ctx', buildIsolationId: '17499', pid: 42 }, CWD)).toBe(
+      path.join(CWD, '.data', 'cortextos-default-build-17499-42.db'),
+    );
+  });
+
+  it('nonce path announces itself loudly on stderr (runtime-leak diagnosability)', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      resolveDbPath({ buildIsolationId: '17499', pid: 42 }, CWD);
+      expect(spy).toHaveBeenCalledWith(expect.stringContaining('[db-path] build-isolated DB:'));
+      spy.mockClear();
+      resolveDbPath({ ctxRoot: '/srv/ctx', pid: 42 }, CWD); // runtime path: silent
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('runtime (no nonce): explicit ctxRoot resolves the live DB exactly as before', () => {
+    expect(resolveDbPath({ ctxRoot: '/srv/ctx', pid: 42 }, CWD)).toBe(
       path.join('/srv/ctx', 'dashboard', 'cortextos-default.db'),
     );
   });
@@ -101,6 +126,46 @@ describe('resolveDbPath', () => {
     );
     expect(src, 'db.ts must not branch on process.env.CI (runtime-leak footgun)').not.toMatch(
       /process\.env\.CI\b/,
+    );
+  });
+
+  it('source-invariant: dist-dir isolation — builds/dev write separate dirs, runtime serves .next untouched', () => {
+    // task_1780688854348 (the .next split-brain prod incident): every build
+    // writes .next-build, dev writes .next-dev, and NO runtime script sets
+    // NEXT_DIST_DIR (they serve the default .next, which only the prestart
+    // swap in ensure-built.sh may touch). A regression here reopens the
+    // build-overwrites-served-dir class.
+    const pkg = JSON.parse(readFileSync(path.join(REPO_ROOT, 'dashboard/package.json'), 'utf8'));
+    for (const script of ['build', 'build:prod']) {
+      expect(pkg.scripts[script], `${script} must build to the staging dist dir`).toMatch(
+        /NEXT_DIST_DIR=\.next-build /,
+      );
+    }
+    expect(pkg.scripts['dev'], 'dev must write its own dist dir').toMatch(/NEXT_DIST_DIR=\.next-dev /);
+    for (const hook of ['postbuild', 'postbuild:prod']) {
+      // BOTH build variants must stamp: an unstamped staging from plain
+      // `npm run build` would be silently ignored by every prestart forever
+      // (builder cross-review LOW). Explicit arg — post-hooks do not inherit
+      // the build command's inline env.
+      expect(pkg.scripts[hook], `${hook} must stamp the staging dir`).toMatch(
+        /stamp-build-commit\.sh \.next-build/,
+      );
+    }
+    for (const script of ['start', 'start:prod']) {
+      expect(pkg.scripts[script], `${script} must NOT override the serve dist dir`).not.toMatch(
+        /NEXT_DIST_DIR/,
+      );
+    }
+    const config = readFileSync(path.join(REPO_ROOT, 'dashboard/next.config.ts'), 'utf8');
+    expect(config, 'next.config must honor NEXT_DIST_DIR with .next default').toMatch(
+      /distDir:\s*process\.env\.NEXT_DIST_DIR \|\| '\.next'/,
+    );
+    const ensure = readFileSync(path.join(REPO_ROOT, 'dashboard/scripts/ensure-built.sh'), 'utf8');
+    expect(ensure, 'swap must gate on the completion stamp, never BUILD_ID alone (written before assets complete)').toMatch(
+      /DIST_STAGING\/\.build-commit/,
+    );
+    expect(ensure, 'ensure-built must not exec the build (exec kills the swap step)').not.toMatch(
+      /exec npm run/,
     );
   });
 
