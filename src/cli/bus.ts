@@ -163,6 +163,16 @@ busCommand
   .action((title: string, opts: { desc?: string; assignee?: string; priority: string; project?: string; needsApproval?: boolean; blockedBy?: string; blocks?: string; client?: string; taskType?: string; baselineSeconds?: string; confidence?: string }) => {
     const env = resolveEnv();
     const paths = resolvePaths(env.agentName, env.instanceId, env.org, env.ctxRoot);
+    // Kanban-tagging lint (fleet rule 2026-06-05): every task should carry a
+    // --project tag so the dashboard's project filter stays alive. WARN, not
+    // block — existing flows must not break, but the tool reminds so the
+    // rule is enforced by tooling instead of memory.
+    if (!opts.project) {
+      console.error(
+        'WARN: creating task without --project — fleet rule says tag every task ' +
+        '(e.g. --project framework|nettside|ad-engine). The kanban project filter misses untagged tasks.',
+      );
+    }
     const parseList = (raw?: string) => (raw ? raw.split(',').map(s => s.trim()).filter(Boolean) : []);
     // Måle-garanti: a task is guarantee-measured iff --client is given. Validate
     // the measurement flags at create-time (like log-measurement) so a typo can
