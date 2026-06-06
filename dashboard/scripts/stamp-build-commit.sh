@@ -11,9 +11,13 @@
 
 set -uo pipefail
 
+# Dist dir: explicit arg (npm post-hooks run as separate processes, so the
+# build command's inline env does NOT reach us) > env > serve-dir default.
+dist="${1:-${NEXT_DIST_DIR:-.next}}"
+
 commit="$(git log -1 --format=%H -- . 2>/dev/null || true)"
-if [[ -n "$commit" && -d ".next" ]]; then
-  printf '%s\n' "$commit" > ".next/.build-commit"
-  echo "[stamp-build] Stamped .next build @ ${commit:0:12}"
+if [[ -n "$commit" && -d "$dist" ]]; then
+  printf '%s\n' "$commit" > "$dist/.build-commit"
+  echo "[stamp-build] Stamped $dist build @ ${commit:0:12}"
 fi
 exit 0

@@ -104,6 +104,46 @@ describe('resolveDbPath', () => {
     );
   });
 
+  it('source-invariant: dist-dir isolation — builds/dev write separate dirs, runtime serves .next untouched', () => {
+    // task_1780688854348 (the .next split-brain prod incident): every build
+    // writes .next-build, dev writes .next-dev, and NO runtime script sets
+    // NEXT_DIST_DIR (they serve the default .next, which only the prestart
+    // swap in ensure-built.sh may touch). A regression here reopens the
+    // build-overwrites-served-dir class.
+    const pkg = JSON.parse(readFileSync(path.join(REPO_ROOT, 'dashboard/package.json'), 'utf8'));
+    for (const script of ['build', 'build:prod']) {
+      expect(pkg.scripts[script], `${script} must build to the staging dist dir`).toMatch(
+        /NEXT_DIST_DIR=\.next-build /,
+      );
+    }
+    expect(pkg.scripts['dev'], 'dev must write its own dist dir').toMatch(/NEXT_DIST_DIR=\.next-dev /);
+    for (const hook of ['postbuild', 'postbuild:prod']) {
+      // BOTH build variants must stamp: an unstamped staging from plain
+      // `npm run build` would be silently ignored by every prestart forever
+      // (builder cross-review LOW). Explicit arg — post-hooks do not inherit
+      // the build command's inline env.
+      expect(pkg.scripts[hook], `${hook} must stamp the staging dir`).toMatch(
+        /stamp-build-commit\.sh \.next-build/,
+      );
+    }
+    for (const script of ['start', 'start:prod']) {
+      expect(pkg.scripts[script], `${script} must NOT override the serve dist dir`).not.toMatch(
+        /NEXT_DIST_DIR/,
+      );
+    }
+    const config = readFileSync(path.join(REPO_ROOT, 'dashboard/next.config.ts'), 'utf8');
+    expect(config, 'next.config must honor NEXT_DIST_DIR with .next default').toMatch(
+      /distDir:\s*process\.env\.NEXT_DIST_DIR \|\| '\.next'/,
+    );
+    const ensure = readFileSync(path.join(REPO_ROOT, 'dashboard/scripts/ensure-built.sh'), 'utf8');
+    expect(ensure, 'swap must gate on the completion stamp, never BUILD_ID alone (written before assets complete)').toMatch(
+      /DIST_STAGING\/\.build-commit/,
+    );
+    expect(ensure, 'ensure-built must not exec the build (exec kills the swap step)').not.toMatch(
+      /exec npm run/,
+    );
+  });
+
   it('source-invariant: build scripts set the nonce and clean stale isolation files; runtime scripts do not', () => {
     const pkg = JSON.parse(readFileSync(path.join(REPO_ROOT, 'dashboard/package.json'), 'utf8'));
     for (const script of ['build', 'build:prod']) {

@@ -9,11 +9,15 @@
 # stubbed `npm`, so it never triggers a real `next build`.
 #
 # Cases:
-#   1. no .next/BUILD_ID                      -> BUILD   (first boot)
+#   1. no .next/BUILD_ID                      -> BUILD + swap  (first boot)
 #   2. BUILD_ID + .build-commit == HEAD       -> SKIP    (current, restart-storm safe)
-#   3. BUILD_ID + .build-commit != HEAD       -> BUILD   (source advanced = stale)
+#   3. BUILD_ID + .build-commit != HEAD       -> BUILD + swap  (source advanced = stale)
 #   4. BUILD_ID + no .build-commit            -> BUILD   (provenance unknown)
 #   5. BUILD_ID + not a git checkout          -> SKIP    (graceful, e.g. tarball deploy)
+#   6. complete staging waiting               -> SWAP, NO build (deploy flow)
+#   7. staging WITHOUT .build-commit          -> ignored (KREVD-1: killed build never served)
+#   8. serve missing + complete .next.old     -> RESTORE, no build (KREVD-2: interrupted swap)
+#   9. swap parks previous serve as .next.old (rollback candidate)
 
 set -uo pipefail
 
@@ -35,9 +39,11 @@ make_sandbox() {
 # Stub npm: simulate `npm run build:prod` + its postbuild stamp.
 if [[ "${1:-}" == "run" && "${2:-}" == "build:prod" ]]; then
   echo "STUB_NPM_BUILD_INVOKED"
-  mkdir -p .next
-  echo "fake-build-id" > .next/BUILD_ID
-  git log -1 --format=%H -- . > .next/.build-commit 2>/dev/null || true
+  # Mirrors the real build:prod: writes the STAGING dir (NEXT_DIST_DIR=.next-build)
+  # and the postbuild completion stamp. ensure-built owns the swap into .next.
+  mkdir -p .next-build
+  echo "fake-build-id" > .next-build/BUILD_ID
+  git log -1 --format=%H -- . > .next-build/.build-commit 2>/dev/null || true
   exit 0
 fi
 echo "STUB_NPM_UNEXPECTED_ARGS: $*" >&2
@@ -118,6 +124,63 @@ else
   pass "case5: non-git checkout skips gracefully"
 fi
 rm -rf "$SB" "$NONGIT"
+
+# Case 6: complete staging waiting -> swapped in WITHOUT building (deploy flow)
+SB="$(make_sandbox)"
+(
+  cd "$SB/repo/dashboard"
+  mkdir -p .next-build; echo staging-id > .next-build/BUILD_ID
+  git log -1 --format=%H -- . > .next-build/.build-commit
+)
+run_case SKIP "case6: complete staging swaps in without a build"
+if [[ -f "$SB/repo/dashboard/.next/BUILD_ID" && ! -d "$SB/repo/dashboard/.next-build" ]]; then
+  pass "case6b: staging became the serve dir"
+else
+  fail "case6b: staging was not swapped into .next"
+fi
+rm -rf "$SB"
+
+# Case 7: staging WITHOUT .build-commit (killed build) -> ignored, first-boot path builds
+SB="$(make_sandbox)"
+(
+  cd "$SB/repo/dashboard"
+  mkdir -p .next-build; echo half-written > .next-build/BUILD_ID
+  # deliberately NO .build-commit — BUILD_ID alone must never be trusted (KREVD-1)
+)
+run_case BUILD "case7: unstamped staging is ignored and a fresh build runs"
+rm -rf "$SB"
+
+# Case 8: serve missing + COMPLETE .next.old -> restored without building (KREVD-2)
+SB="$(make_sandbox)"
+(
+  cd "$SB/repo/dashboard"
+  mkdir -p .next.old; echo old-id > .next.old/BUILD_ID
+  git log -1 --format=%H -- . > .next.old/.build-commit
+)
+run_case SKIP "case8: interrupted swap restores .next.old without a build"
+if [[ -f "$SB/repo/dashboard/.next/BUILD_ID" && ! -d "$SB/repo/dashboard/.next.old" ]]; then
+  pass "case8b: .next.old became the serve dir"
+else
+  fail "case8b: .next.old was not restored into .next"
+fi
+rm -rf "$SB"
+
+# Case 9: swap parks the previous serve dir as .next.old (rollback candidate)
+SB="$(make_sandbox)"
+(
+  cd "$SB/repo/dashboard"
+  mkdir -p .next; echo previous-id > .next/BUILD_ID
+  git log -1 --format=%H -- . > .next/.build-commit
+  mkdir -p .next-build; echo staging-id > .next-build/BUILD_ID
+  git log -1 --format=%H -- . > .next-build/.build-commit
+)
+run_case SKIP "case9: staging swap with existing serve dir skips build"
+if [[ "$(cat "$SB/repo/dashboard/.next/BUILD_ID")" == "staging-id" && "$(cat "$SB/repo/dashboard/.next.old/BUILD_ID")" == "previous-id" ]]; then
+  pass "case9b: previous build parked as .next.old, staging promoted"
+else
+  fail "case9b: swap did not park previous build correctly"
+fi
+rm -rf "$SB"
 
 echo ""
 echo "ensure-built guard: $PASS passed, $FAIL failed"

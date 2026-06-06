@@ -18,6 +18,14 @@ const allowedDevOrigins = (process.env.DASHBOARD_ALLOWED_DEV_ORIGINS ?? '')
   .filter(Boolean);
 
 const nextConfig: NextConfig = {
+  // Dist-dir isolation (task_1780688854348): builds/dev write SEPARATE dirs
+  // (.next-build / .next-dev via env from package.json scripts); the serve
+  // dir .next is only ever touched by the prestart swap in ensure-built.sh
+  // (service-stopped context). Closes the split-brain class where a local
+  // build overwrote the directory a running next-server was serving from
+  // (2026-06-05 prod incident: new-disk HTML + old-memory asset manifest
+  // -> CSS 404, unstyled dashboard).
+  distDir: process.env.NEXT_DIST_DIR || '.next',
   serverExternalPackages: ['better-sqlite3'],
   ...(allowedDevOrigins.length > 0 && { allowedDevOrigins }),
   async redirects() {
