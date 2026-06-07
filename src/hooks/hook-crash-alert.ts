@@ -265,7 +265,13 @@ async function main(): Promise<void> {
   const instanceId = process.env.CTX_INSTANCE_ID || 'default';
   if (!agentName) return;
 
-  const ctxRoot = join(homedir(), '.cortextos', instanceId);
+  // Honor the daemon-injected CTX_ROOT (same pattern as hook-loop-detector /
+  // hook-context-status). Hardcoding ~/.cortextos/<instance> made this hook
+  // read a DIFFERENT tree than the daemon writes for agents with a
+  // non-default CTX_ROOT — the .session-refresh marker (written by
+  // sessionRefresh via resolvePaths(..., ctxRoot)) was never found, so every
+  // refresh was classified as a crash (upstream #550).
+  const ctxRoot = process.env.CTX_ROOT || join(homedir(), '.cortextos', instanceId);
   const stateDir = join(ctxRoot, 'state', agentName);
   const logDir = join(ctxRoot, 'logs', agentName);
 
