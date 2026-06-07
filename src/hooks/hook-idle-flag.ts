@@ -16,7 +16,11 @@ async function main(): Promise<void> {
   const instanceId = process.env.CTX_INSTANCE_ID || 'default';
   if (!agentName) return;
 
-  const stateDir = join(homedir(), '.cortextos', instanceId, 'state', agentName);
+  // Honor the daemon-injected CTX_ROOT — a hardcoded ~/.cortextos/<instance>
+  // writes the idle flag to a different tree than the fast-checker reads for
+  // agents with a non-default CTX_ROOT (typing indicator never clears).
+  const ctxRoot = process.env.CTX_ROOT || join(homedir(), '.cortextos', instanceId);
+  const stateDir = join(ctxRoot, 'state', agentName);
   try {
     mkdirSync(stateDir, { recursive: true });
     writeFileSync(join(stateDir, 'last_idle.flag'), String(Math.floor(Date.now() / 1000)), 'utf-8');
