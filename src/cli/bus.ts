@@ -1827,6 +1827,11 @@ busCommand
         const orgPaths = resolvePaths(env.agentName, env.instanceId, org, env.ctxRoot);
         approvals = approvals.concat(listApprovals(orgPaths, status));
       }
+      // Per-org lists are each sorted, but the concat is not — re-sort so
+      // the cross-org view is globally newest-first like the single-org view.
+      (approvals as Array<{ created_at: string }>).sort(
+        (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+      );
     } else {
       const paths = resolvePaths(env.agentName, env.instanceId, env.org, env.ctxRoot);
       approvals = listApprovals(paths, status);

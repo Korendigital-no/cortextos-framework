@@ -173,13 +173,16 @@ describe('bus list-approvals --status (the sweep invocation)', () => {
     expect(out).toContain('Total: 1 (pending)');
   });
 
-  it('--all-orgs aggregates the status filter across org directories', async () => {
-    seedApproval('pending', 'approval_org1', 'pending', 'OrgOne');
+  it('--all-orgs aggregates the status filter across org directories, globally newest-first', async () => {
+    // OrgTwo's approval is NEWER than OrgOne's; org directory iteration
+    // order must not leak into the output (cross-review finding: per-org
+    // lists were each sorted but the concat was not re-sorted).
+    seedApproval('pending', 'approval_org1', 'pending', 'OrgOne', '2026-06-07T10:00:00Z');
     seedApproval('pending', 'approval_org2', 'pending', 'OrgTwo', '2026-06-07T11:00:00Z');
     seedApproval('resolved', 'approval_org1_res', 'approved', 'OrgOne');
 
     await busCommand.parseAsync(['node', 'bus', 'list-approvals', '--all-orgs', '--status', 'pending']);
 
-    expect(printedIds().sort()).toEqual(['approval_org1', 'approval_org2']);
+    expect(printedIds()).toEqual(['approval_org2', 'approval_org1']);
   });
 });
