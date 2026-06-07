@@ -37,8 +37,18 @@ function readReminders(paths: BusPaths): Reminder[] {
   try {
     const raw = readFileSync(filePath, 'utf-8');
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
+    if (!Array.isArray(parsed)) {
+      // Loud, never silent: an unparseable/wrong-shape reminders file used
+      // to read as "no reminders" — indistinguishable from an empty queue
+      // (the 2026-06-06 list-reminders-showed-nothing mystery). The file
+      // still exists on disk, so nothing is lost; the operator just needs
+      // to know the read failed rather than trust an empty answer.
+      console.error(`[bus/reminders] WARNING: ${filePath} exists but is not a reminder array — treating as empty. Inspect the file; reminders may be hidden, not gone.`);
+      return [];
+    }
+    return parsed;
+  } catch (err) {
+    console.error(`[bus/reminders] WARNING: failed to read/parse ${filePath} (${err instanceof Error ? err.message : err}) — treating as empty. Inspect the file; reminders may be hidden, not gone.`);
     return [];
   }
 }
