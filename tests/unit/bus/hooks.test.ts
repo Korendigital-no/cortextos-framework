@@ -59,21 +59,36 @@ function makeHook(overrides: Partial<HookEntry> = {}): HookEntry {
   };
 }
 
-// Helper: read the meta JSON from the most recent execFile call.
+// Helper: read the emit name + meta JSON from the most recent execFile call.
+// The dispatcher has TWO arg shapes (task_1780792108485):
+//   CTX_FRAMEWORK_ROOT set:   execFile(node, [<cliPath>, bus, log-event, action, <name>, info, --meta, <json>])
+//   CTX_FRAMEWORK_ROOT unset: execFile('cortextos', [bus, log-event, action, <name>, info, --meta, <json>])
+// Locate 'log-event' instead of hardcoding an index — a hardcoded args[3]
+// read 'action' as the name whenever the suite ran from a live agent shell
+// with CTX_FRAMEWORK_ROOT inherited (7 false failures).
 function lastEmittedEvent(): { name: string; meta: Record<string, unknown> } | null {
   if (execFileCalls.length === 0) return null;
   const args = execFileCalls[execFileCalls.length - 1].args;
-  // shape: [bus, log-event, action, <name>, info, --meta, <json>]
-  const name = args[3];
+  const logEventIdx = args.indexOf('log-event');
+  const name = logEventIdx >= 0 ? args[logEventIdx + 2] : args[3];
   const metaIdx = args.indexOf('--meta');
   const meta = metaIdx >= 0 && metaIdx + 1 < args.length ? JSON.parse(args[metaIdx + 1]) : {};
   return { name, meta };
 }
 
 describe('src/bus/hooks — Day-2 per-handler wiring', () => {
+  // Env-independence: the emit path branches on CTX_FRAMEWORK_ROOT. Pin it
+  // UNSET for the suite so behaviour is identical from a live agent shell
+  // and from clean CI; both branches are covered explicitly below.
+  const savedFwRoot = process.env.CTX_FRAMEWORK_ROOT;
   beforeEach(() => {
     execFileCalls.length = 0;
     clearHandlerRegistry();
+    delete process.env.CTX_FRAMEWORK_ROOT;
+  });
+  afterEach(() => {
+    if (savedFwRoot === undefined) delete process.env.CTX_FRAMEWORK_ROOT;
+    else process.env.CTX_FRAMEWORK_ROOT = savedFwRoot;
   });
 
   describe('loadHookRegistry', () => {
@@ -263,6 +278,26 @@ describe('src/bus/hooks — Day-2 per-handler wiring', () => {
       expect(e?.meta.source_agent).toBe('real-agent');
       expect(e?.meta.outcome).toBe('meta_override_check');
       expect(e?.meta.extra_handler_field).toBe('kept');
+    });
+
+    // Both emit branches, pinned explicitly (the suite-level beforeEach
+    // unsets CTX_FRAMEWORK_ROOT, so all tests above exercise the PATH branch).
+    it('PATH branch (CTX_FRAMEWORK_ROOT unset): execFile("cortextos", [bus, ...])', async () => {
+      await dispatchHook(makeHook(), makeEvent());
+      const call = execFileCalls[execFileCalls.length - 1];
+      expect(call.cmd).toBe('cortextos');
+      expect(call.args.slice(0, 4)).toEqual(['bus', 'log-event', 'action', 'hook_fire']);
+    });
+
+    it('cliPath branch (CTX_FRAMEWORK_ROOT set): execFile(node, [<cliPath>, bus, ...])', async () => {
+      process.env.CTX_FRAMEWORK_ROOT = '/fw/root';
+      await dispatchHook(makeHook(), makeEvent());
+      const call = execFileCalls[execFileCalls.length - 1];
+      expect(call.cmd).toBe(process.execPath);
+      expect(call.args[0]).toBe(join('/fw/root', 'dist', 'cli.js'));
+      expect(call.args.slice(1, 5)).toEqual(['bus', 'log-event', 'action', 'hook_fire']);
+      // The shape-robust helper reads the right name on this branch too.
+      expect(lastEmittedEvent()?.name).toBe('hook_fire');
     });
   });
 
