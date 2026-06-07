@@ -269,6 +269,58 @@ describe('AgentProcess - BUG-011 fix (stop awaits PTY exit)', () => {
     const markerWriteOrder = fsMocks.writeFileSync.mock.invocationCallOrder[writeIdx];
     expect(markerWriteOrder).toBeLessThan(stopSpy.mock.invocationCallOrder[0]);
   });
+
+  // Promise-latch: sessionRefresh has four independent triggers (session
+  // timer, stale-detector, context-restart, force-fresh). Two firing close
+  // together used to run stop()+start() TWICE — the second stop() killing the
+  // PTY the first start() just brought up (double-restart class).
+  it('concurrent sessionRefresh() calls coalesce into ONE stop/start cycle', async () => {
+    const ap = new AgentProcess('alice', mockEnv, {});
+    await ap.start();
+
+    // Deferred stop so the second call arrives while the first is in flight.
+    let releaseStop!: () => void;
+    const stopGate = new Promise<void>((r) => { releaseStop = r; });
+    const stopSpy = vi.spyOn(ap, 'stop').mockReturnValue(stopGate);
+    const startSpy = vi.spyOn(ap, 'start').mockResolvedValue();
+
+    const first = ap.sessionRefresh();
+    const second = ap.sessionRefresh(); // fires mid-refresh
+
+    releaseStop();
+    await Promise.all([first, second]);
+
+    expect(stopSpy).toHaveBeenCalledTimes(1);
+    expect(startSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('the latch clears after completion — a later sessionRefresh() runs a fresh cycle', async () => {
+    const ap = new AgentProcess('alice', mockEnv, {});
+    await ap.start();
+
+    const stopSpy = vi.spyOn(ap, 'stop').mockResolvedValue();
+    const startSpy = vi.spyOn(ap, 'start').mockResolvedValue();
+
+    await ap.sessionRefresh();
+    await ap.sessionRefresh(); // sequential, NOT concurrent
+
+    expect(stopSpy).toHaveBeenCalledTimes(2);
+    expect(startSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('the latch clears when a refresh REJECTS — the next call can retry', async () => {
+    const ap = new AgentProcess('alice', mockEnv, {});
+    await ap.start();
+
+    const stopSpy = vi.spyOn(ap, 'stop')
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValue();
+    vi.spyOn(ap, 'start').mockResolvedValue();
+
+    await expect(ap.sessionRefresh()).rejects.toThrow('boom');
+    await expect(ap.sessionRefresh()).resolves.toBeUndefined();
+    expect(stopSpy).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('AgentProcess - BUG-048 fix (session timer re-reads config)', () => {
