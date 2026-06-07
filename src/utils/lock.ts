@@ -42,6 +42,120 @@ function emptyLockIsStale(lockDir: string, pidFile: string): boolean {
 }
 
 /**
+ * Full state of a lock dir, used to re-verify staleness UNDER the steal-mutex
+ * and to recover a crashed steal-mutex itself.
+ *
+ * - 'free'  — dir does not exist (released, or a previous stealer finished)
+ * - 'held'  — valid pid belonging to a live process (or too fresh to judge)
+ * - 'stale' — dead pid, or no/corrupt pid older than EMPTY_LOCK_STALE_MS
+ */
+function lockState(lockDir: string, pidFile: string): 'free' | 'held' | 'stale' {
+  try {
+    statSync(lockDir);
+  } catch {
+    return 'free';
+  }
+  let storedPid: number;
+  try {
+    storedPid = parseInt(readFileSync(pidFile, 'utf-8').trim(), 10);
+  } catch {
+    storedPid = NaN;
+  }
+  if (isNaN(storedPid)) {
+    // No/corrupt pid: a live holder may be mid-acquire (microsecond gap) —
+    // only an OLD empty/corrupt lock is a crashed holder.
+    return emptyLockIsStale(lockDir, pidFile) ? 'stale' : 'held';
+  }
+  try {
+    process.kill(storedPid, 0);
+    return 'held';
+  } catch {
+    return 'stale';
+  }
+}
+
+/**
+ * Recover a stale .lock.d, serialized through an exclusive steal-mutex.
+ *
+ * THE RACE THIS CLOSES (double-acquire): two processes both pass the staleness
+ * check on the same stale lock; A steals (rm → mkdir → write pid) and enters
+ * the critical section; B's rmSync then deletes A's FRESH lock and B "steals"
+ * too — both believe they hold the lock, and A's orphaned acquisition lets a
+ * third process in as well.
+ *
+ * Fix: only the holder of `<lockDir>.steal.d` (atomic mkdirSync — exactly one
+ * winner) may perform destructive recovery, and it re-verifies staleness UNDER
+ * the mutex. Once re-verified, the stale dir is frozen: its holder is dead (it
+ * cannot release), other stealers are locked out of the mutex, and fresh
+ * acquirers get EEXIST off the still-existing dir — so the rm cannot hit
+ * anyone's live lock. If re-verify says 'free' instead, the rm is SKIPPED and
+ * we fall through to a plain mkdir, which races fresh acquirers atomically.
+ *
+ * A stealer that crashes mid-steal orphans the mutex; that is recovered with
+ * the same dead-pid / old-empty classification (reap, then back off so the
+ * retry path re-evaluates everything from scratch). Residual exposure: reaping
+ * a crashed mutex is itself a check-then-rm and could in theory hit a mutex
+ * recreated in that microsecond window — but that requires a crashed stealer
+ * AND two new stealers AND a reaper interleaving within microseconds, versus
+ * the closed race's window of an entire critical section.
+ *
+ * Returns true if the lock was acquired; false to let the caller back off and
+ * retry (mutex contention, reaped-crashed-mutex, or lock no longer stale).
+ *
+ * Exported for tests.
+ */
+export function stealStaleLock(lockDir: string, pidFile: string): boolean {
+  const stealDir = lockDir + '.steal.d';
+  const stealPidFile = join(stealDir, 'pid');
+
+  try {
+    mkdirSync(stealDir);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+    // Another stealer holds the mutex — or one crashed mid-steal and left it
+    // orphaned. Reap only a provably-dead mutex; back off either way.
+    if (lockState(stealDir, stealPidFile) === 'stale') {
+      rmSync(stealDir, { recursive: true, force: true });
+    }
+    return false;
+  }
+
+  try {
+    writeFileSync(stealPidFile, String(process.pid));
+    // Re-verify under the mutex: the lock we observed as stale may have been
+    // recovered by a previous mutex holder and could now be live.
+    const state = lockState(lockDir, pidFile);
+    if (state === 'held') return false;
+    if (state === 'stale') {
+      // Frozen (see above) — safe to remove.
+      rmSync(lockDir, { recursive: true, force: true });
+    }
+    // 'free' (or just-removed): plain atomic acquire. EEXIST here means a
+    // fresh acquirer got in first — back off, do NOT rm again.
+    mkdirSync(lockDir);
+    writeFileSync(pidFile, String(process.pid));
+    return true;
+  } catch (err) {
+    // Same contract as acquireLock: only EEXIST means contention (a fresh
+    // acquirer beat us to the recreated lock). EPERM / ENOSPC / EROFS are
+    // real filesystem failures — propagate so withFileLockSync surfaces the
+    // error instead of silently spinning to timeout.
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+    return false;
+  } finally {
+    // Best-effort release of the steal-mutex. Must NOT throw: an exception
+    // out of a finally would replace the function's result and crash the
+    // caller's retry loop. If cleanup fails (EPERM/EBUSY), the orphaned
+    // mutex is reaped by the next contender once our pid is dead.
+    try {
+      rmSync(stealDir, { recursive: true, force: true });
+    } catch {
+      // see above
+    }
+  }
+}
+
+/**
  * Acquire a mutex lock using mkdir (atomic on all filesystems).
  * Matches the bash pattern: mkdir .lock.d with PID tracking.
  *
@@ -79,17 +193,9 @@ export function acquireLock(dir: string): boolean {
       // that gap, in which case the pid will NEVER appear and refusing forever
       // livelocks every waiter (the 2026-06-03/04 inbox incident).  An empty
       // .lock.d older than EMPTY_LOCK_STALE_MS cannot be a live mid-acquire —
-      // recover it with the same atomic rm+mkdir steal as the dead-pid path.
+      // recover it through the serialized steal-mutex.
       if (emptyLockIsStale(lockDir, pidFile)) {
-        try {
-          rmSync(lockDir, { recursive: true, force: true });
-          mkdirSync(lockDir);
-          writeFileSync(pidFile, String(process.pid));
-          return true;
-        } catch {
-          // Another process beat us to the steal — let caller retry.
-          return false;
-        }
+        return stealStaleLock(lockDir, pidFile);
       }
       return false;
     }
@@ -101,14 +207,7 @@ export function acquireLock(dir: string): boolean {
       // died and no future pass will ever make it valid — recover.  Fresh
       // corruption gets the benefit of the doubt (caller retries).
       if (emptyLockIsStale(lockDir, pidFile)) {
-        try {
-          rmSync(lockDir, { recursive: true, force: true });
-          mkdirSync(lockDir);
-          writeFileSync(pidFile, String(process.pid));
-          return true;
-        } catch {
-          return false;
-        }
+        return stealStaleLock(lockDir, pidFile);
       }
       return false;
     }
@@ -119,16 +218,9 @@ export function acquireLock(dir: string): boolean {
       // Process is alive - lock is held
       return false;
     } catch {
-      // Process is dead - stale lock, remove and re-acquire atomically.
-      try {
-        rmSync(lockDir, { recursive: true, force: true });
-        mkdirSync(lockDir);
-        writeFileSync(pidFile, String(process.pid));
-        return true;
-      } catch {
-        // Another process beat us to the steal — let caller retry.
-        return false;
-      }
+      // Process is dead — stale lock; recover through the serialized
+      // steal-mutex (a bare rm+mkdir+write here is the double-acquire race).
+      return stealStaleLock(lockDir, pidFile);
     }
   }
 }
