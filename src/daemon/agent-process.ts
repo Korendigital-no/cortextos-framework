@@ -119,6 +119,11 @@ export class AgentProcess {
     // (e.g. if the previous stop() timed out before the PTY actually exited).
     // We're starting fresh — the new PTY has no pending stop.
     this.stopRequested = false;
+    // Cross-review CRITICAL #2 (dispatch fix): injections counted against the
+    // PREVIOUS session must not carry into this one — ghost increments from
+    // the stop() window would otherwise pre-load the self-inflicted-stale
+    // detector and could falsely restart a healthy fresh session.
+    this.injectionsSinceMark = 0;
     // BUG-040 fix: bump generation. The onExit closure below captures THIS
     // value and uses it to detect "I'm an old PTY whose exit fired after a
     // new lifecycle began" — in which case it bails out without touching
@@ -351,10 +356,19 @@ export class AgentProcess {
    * silently mangled/lost (the post-sleep cron catch-up batch repro: three
    * crons marked fired at the same second, none delivered). Every injection
    * chains onto this promise so paste→Enter completes before the next
-   * paste begins. Errors are swallowed in the chain link (never block the
-   * queue) but surface to the awaiting caller.
+   * paste begins. Failed/timed-out links never block the queue; the
+   * failure surfaces to the awaiting caller as a NOT_RUNNING result.
    */
   private injectChain: Promise<void> = Promise.resolve();
+
+  /**
+   * Hard ceiling on a single queued injection (cross-review CRITICAL #1):
+   * without it, one wedged PTY write would stall the serialization queue —
+   * and therefore ALL future deliveries — for the rest of the session,
+   * recreating the exact silent-agent failure the queue exists to prevent.
+   * Generous vs. the 300ms Enter delay; only a genuinely stuck PTY hits it.
+   */
+  static readonly INJECT_TIMEOUT_MS = 30_000;
 
   /**
    * Inject a message into the agent's PTY — structured outcome.
@@ -379,11 +393,44 @@ export class AgentProcess {
       return { ok: false, code: 'DEDUPED', message: `inject for "${this.name}" deduped — content matches MessageDedup hash window` };
     }
 
-    const run = this.injectChain.then(() => injectMessage((data) => this.pty?.write(data), content));
-    // The shared chain must survive a failed link; the failure still
-    // propagates to THIS caller via `await run` below.
-    this.injectChain = run.catch(() => undefined);
-    await run;
+    const link = this.injectChain.then(async () => {
+      // Re-check at drain time (cross-review CRITICAL #2): stop() nulls the
+      // PTY synchronously, so an injection that queued before a teardown
+      // would otherwise "complete" via the optional-chained no-op write and
+      // ghost-increment injectionsSinceMark — inflating the self-inflicted-
+      // stale counter into the NEXT session and risking a false restart loop.
+      if (!this.pty || this.status !== 'running') {
+        throw new Error(`pty torn down while injection was queued (status: ${this.status})`);
+      }
+      await injectMessage((data) => this.pty?.write(data), content);
+    });
+
+    // Timeout guard: free both this caller AND the queue if the link wedges.
+    // A timed-out write may still land in the PTY later (out of order) — an
+    // accepted degraded mode: a PTY that swallows writes for 30s is a broken
+    // session, and the stale-detector's restart is the real recovery.
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(
+        () => reject(new Error(`inject timeout — no completion within ${AgentProcess.INJECT_TIMEOUT_MS}ms`)),
+        AgentProcess.INJECT_TIMEOUT_MS,
+      );
+    });
+    // Advance the queue on settle-or-timeout, never on the bare link.
+    this.injectChain = Promise.race([link, timeout]).then(
+      () => undefined,
+      () => undefined,
+    );
+
+    try {
+      await Promise.race([link, timeout]);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.log(`Injection failed: ${msg}`);
+      return { ok: false, code: 'NOT_RUNNING', message: `inject for "${this.name}" failed: ${msg}` };
+    } finally {
+      clearTimeout(timeoutHandle);
+    }
     this.injectionsSinceMark++;
     return { ok: true };
   }

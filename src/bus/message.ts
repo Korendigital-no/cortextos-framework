@@ -4,7 +4,7 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import type { InboxMessage, Priority, BusPaths } from '../types/index.js';
 import { PRIORITY_MAP } from '../types/index.js';
 import { atomicWriteSync, ensureDir } from '../utils/atomic.js';
-import { acquireLock, releaseLock } from '../utils/lock.js';
+import { acquireLock, releaseLock, withFileLockSync } from '../utils/lock.js';
 import { randomString } from '../utils/random.js';
 import { validateAgentName, validatePriority } from '../utils/validate.js';
 
@@ -178,31 +178,48 @@ export function checkInbox(paths: BusPaths): InboxMessage[] {
 /**
  * Acknowledge a message by moving it from inflight to processed.
  * Identical to bash ack-inbox.sh behavior.
+ *
+ * Takes the same inbox lock as checkInbox (cross-review HIGH #3): the
+ * fast-checker's recoverStaleInflight and the agent's CLI ack run in
+ * separate processes and both move files out of inflight/. Unlocked, the
+ * interleaving "recover wins, ack ENOENTs silently" re-delivered a
+ * message the agent had already handled. If the lock cannot be acquired
+ * within the timeout we ack UNLOCKED rather than lose the ack — the
+ * pre-fix behavior, as a degraded fallback.
  */
 export function ackInbox(paths: BusPaths, messageId: string): void {
-  const { inflight, processed } = paths;
+  const { inbox, inflight, processed } = paths;
   ensureDir(processed);
 
-  // Find the file in inflight that contains this message ID
-  let files: string[];
-  try {
-    files = readdirSync(inflight).filter(f => f.endsWith('.json'));
-  } catch {
-    return;
-  }
-
-  for (const file of files) {
-    const filePath = join(inflight, file);
+  const doAck = (): void => {
+    // Find the file in inflight that contains this message ID
+    let files: string[];
     try {
-      const content = readFileSync(filePath, 'utf-8');
-      const msg = JSON.parse(content);
-      if (msg.id === messageId) {
-        renameSync(filePath, join(processed, file));
-        return;
-      }
+      files = readdirSync(inflight).filter(f => f.endsWith('.json'));
     } catch {
-      // Skip corrupt files
+      return;
     }
+
+    for (const file of files) {
+      const filePath = join(inflight, file);
+      try {
+        const content = readFileSync(filePath, 'utf-8');
+        const msg = JSON.parse(content);
+        if (msg.id === messageId) {
+          renameSync(filePath, join(processed, file));
+          return;
+        }
+      } catch {
+        // Skip corrupt files
+      }
+    }
+  };
+
+  try {
+    withFileLockSync(inbox, doAck, { timeoutMs: 2_000 });
+  } catch {
+    // Lock unavailable (contention/timeout) — never drop the ack.
+    doAck();
   }
 }
 

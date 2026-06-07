@@ -163,7 +163,7 @@ describe('A) AgentProcess injection serialization (cron catch-up batch repro)', 
     expect(writes[writes.length - 1]).toBe(KEYS.ENTER);
   });
 
-  it('a failed link does not wedge the queue for the next injection', async () => {
+  it('a failed link surfaces as NOT_RUNNING and does not wedge the queue for the next injection', async () => {
     vi.useFakeTimers();
     const writes: string[] = [];
     const ap = new AgentProcess('alice', {} as CtxEnv, {} as AgentConfig, () => {});
@@ -178,13 +178,60 @@ describe('A) AgentProcess injection serialization (cron catch-up batch repro)', 
 
     const p1 = ap.injectMessageDetailed('will fail');
     const p2 = ap.injectMessageDetailed('must still deliver');
-    // Attach rejection expectation BEFORE advancing timers (unhandled-rejection hygiene)
-    const p1Expect = expect(p1).rejects.toThrow('pty write exploded');
     await vi.advanceTimersByTimeAsync(1000);
-    await p1Expect;
+    const r1 = await p1;
+    expect(r1.ok).toBe(false);
+    if (!r1.ok) expect(r1.message).toContain('pty write exploded');
     const r2 = await p2;
     expect(r2.ok).toBe(true);
     expect(writes.some(w => w.includes('must still deliver'))).toBe(true);
+  });
+
+  it('CRITICAL #1 guard: a wedged link times out, frees the caller AND the queue', async () => {
+    vi.useFakeTimers();
+    const writes: string[] = [];
+    const ap = createAgentProcess(writes);
+
+    // Simulate a wedged in-flight injection: a chain link that never settles.
+    (ap as any).injectChain = new Promise<void>(() => { /* never resolves */ });
+
+    const p = ap.injectMessageDetailed('queued behind a wedge');
+    await vi.advanceTimersByTimeAsync(AgentProcess.INJECT_TIMEOUT_MS + 1000);
+    const r = await p;
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.message).toContain('inject timeout');
+
+    // The queue must have moved past the wedge: a fresh injection delivers.
+    const p2 = ap.injectMessageDetailed('after the wedge');
+    await vi.advanceTimersByTimeAsync(1000);
+    const r2 = await p2;
+    expect(r2.ok).toBe(true);
+    expect(writes.some(w => w.includes('after the wedge'))).toBe(true);
+  });
+
+  it('CRITICAL #2 guard: PTY torn down while queued → NOT_RUNNING, no ghost injectionsSinceMark increment', async () => {
+    vi.useFakeTimers();
+    const writes: string[] = [];
+    const ap = createAgentProcess(writes);
+
+    const p1 = ap.injectMessageDetailed('first — delivers');
+    const p2 = ap.injectMessageDetailed('second — torn down while queued');
+
+    // Teardown happens while p2 waits its turn behind p1's Enter delay.
+    (ap as any).pty = null;
+    (ap as any).status = 'stopped';
+
+    await vi.advanceTimersByTimeAsync(1000);
+    // p1's queued write also hits the nulled pty via optional chaining, but
+    // the drain-time re-check is what p2 must trip on.
+    await p1;
+    const r2 = await p2;
+    expect(r2.ok).toBe(false);
+    if (!r2.ok) expect(r2.message).toContain('torn down');
+
+    // Ghost deliveries must not inflate the stale-detector counter: at most
+    // p1 (whose paste went out before teardown) may count.
+    expect(ap.getInjectionsSinceMark()).toBeLessThanOrEqual(1);
   });
 });
 
