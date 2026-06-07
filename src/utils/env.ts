@@ -50,7 +50,7 @@ export function resolveEnv(overrides?: Partial<CtxEnv>): CtxEnv {
     envFile.CTX_ORG ||
     '';
 
-  const projectRoot =
+  let projectRoot =
     overrides?.projectRoot ||
     process.env.CTX_PROJECT_ROOT ||
     envFile.CTX_PROJECT_ROOT ||
@@ -91,26 +91,46 @@ export function resolveEnv(overrides?: Partial<CtxEnv>): CtxEnv {
   // are set, the resolved agentDir MUST be subordinate to frameworkRoot. Catches the leak
   // class where a CLI subprocess inherits CTX_AGENT_DIR (or CTX_PROJECT_ROOT) from a live
   // agent shell while only CTX_FRAMEWORK_ROOT was overridden — agentDir then silently
-  // points at the live install. Equality check on projectRoot vs frameworkRoot catches
-  // the same divergence on the projectRoot axis.
+  // points at the live install.
+  //
+  // Resolution policy (codex bycatch, 2026-06-04): the root is authoritative.
+  //  - An EXPLICIT `overrides` contradiction is a caller bug — throw (the
+  //    caller passed two paths that cannot both be true).
+  //  - An INHERITED (process.env / .cortextos-env) contradiction is the stale
+  //    live-shell leak itself: the path was never chosen for THIS invocation.
+  //    Throwing here made every isolated CLI call fail globally unless the
+  //    caller scrubbed ALL CTX_* (the recurring false-test-failure class).
+  //    Re-derive the stale path under the root instead — fail-safe in the
+  //    same direction the guard protects (nothing can point at the live
+  //    install; worst case is a missing path INSIDE the sandbox).
+  // projectRoot first, so a re-derived agentDir builds on the corrected root.
+  if (projectRoot && frameworkRoot && resolvePath(projectRoot) !== resolvePath(frameworkRoot)) {
+    if (overrides?.projectRoot) {
+      throw new Error(
+        `CTX_PROJECT_ROOT '${projectRoot}' must equal CTX_FRAMEWORK_ROOT '${frameworkRoot}'. ` +
+        `A divergence indicates a sandbox/live environment leak — likely one of the two was ` +
+        `inherited from the parent shell while the other was overridden. Refusing to proceed.`,
+      );
+    }
+    projectRoot = frameworkRoot;
+  }
   if (agentDir && frameworkRoot) {
     const fwRootResolved = resolvePath(frameworkRoot);
     const agentDirResolved = resolvePath(agentDir);
     if (agentDirResolved !== fwRootResolved && !agentDirResolved.startsWith(fwRootResolved + sep)) {
-      throw new Error(
-        `Resolved CTX_AGENT_DIR '${agentDir}' is not under CTX_FRAMEWORK_ROOT '${frameworkRoot}'. ` +
-        `This indicates a sandbox/live environment leak — likely CTX_FRAMEWORK_ROOT was overridden ` +
-        `but CTX_AGENT_DIR or CTX_PROJECT_ROOT was inherited from the parent shell. ` +
-        `Refusing to proceed.`,
-      );
+      if (overrides?.agentDir) {
+        throw new Error(
+          `Resolved CTX_AGENT_DIR '${agentDir}' is not under CTX_FRAMEWORK_ROOT '${frameworkRoot}'. ` +
+          `This indicates a sandbox/live environment leak — likely CTX_FRAMEWORK_ROOT was overridden ` +
+          `but CTX_AGENT_DIR or CTX_PROJECT_ROOT was inherited from the parent shell. ` +
+          `Refusing to proceed.`,
+        );
+      }
+      const base = projectRoot || frameworkRoot;
+      agentDir = org
+        ? join(base, 'orgs', org, 'agents', agentName)
+        : join(base, 'agents', agentName);
     }
-  }
-  if (projectRoot && frameworkRoot && resolvePath(projectRoot) !== resolvePath(frameworkRoot)) {
-    throw new Error(
-      `CTX_PROJECT_ROOT '${projectRoot}' must equal CTX_FRAMEWORK_ROOT '${frameworkRoot}'. ` +
-      `A divergence indicates a sandbox/live environment leak — likely one of the two was ` +
-      `inherited from the parent shell while the other was overridden. Refusing to proceed.`,
-    );
   }
 
   // Security (H9): Validate agent name and org before they flow into filesystem paths.
