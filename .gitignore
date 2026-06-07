@@ -27,6 +27,11 @@ agents/*/local/
 agents/*/telegram-images/
 agents/*/memory/
 
+# Runtime/tooling artifacts (created by agent sessions and local tools)
+.data/
+.serena/
+__pycache__/
+
 # macOS metadata
 .DS_Store
 
