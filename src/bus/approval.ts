@@ -270,13 +270,26 @@ export function updateApproval(
 }
 
 /**
- * List pending approvals.
+ * Status filter values accepted by listApprovals / the list-approvals CLI.
+ *
+ * - 'pending'   → approvals still awaiting a decision (pending/ dir)
+ * - 'approved'  → resolved approvals with status approved
+ * - 'rejected'  → resolved approvals with status rejected
+ * - 'resolved'  → all resolved approvals regardless of decision
+ * - 'all'       → pending + resolved
  */
-export function listPendingApprovals(paths: BusPaths): Approval[] {
-  const pendingDir = join(paths.approvalDir, 'pending');
+export const APPROVAL_LIST_FILTERS = ['pending', 'approved', 'rejected', 'resolved', 'all'] as const;
+export type ApprovalListFilter = (typeof APPROVAL_LIST_FILTERS)[number];
+
+/**
+ * Read every approval JSON in a directory. Missing dir → empty list;
+ * corrupt files are skipped (an unreadable row must not blind the
+ * listing to the readable ones).
+ */
+function readApprovalDir(dir: string): Approval[] {
   let files: string[];
   try {
-    files = readdirSync(pendingDir).filter(f => f.endsWith('.json'));
+    files = readdirSync(dir).filter(f => f.endsWith('.json'));
   } catch {
     return [];
   }
@@ -284,14 +297,58 @@ export function listPendingApprovals(paths: BusPaths): Approval[] {
   const approvals: Approval[] = [];
   for (const file of files) {
     try {
-      const content = readFileSync(join(pendingDir, file), 'utf-8');
+      const content = readFileSync(join(dir, file), 'utf-8');
       approvals.push(JSON.parse(content));
     } catch {
       // Skip corrupt
     }
   }
+  return approvals;
+}
+
+/**
+ * List approvals filtered by status.
+ *
+ * REGRESSION CONTEXT (2026-06-07): every agent's TOOLS.md documented
+ * `list-approvals [--status S]` but the CLI never implemented --status.
+ * Agents that followed the doc got commander's "unknown option" error on
+ * stderr, exit 1, and EMPTY stdout — which approval sweeps parsed as
+ * "zero pending". A real approval sat unseen in pending/ for 47h. This
+ * function (plus the CLI option) makes the documented contract real.
+ */
+export function listApprovals(
+  paths: BusPaths,
+  status: ApprovalListFilter = 'pending',
+): Approval[] {
+  const pendingDir = join(paths.approvalDir, 'pending');
+  const resolvedDir = join(paths.approvalDir, 'resolved');
+
+  let approvals: Approval[];
+  switch (status) {
+    case 'pending':
+      approvals = readApprovalDir(pendingDir);
+      break;
+    case 'resolved':
+      approvals = readApprovalDir(resolvedDir);
+      break;
+    case 'approved':
+    case 'rejected':
+      approvals = readApprovalDir(resolvedDir).filter(a => a.status === status);
+      break;
+    case 'all':
+      approvals = [...readApprovalDir(pendingDir), ...readApprovalDir(resolvedDir)];
+      break;
+  }
 
   return approvals.sort(
     (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
   );
+}
+
+/**
+ * List pending approvals. Back-compat wrapper around listApprovals —
+ * existing call-sites (dashboard sync, bus index export) keep working.
+ */
+export function listPendingApprovals(paths: BusPaths): Approval[] {
+  return listApprovals(paths, 'pending');
 }
