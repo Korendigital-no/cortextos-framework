@@ -343,14 +343,33 @@ export class AgentProcess {
   }
 
   /**
+   * Serialization queue for PTY injections (dispatch-bug fix, 2026-06-07).
+   *
+   * injectMessage() submits via paste + delayed Enter. Without a queue, a
+   * second injection's paste lands inside the first one's Enter window —
+   * the pastes concatenate in the Claude input box and the prompts are
+   * silently mangled/lost (the post-sleep cron catch-up batch repro: three
+   * crons marked fired at the same second, none delivered). Every injection
+   * chains onto this promise so paste→Enter completes before the next
+   * paste begins. Errors are swallowed in the chain link (never block the
+   * queue) but surface to the awaiting caller.
+   */
+  private injectChain: Promise<void> = Promise.resolve();
+
+  /**
    * Inject a message into the agent's PTY — structured outcome.
    *
    * Distinguishes NOT_RUNNING (agent registered but no live PTY) from
    * DEDUPED (content collapsed against the in-process MessageDedup window).
    * See issue #346 — both used to surface as a bare `false` and got mistaken
    * for "agent not found" by operators investigating restart/cron failures.
+   *
+   * Resolves AFTER this injection's paste + Enter have both been written
+   * (mark-after-deliver: callers like the cron scheduler persist
+   * last_fired_at only once this resolves). Concurrent calls are
+   * serialized via the inject queue — see injectChain above.
    */
-  injectMessageDetailed(content: string): { ok: true } | { ok: false; code: 'NOT_RUNNING' | 'DEDUPED'; message: string } {
+  async injectMessageDetailed(content: string): Promise<{ ok: true } | { ok: false; code: 'NOT_RUNNING' | 'DEDUPED'; message: string }> {
     if (!this.pty || this.status !== 'running') {
       return { ok: false, code: 'NOT_RUNNING', message: `agent "${this.name}" is registered but not running (status: ${this.status})` };
     }
@@ -360,7 +379,11 @@ export class AgentProcess {
       return { ok: false, code: 'DEDUPED', message: `inject for "${this.name}" deduped — content matches MessageDedup hash window` };
     }
 
-    injectMessage((data) => this.pty?.write(data), content);
+    const run = this.injectChain.then(() => injectMessage((data) => this.pty?.write(data), content));
+    // The shared chain must survive a failed link; the failure still
+    // propagates to THIS caller via `await run` below.
+    this.injectChain = run.catch(() => undefined);
+    await run;
     this.injectionsSinceMark++;
     return { ok: true };
   }
@@ -385,10 +408,11 @@ export class AgentProcess {
   /**
    * Inject a message into the agent's PTY (back-compat boolean wrapper).
    * New callers that need to distinguish DEDUPED from NOT_RUNNING should use
-   * `injectMessageDetailed()` instead.
+   * `injectMessageDetailed()` instead. Resolves after paste + Enter are
+   * written (see injectMessageDetailed).
    */
-  injectMessage(content: string): boolean {
-    return this.injectMessageDetailed(content).ok;
+  async injectMessage(content: string): Promise<boolean> {
+    return (await this.injectMessageDetailed(content)).ok;
   }
 
   /**

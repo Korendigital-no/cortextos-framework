@@ -118,6 +118,17 @@ busCommand
     }
 
     const msgId = sendMessage(paths, env.agentName, to, priority as Priority, text, effectiveReplyTo);
+
+    // AGENTS.md documents that replying with reply_to auto-ACKs the original
+    // message — but no code ever implemented it (contract drift, found during
+    // the 2026-06-07 dispatch-bug fix). The gap was masked by the fast-checker
+    // ack-ing every message at injection time; now that injection no longer
+    // acks (mark-after-deliver fix), the reply must honour the documented
+    // contract or every replied-to message would redeliver after 5 min.
+    if (effectiveReplyTo) {
+      try { ackInbox(paths, effectiveReplyTo); } catch { /* best effort — original may already be acked */ }
+    }
+
     try {
       logEvent(paths, env.agentName, env.org, 'message', 'agent_message_sent', 'info', JSON.stringify({ to, priority, msg_id: msgId, reply_to: effectiveReplyTo ?? null }));
     } catch { /* non-fatal */ }
