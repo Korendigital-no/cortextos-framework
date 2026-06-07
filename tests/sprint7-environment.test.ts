@@ -227,5 +227,63 @@ describe('Sprint 7: Environment & Config Completeness', () => {
       expect(result.projectRoot).toBe(root);
       expect(result.agentDir).toBe(join(root, 'orgs', 'testorg', 'agents', 'test-agent'));
     });
+
+    // Inherited-env re-derivation (codex bycatch, 2026-06-04): a CLI
+    // subprocess spawned from a LIVE agent shell inherits CTX_AGENT_DIR /
+    // CTX_PROJECT_ROOT pointing at the live install. When the caller overrides
+    // only the root (CTX_FRAMEWORK_ROOT → sandbox), the old guard THREW —
+    // every isolated CLI call failed unless the caller scrubbed ALL CTX_*
+    // (the recurring "33 false test-failures" class). Inherited paths that
+    // contradict the root are STALE, not malicious: re-derive them under the
+    // root instead. Explicit `overrides` contradictions still throw (TC-B/C).
+    it('TC-E rederive: env-inherited live CTX_AGENT_DIR + CTX_PROJECT_ROOT under a frameworkRoot override are re-derived, not fatal', () => {
+      process.env.CTX_AGENT_DIR = '/Users/cortextos/cortextos/orgs/liveorg/agents/live-agent';
+      process.env.CTX_PROJECT_ROOT = '/Users/cortextos/cortextos';
+      const fwRoot = join(testDir, 'sandbox');
+      const result = resolveEnv({
+        frameworkRoot: fwRoot,
+        agentName: 'foo',
+        org: 'testorg',
+      });
+      expect(result.projectRoot).toBe(fwRoot);
+      expect(result.agentDir).toBe(join(fwRoot, 'orgs', 'testorg', 'agents', 'foo'));
+    });
+
+    it('TC-F rederive: the subprocess case — ALL paths from env, root points at sandbox, agent/project inherited from live', () => {
+      // Caller sets CTX_FRAMEWORK_ROOT=sandbox in the child env; the child
+      // inherits live CTX_AGENT_DIR/CTX_PROJECT_ROOT from the agent shell.
+      const fwRoot = join(testDir, 'sandbox');
+      process.env.CTX_FRAMEWORK_ROOT = fwRoot;
+      process.env.CTX_PROJECT_ROOT = '/Users/cortextos/cortextos';
+      process.env.CTX_AGENT_DIR = '/Users/cortextos/cortextos/orgs/liveorg/agents/live-agent';
+      process.env.CTX_AGENT_NAME = 'live-agent';
+      process.env.CTX_ORG = 'liveorg';
+      const result = resolveEnv();
+      expect(result.frameworkRoot).toBe(fwRoot);
+      expect(result.projectRoot).toBe(fwRoot);
+      expect(result.agentDir).toBe(join(fwRoot, 'orgs', 'liveorg', 'agents', 'live-agent'));
+    });
+
+    it('TC-G rederive result is always sandboxed: re-derived agentDir is subordinate to frameworkRoot', () => {
+      process.env.CTX_AGENT_DIR = '/somewhere/else/entirely';
+      const fwRoot = join(testDir, 'sandbox');
+      const result = resolveEnv({ frameworkRoot: fwRoot, agentName: 'bar' });
+      const resolved = result.agentDir;
+      expect(
+        resolved === fwRoot || resolved.startsWith(fwRoot + '/'),
+      ).toBe(true);
+    });
+
+    it('TC-H consistent env passes through untouched (live operation unaffected)', () => {
+      const root = join(testDir, 'live');
+      process.env.CTX_FRAMEWORK_ROOT = root;
+      process.env.CTX_PROJECT_ROOT = root;
+      process.env.CTX_AGENT_DIR = join(root, 'orgs', 'o', 'agents', 'a');
+      process.env.CTX_AGENT_NAME = 'a';
+      process.env.CTX_ORG = 'o';
+      const result = resolveEnv();
+      expect(result.projectRoot).toBe(root);
+      expect(result.agentDir).toBe(join(root, 'orgs', 'o', 'agents', 'a'));
+    });
   });
 });

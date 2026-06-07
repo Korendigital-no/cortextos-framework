@@ -70,6 +70,27 @@ export async function PATCH(
     const diskStatus = await readStatusFromDisk(slug);
     const statusChanges = status !== undefined && status !== diskStatus;
 
+    // Publish-flip guard: publishing is owned by publishApproved (the
+    // /api/content/publish PR/push flow). A PATCH that flips status TO
+    // "published" marks the post published locally while origin/main and the
+    // live site never get it — and a later publish run then SKIPS it (no
+    // longer "approved"). The reverse flip (un-publishing) diverges the same
+    // way: the live site keeps serving a post the dashboard calls a draft.
+    // Reject both before ANY field is applied (all-or-nothing — a partial
+    // apply would silently push a body edit the operator thought failed).
+    // No-op round-trips (full-form save with the on-disk status) pass through.
+    if (statusChanges && (status === "published" || diskStatus === "published")) {
+      return Response.json(
+        {
+          error:
+            status === "published"
+              ? "Publishing goes through the publish flow (POST /api/content/publish), not PATCH — it opens the PR that makes the post canonical on origin/main."
+              : "Un-publishing a published post is not supported via PATCH — the live site is built from origin/main and would diverge. Use the publish flow.",
+        },
+        { status: 409 },
+      );
+    }
+
     let updated = await getPostBySlug(slug);
     let sync: Awaited<ReturnType<typeof commitAndPushContentFile>> | null = null;
     // Race-guard R2: a direct-to-main edit of a slug that already has an open
