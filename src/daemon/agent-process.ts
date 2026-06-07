@@ -298,6 +298,27 @@ export class AgentProcess {
    * conversation directory still has .jsonl files (shouldContinue() is true).
    */
   async sessionRefresh(): Promise<void> {
+    // Promise-latch: four independent triggers can request a refresh (session
+    // timer, stale-detector, context-restart, force-fresh). Two firing close
+    // together would run stop()+start() twice — the second stop() killing the
+    // PTY the first start() just brought up. Coalesce concurrent callers onto
+    // the in-flight refresh; the latch clears (finally) on settle either way.
+    //
+    // Edge (accepted): a context-restart coalescing onto an in-flight refresh
+    // whose start() already consumed shouldContinue() leaves .force-fresh on
+    // disk unconsumed this cycle. Self-healing: the live session keeps writing
+    // real context_status %, the watchdog re-triggers, and the next refresh
+    // picks the flag up (circuit breaker allows 3 restarts / 15 min).
+    if (this.refreshing) return this.refreshing;
+    this.refreshing = this.doSessionRefresh().finally(() => {
+      this.refreshing = null;
+    });
+    return this.refreshing;
+  }
+
+  private refreshing: Promise<void> | null = null;
+
+  private async doSessionRefresh(): Promise<void> {
     this.log('Session refresh (--continue restart)');
     // Write .session-refresh marker so the SessionEnd crash-alert hook
     // (src/hooks/hook-crash-alert.ts) classifies the imminent PTY exit as a
