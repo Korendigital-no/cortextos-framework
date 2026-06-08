@@ -56,15 +56,27 @@ export class MessageDedup {
  * pasted text rather than typed input. This prevents special characters
  * from being interpreted as commands.
  *
+ * Returns a Promise that resolves AFTER the submitting Enter has been
+ * written. DISPATCH-BUG CONTEXT (2026-06-07): the previous version sent
+ * Enter via fire-and-forget setTimeout and returned void immediately.
+ * Callers (cron onFire, fast-checker) treated "returned" as "delivered",
+ * so a second injection could write its paste INSIDE the first one's
+ * 300ms Enter window — the pastes concatenated in the input box, the
+ * first Enter submitted a mangled mega-prompt and the rest submitted
+ * empty lines. In post-sleep cron catch-up batches this silently lost
+ * fires that were already marked last_fired_at. Callers that need
+ * delivery-ordering MUST await this promise (AgentProcess serializes via
+ * an inject queue); fire-and-forget callers can ignore it unchanged.
+ *
  * @param write Function to write to the PTY (pty.write)
  * @param content The message content to inject
  * @param enterDelay Milliseconds to wait before sending Enter (default 300ms)
  */
-export function injectMessage(
+export async function injectMessage(
   write: (data: string) => void,
   content: string,
   enterDelay: number = 300,
-): void {
+): Promise<void> {
   // For very large messages, chunk the write to avoid overwhelming the PTY buffer
   const MAX_CHUNK = 4096;
 
@@ -80,6 +92,8 @@ export function injectMessage(
   }
 
   // Send Enter after a short delay to submit the pasted content.
+  await sleep(enterDelay);
+
   // Why the try/catch: the write callback captures `this.pty` (or similar
   // nullable PTY handle) via closure in callers. If the PTY is torn down
   // during the enterDelay window — e.g. hard-restart IPC kills the child —
@@ -88,14 +102,12 @@ export function injectMessage(
   // Root cause: PR #196 fixed three this.pty! callers in agent-process.ts
   // but missed worker-process.ts:93. This try/catch is the structural fix
   // that covers every present and future caller.
-  setTimeout(() => {
-    try {
-      write(KEYS.ENTER);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      console.warn(`[inject] deferred Enter failed (pty likely torn down): ${msg}`);
-    }
-  }, enterDelay);
+  try {
+    write(KEYS.ENTER);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.warn(`[inject] deferred Enter failed (pty likely torn down): ${msg}`);
+  }
 }
 
 /**

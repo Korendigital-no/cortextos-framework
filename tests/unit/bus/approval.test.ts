@@ -28,7 +28,7 @@ vi.mock('../../../src/telegram/api', () => ({
 import { mkdtempSync, rmSync, readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { createApproval, updateApproval, listPendingApprovals } from '../../../src/bus/approval';
+import { createApproval, updateApproval, listPendingApprovals, listApprovals, APPROVAL_LIST_FILTERS } from '../../../src/bus/approval';
 import type { BusPaths } from '../../../src/types';
 
 let testDir: string;
@@ -428,5 +428,91 @@ describe('listPendingApprovals', () => {
     const pending = listPendingApprovals(paths);
     expect(pending).toHaveLength(1);
     expect(pending[0].id).toBe(id1);
+  });
+});
+
+describe('listApprovals — status filters (regression: 47h sweep-blindness, 2026-06-07)', () => {
+  // Every agent's TOOLS.md documented `list-approvals --status S` but the
+  // CLI never implemented the option. The sweep invocation failed with
+  // "unknown option" (exit 1, empty stdout) and sweeps read empty stdout
+  // as "zero pending" — a real approval sat unseen for 47h. These tests
+  // lock in the listing layer the now-implemented CLI option calls into.
+
+  /** Seed: 1 pending, 1 approved, 1 rejected. Returns their ids. */
+  async function seedThree(): Promise<{ pending: string; approved: string; rejected: string }> {
+    const pending = await createApproval(paths, 'alice', 'TestOrg', 'P', 'deployment', undefined, frameworkRoot);
+    const approved = await createApproval(paths, 'alice', 'TestOrg', 'A', 'deployment', undefined, frameworkRoot);
+    const rejected = await createApproval(paths, 'alice', 'TestOrg', 'R', 'deployment', undefined, frameworkRoot);
+    updateApproval(paths, approved, 'approved');
+    updateApproval(paths, rejected, 'rejected');
+    return { pending, approved, rejected };
+  }
+
+  it("THE regression: a created approval IS listed by status 'pending' (default)", async () => {
+    // The exact contract the task demands: opprett approval -> verifiser
+    // at den listes.
+    const id = await createApproval(paths, 'alice', 'TestOrg', 'Must be visible', 'deployment', undefined, frameworkRoot);
+    const byDefault = listApprovals(paths);
+    const byExplicit = listApprovals(paths, 'pending');
+    expect(byDefault.map(a => a.id)).toContain(id);
+    expect(byExplicit.map(a => a.id)).toContain(id);
+  });
+
+  it("'approved' returns only resolved approvals with status approved", async () => {
+    const ids = await seedThree();
+    const got = listApprovals(paths, 'approved');
+    expect(got.map(a => a.id)).toEqual([ids.approved]);
+    expect(got[0].status).toBe('approved');
+  });
+
+  it("'rejected' returns only resolved approvals with status rejected", async () => {
+    const ids = await seedThree();
+    const got = listApprovals(paths, 'rejected');
+    expect(got.map(a => a.id)).toEqual([ids.rejected]);
+    expect(got[0].status).toBe('rejected');
+  });
+
+  it("'resolved' returns approved + rejected but not pending", async () => {
+    const ids = await seedThree();
+    const got = listApprovals(paths, 'resolved');
+    expect(got.map(a => a.id).sort()).toEqual([ids.approved, ids.rejected].sort());
+  });
+
+  it("'all' returns pending + resolved", async () => {
+    const ids = await seedThree();
+    const got = listApprovals(paths, 'all');
+    expect(got.map(a => a.id).sort()).toEqual([ids.pending, ids.approved, ids.rejected].sort());
+  });
+
+  it('missing approvals dirs → empty list, never a throw', () => {
+    // Fresh paths with no approvals/ tree at all.
+    const emptyPaths = mkPaths(join(testDir, 'never-created'));
+    for (const f of APPROVAL_LIST_FILTERS) {
+      expect(listApprovals(emptyPaths, f)).toEqual([]);
+    }
+  });
+
+  it('a corrupt JSON file is skipped without blinding the listing to readable rows', async () => {
+    const id = await createApproval(paths, 'alice', 'TestOrg', 'Readable', 'deployment', undefined, frameworkRoot);
+    writeFileSync(join(paths.approvalDir, 'pending', 'approval_0_corrupt.json'), '{not json');
+
+    const got = listApprovals(paths, 'pending');
+    expect(got.map(a => a.id)).toEqual([id]);
+  });
+
+  it('sorts newest-first by created_at across pending and resolved', async () => {
+    // Hand-write files with controlled timestamps to make ordering deterministic.
+    const pendingDir = join(paths.approvalDir, 'pending');
+    const resolvedDir = join(paths.approvalDir, 'resolved');
+    mkdirSync(pendingDir, { recursive: true });
+    mkdirSync(resolvedDir, { recursive: true });
+    const mk = (id: string, status: string, created: string) =>
+      JSON.stringify({ id, title: id, requesting_agent: 'a', org: 'TestOrg', category: 'other', status, description: '', created_at: created, updated_at: created, resolved_at: null, resolved_by: null });
+    writeFileSync(join(pendingDir, 'approval_1_old.json'), mk('approval_1_old', 'pending', '2026-06-01T00:00:00Z'));
+    writeFileSync(join(resolvedDir, 'approval_2_new.json'), mk('approval_2_new', 'approved', '2026-06-03T00:00:00Z'));
+    writeFileSync(join(pendingDir, 'approval_3_mid.json'), mk('approval_3_mid', 'pending', '2026-06-02T00:00:00Z'));
+
+    const got = listApprovals(paths, 'all');
+    expect(got.map(a => a.id)).toEqual(['approval_2_new', 'approval_3_mid', 'approval_1_old']);
   });
 });
