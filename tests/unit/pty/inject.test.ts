@@ -52,7 +52,7 @@ describe('injectMessage — deferred Enter crash safety', () => {
     warnSpy.mockRestore();
   });
 
-  it('swallows throw from the deferred Enter callback without crashing', () => {
+  it('swallows throw from the deferred Enter callback without crashing', async () => {
     const writes: string[] = [];
     // Caller's write is "safe" during the synchronous paste but starts
     // throwing by the time the deferred Enter fires — simulates PTY teardown.
@@ -62,32 +62,57 @@ describe('injectMessage — deferred Enter crash safety', () => {
       writes.push(data);
     };
 
-    // Synchronous calls (paste markers + content) should succeed.
-    expect(() => injectMessage(write, 'hello', 300)).not.toThrow();
+    // The paste happens synchronously; the promise resolves after the Enter
+    // delay (injectMessage is async since the 2026-06-07 dispatch-bug fix).
+    const pending = injectMessage(write, 'hello', 300);
     expect(writes.length).toBeGreaterThan(0);
 
-    // PTY dies before the 300ms Enter timeout fires.
+    // PTY dies before the 300ms Enter delay elapses.
     ptyAlive = false;
 
-    // Advancing the clock invokes the deferred callback. Must NOT propagate.
-    expect(() => vi.advanceTimersByTime(300)).not.toThrow();
+    // Advancing the clock runs the delayed Enter. Must NOT reject.
+    await vi.advanceTimersByTimeAsync(300);
+    await expect(pending).resolves.toBeUndefined();
 
     // The warn path in inject.ts confirms the catch branch ran.
     expect(warnSpy).toHaveBeenCalledTimes(1);
     expect(warnSpy.mock.calls[0][0]).toMatch(/deferred Enter failed/);
   });
 
-  it('sends Enter normally when the PTY stays alive', () => {
+  it('sends Enter normally when the PTY stays alive', async () => {
     const writes: string[] = [];
     const write = (data: string) => { writes.push(data); };
 
-    injectMessage(write, 'hi', 300);
+    const pending = injectMessage(write, 'hi', 300);
     const writesBeforeTimer = writes.length;
-    vi.advanceTimersByTime(300);
+    await vi.advanceTimersByTimeAsync(300);
+    await pending;
 
     // Exactly one new write — the ENTER keystroke — and no warn.
     expect(writes.length).toBe(writesBeforeTimer + 1);
     expect(writes[writes.length - 1]).toBe(KEYS.ENTER);
     expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('resolves only AFTER the Enter has been written (delivery-ordering contract)', async () => {
+    // DISPATCH-BUG REGRESSION GUARD (2026-06-07): callers serialize on this
+    // promise; if it ever resolves before the Enter write again, concurrent
+    // injections can interleave pastes inside each other's Enter windows and
+    // silently mangle prompts (the post-sleep cron catch-up batch repro).
+    const writes: string[] = [];
+    const write = (data: string) => { writes.push(data); };
+
+    let resolved = false;
+    const pending = injectMessage(write, 'ordering', 300).then(() => { resolved = true; });
+
+    // Before the delay elapses: paste written, promise still pending.
+    await vi.advanceTimersByTimeAsync(299);
+    expect(resolved).toBe(false);
+    expect(writes[writes.length - 1]).not.toBe(KEYS.ENTER);
+
+    await vi.advanceTimersByTimeAsync(1);
+    await pending;
+    expect(resolved).toBe(true);
+    expect(writes[writes.length - 1]).toBe(KEYS.ENTER);
   });
 });

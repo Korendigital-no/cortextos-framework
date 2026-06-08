@@ -1,10 +1,10 @@
-import { readdirSync, readFileSync, renameSync, statSync, existsSync } from 'fs';
+import { readdirSync, readFileSync, renameSync, statSync, existsSync, unlinkSync, utimesSync } from 'fs';
 import { join } from 'path';
 import { createHmac, timingSafeEqual } from 'crypto';
 import type { InboxMessage, Priority, BusPaths } from '../types/index.js';
 import { PRIORITY_MAP } from '../types/index.js';
 import { atomicWriteSync, ensureDir } from '../utils/atomic.js';
-import { acquireLock, releaseLock } from '../utils/lock.js';
+import { acquireLock, releaseLock, withFileLockSync } from '../utils/lock.js';
 import { randomString } from '../utils/random.js';
 import { validateAgentName, validatePriority } from '../utils/validate.js';
 
@@ -104,8 +104,9 @@ export function checkInbox(paths: BusPaths): InboxMessage[] {
   }
 
   try {
-    // Recover stale inflight messages (>5 min old)
-    recoverStaleInflight(inflight, inbox, 300);
+    // Recover stale inflight messages (>5 min old) for redelivery; parks
+    // messages that exhausted MAX_REDELIVERIES in processed/ (loudly).
+    recoverStaleInflight(inflight, inbox, 300, paths.processed);
 
     // Read and sort messages by filename (priority then timestamp)
     const files = readdirSync(inbox)
@@ -144,6 +145,17 @@ export function checkInbox(paths: BusPaths): InboxMessage[] {
         // Move to inflight
         const destPath = join(inflight, file);
         renameSync(srcPath, destPath);
+        // Restart the redelivery clock at DELIVERY time: rename preserves
+        // mtime, so a message that waited in inbox/ longer than the stale
+        // threshold (agent down, boot backlog) would otherwise land in
+        // inflight/ already "stale" and immediately re-recover on the next
+        // cycle — burning through MAX_REDELIVERIES in minutes while the
+        // agent is actively handling it. "Un-ACK'd after 5 min" is defined
+        // from delivery, not from send.
+        try {
+          const deliveredAt = new Date();
+          utimesSync(destPath, deliveredAt, deliveredAt);
+        } catch { /* best effort — worst case is an early redelivery */ }
         messages.push(msg);
       } catch {
         // Move corrupt files to .errors/
@@ -166,41 +178,76 @@ export function checkInbox(paths: BusPaths): InboxMessage[] {
 /**
  * Acknowledge a message by moving it from inflight to processed.
  * Identical to bash ack-inbox.sh behavior.
+ *
+ * Takes the same inbox lock as checkInbox (cross-review HIGH #3): the
+ * fast-checker's recoverStaleInflight and the agent's CLI ack run in
+ * separate processes and both move files out of inflight/. Unlocked, the
+ * interleaving "recover wins, ack ENOENTs silently" re-delivered a
+ * message the agent had already handled. If the lock cannot be acquired
+ * within the timeout we ack UNLOCKED rather than lose the ack — the
+ * pre-fix behavior, as a degraded fallback.
  */
 export function ackInbox(paths: BusPaths, messageId: string): void {
-  const { inflight, processed } = paths;
+  const { inbox, inflight, processed } = paths;
   ensureDir(processed);
 
-  // Find the file in inflight that contains this message ID
-  let files: string[];
-  try {
-    files = readdirSync(inflight).filter(f => f.endsWith('.json'));
-  } catch {
-    return;
-  }
-
-  for (const file of files) {
-    const filePath = join(inflight, file);
+  const doAck = (): void => {
+    // Find the file in inflight that contains this message ID
+    let files: string[];
     try {
-      const content = readFileSync(filePath, 'utf-8');
-      const msg = JSON.parse(content);
-      if (msg.id === messageId) {
-        renameSync(filePath, join(processed, file));
-        return;
-      }
+      files = readdirSync(inflight).filter(f => f.endsWith('.json'));
     } catch {
-      // Skip corrupt files
+      return;
     }
+
+    for (const file of files) {
+      const filePath = join(inflight, file);
+      try {
+        const content = readFileSync(filePath, 'utf-8');
+        const msg = JSON.parse(content);
+        if (msg.id === messageId) {
+          renameSync(filePath, join(processed, file));
+          return;
+        }
+      } catch {
+        // Skip corrupt files
+      }
+    }
+  };
+
+  try {
+    withFileLockSync(inbox, doAck, { timeoutMs: 2_000 });
+  } catch {
+    // Lock unavailable (contention/timeout) — never drop the ack.
+    doAck();
   }
 }
 
 /**
+ * Maximum number of stale-inflight recoveries (= redelivery attempts) per
+ * message before it is parked. Each recovery re-injects the message into
+ * the session; a message that has been delivered MAX+1 times without an
+ * ACK is either being ignored or the agent's ACK discipline is broken —
+ * keeping it looping adds noise without progress. Parked messages land in
+ * processed/ with their redeliveries count intact (auditable) and a LOUD
+ * stderr line names them.
+ */
+export const MAX_REDELIVERIES = 3;
+
+/**
  * Recover stale inflight messages (older than thresholdSeconds) back to inbox.
+ *
+ * Increments a `redeliveries` counter in the message JSON on every
+ * recovery. After MAX_REDELIVERIES the message is parked in processedDir
+ * instead — loudly. (Dispatch-bug fix 2026-06-07: redelivery is now real —
+ * the fast-checker no longer acks at injection time — so an un-ACK'd
+ * message would otherwise redeliver every 5 minutes forever.)
  */
 function recoverStaleInflight(
   inflightDir: string,
   inboxDir: string,
   thresholdSeconds: number,
+  processedDir?: string,
 ): void {
   const now = Math.floor(Date.now() / 1000);
   let files: string[];
@@ -215,9 +262,37 @@ function recoverStaleInflight(
     try {
       const stat = statSync(filePath);
       const mtime = Math.floor(stat.mtimeMs / 1000);
-      if (now - mtime > thresholdSeconds) {
+      if (now - mtime <= thresholdSeconds) continue;
+
+      // Count this recovery on the message so redelivery is bounded.
+      let msg: InboxMessage & { redeliveries?: number };
+      try {
+        msg = JSON.parse(readFileSync(filePath, 'utf-8'));
+      } catch {
+        // Unparseable — recover without a counter (legacy behavior) so a
+        // corrupt-but-recoverable file still gets one more chance; the
+        // checkInbox read will route it to .errors/ if truly corrupt.
         renameSync(filePath, join(inboxDir, file));
+        continue;
       }
+
+      const redeliveries = (msg.redeliveries ?? 0) + 1;
+      if (processedDir && redeliveries > MAX_REDELIVERIES) {
+        // LOUD park — never a silent drop. The message was delivered
+        // MAX_REDELIVERIES+1 times without an ACK.
+        console.error(
+          `[bus/message] REDELIVERY EXHAUSTED: message ${msg.id} from '${msg.from}' ` +
+          `redelivered ${MAX_REDELIVERIES}x without ACK — parking in processed/. ` +
+          `Text head: ${String(msg.text).slice(0, 120)}`,
+        );
+        ensureDir(processedDir);
+        atomicWriteSync(join(processedDir, file), JSON.stringify({ ...msg, redeliveries, redelivery_exhausted: true }));
+        unlinkSync(filePath);
+        continue;
+      }
+
+      atomicWriteSync(filePath, JSON.stringify({ ...msg, redeliveries }));
+      renameSync(filePath, join(inboxDir, file));
     } catch {
       // Ignore stat/move errors
     }

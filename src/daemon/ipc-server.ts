@@ -64,12 +64,12 @@ export interface FireCronResult {
  * @param injectFn   - Injection function (agentManager.injectAgent or test stub).
  * @param nowMs      - Epoch ms for "now" (injectable for testing).
  */
-export function handleFireCron(
+export async function handleFireCron(
   agent: string | undefined,
   cronName: string | undefined,
-  injectFn: (agent: string, text: string) => boolean,
+  injectFn: (agent: string, text: string) => boolean | Promise<boolean>,
   nowMs = Date.now(),
-): FireCronResult {
+): Promise<FireCronResult> {
   if (!agent || !agent.trim()) {
     return { ok: false, error: 'Agent name is required.' };
   }
@@ -95,9 +95,10 @@ export function handleFireCron(
     return { ok: false, error: `Cooldown active — wait ${waitSec}s before firing again.` };
   }
 
-  // Inject into PTY
+  // Inject into PTY — await full delivery (paste + Enter) before reporting
+  // fired; see the 2026-06-07 dispatch-bug fix in pty/inject.ts.
   const injection = `[CRON: ${cronName}] ${cron.prompt}`;
-  const injected = injectFn(agent, injection);
+  const injected = await injectFn(agent, injection);
   if (!injected) {
     return { ok: false, error: `Agent '${agent}' not found or not running.` };
   }
@@ -506,7 +507,13 @@ export class IPCServer {
           try {
             const request: IPCRequest = JSON.parse(data);
             data = '';
-            this.handleRequest(request, socket);
+            // handleRequest is async (awaits PTY delivery for inject paths)
+            // and writes its own response/end; rejections are fully caught
+            // inside, but guard anyway so a future edit can't crash the daemon.
+            void this.handleRequest(request, socket).catch((err) => {
+              console.error('[ipc] handleRequest crashed:', err);
+              try { socket.write(JSON.stringify({ success: false, error: String(err) })); socket.end(); } catch { /* client gone */ }
+            });
           } catch {
             // Incomplete JSON, wait for more data
           }
@@ -566,8 +573,13 @@ export class IPCServer {
 
   /**
    * Handle an incoming IPC request.
+   *
+   * Async since the dispatch-bug fix (2026-06-07): inject-agent and
+   * fire-cron await full PTY delivery before responding. Each request is
+   * handled on its own socket; the connection handler fire-and-forgets
+   * this method, so concurrent requests are unaffected.
    */
-  private handleRequest(request: IPCRequest, socket: Socket): void {
+  private async handleRequest(request: IPCRequest, socket: Socket): Promise<void> {
     // BUG-015: log every incoming IPC request with its source so we can
     // trace which CLI command triggered which daemon action. The source
     // field is populated by CLI clients (cortextos enable / disable / stop
@@ -726,7 +738,7 @@ export class IPCServer {
             // collision in MessageDedup window). Closes the conflation Boris
             // surfaced — the harness "3 not found errors" were dedup hits.
             // See issue #346.
-            const result = this.agentManager.injectAgentDetailed(agentToInject, textToInject);
+            const result = await this.agentManager.injectAgentDetailed(agentToInject, textToInject);
             if (result.ok) {
               response = { success: true, data: `Injected into agent ${agentToInject}` };
             } else {
@@ -753,7 +765,7 @@ export class IPCServer {
         case 'fire-cron': {
           const agentToFire = request.agent;
           const fireCronName = request.data?.name as string | undefined;
-          const fireCronResult = handleFireCron(
+          const fireCronResult = await handleFireCron(
             agentToFire,
             fireCronName,
             (a, text) => this.agentManager.injectAgent(a, text),
