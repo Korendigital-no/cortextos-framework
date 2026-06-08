@@ -5,7 +5,14 @@ export { sendMessage, checkInbox, ackInbox } from './message.js';
 export { createTask, updateTask, completeTask, listTasks } from './task.js';
 export { logEvent } from './event.js';
 export { updateHeartbeat, readAllHeartbeats } from './heartbeat.js';
-export { createApproval, updateApproval, listPendingApprovals } from './approval.js';
+export {
+  createApproval,
+  updateApproval,
+  listPendingApprovals,
+  listApprovals,
+  APPROVAL_LIST_FILTERS,
+  type ApprovalListFilter,
+} from './approval.js';
 export {
   selfRestart,
   autoCommit,

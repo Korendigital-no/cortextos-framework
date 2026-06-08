@@ -1,6 +1,6 @@
 import { Command } from 'commander';
 import { spawnSync, execFileSync } from 'child_process';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { sendMessage, checkInbox, ackInbox } from '../bus/message.js';
 import { validateAgentName } from '../utils/validate.js';
@@ -13,7 +13,7 @@ import { selfRestart, hardRestart, autoCommit, checkGoalStaleness, postActivity 
 import { createExperiment, runExperiment, evaluateExperiment, listExperiments, gatherContext, manageCycle, loadExperimentConfig } from '../bus/experiment.js';
 import { browseCatalog, installCommunityItem, prepareSubmission, submitCommunityItem } from '../bus/catalog.js';
 import { collectMetrics, parseUsageOutput, storeUsageData, checkUpstream, collectTelegramCommands, registerTelegramCommands } from '../bus/metrics.js';
-import { createApproval, updateApproval } from '../bus/approval.js';
+import { createApproval, updateApproval, listApprovals, APPROVAL_LIST_FILTERS, type ApprovalListFilter } from '../bus/approval.js';
 import { createReminder, listReminders, ackReminder, pruneReminders } from '../bus/reminders.js';
 import { updateCronFire, parseDurationMs, readCronState } from '../bus/cron-state.js';
 import { addCron, removeCron, readCrons, updateCron as updateCronDef, getCronByName, getExecutionLog } from '../bus/crons.js';
@@ -1791,15 +1791,26 @@ busCommand
 
 busCommand
   .command('list-approvals')
-  .description('List pending approval requests')
+  .description('List approval requests (default: pending)')
+  .option('--status <status>', 'Filter: pending|approved|rejected|resolved|all', 'pending')
   .option('--format <fmt>', 'Output format: json|text', 'json')
   .option('--all-orgs', 'Scan all orgs under CTX_ROOT (matches dashboard view)', false)
-  .action((opts: { format?: string; allOrgs?: boolean }) => {
-    const { listPendingApprovals } = require('../bus/approval.js');
-    const { readdirSync, existsSync } = require('fs');
-    const { join, homedir: _homedir } = require('path');
-    const { homedir } = require('os');
+  .action((opts: { status?: string; format?: string; allOrgs?: boolean }) => {
+    // REGRESSION CONTEXT (2026-06-07): TOOLS.md documented `--status S` but
+    // this command never implemented it. Agents following the doc hit
+    // commander's "unknown option" error — exit 1 with EMPTY stdout — and
+    // approval sweeps parsed that as "zero pending" for 47h. The option now
+    // exists; an invalid VALUE must still fail loudly (clear message naming
+    // the valid set), never silently return [].
     const env = resolveEnv();
+
+    const status = (opts.status ?? 'pending') as ApprovalListFilter;
+    if (!APPROVAL_LIST_FILTERS.includes(status)) {
+      console.error(
+        `error: invalid --status '${status}' — valid values: ${APPROVAL_LIST_FILTERS.join('|')}`,
+      );
+      process.exit(1);
+    }
 
     let approvals: unknown[] = [];
 
@@ -1814,22 +1825,27 @@ busCommand
         : [];
       for (const org of orgs) {
         const orgPaths = resolvePaths(env.agentName, env.instanceId, org, env.ctxRoot);
-        approvals = approvals.concat(listPendingApprovals(orgPaths));
+        approvals = approvals.concat(listApprovals(orgPaths, status));
       }
+      // Per-org lists are each sorted, but the concat is not — re-sort so
+      // the cross-org view is globally newest-first like the single-org view.
+      (approvals as Array<{ created_at: string }>).sort(
+        (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+      );
     } else {
       const paths = resolvePaths(env.agentName, env.instanceId, env.org, env.ctxRoot);
-      approvals = listPendingApprovals(paths);
+      approvals = listApprovals(paths, status);
     }
 
     if (opts.format === 'text') {
-      if (approvals.length === 0) { console.log('No pending approvals'); return; }
-      for (const a of approvals as Array<{ id: string; title: string; category: string; requesting_agent: string; created_at: string; description?: string; org?: string }>) {
+      if (approvals.length === 0) { console.log(status === 'all' ? 'No approvals' : `No ${status} approvals`); return; }
+      for (const a of approvals as Array<{ id: string; title: string; category: string; status: string; requesting_agent: string; created_at: string; description?: string; org?: string }>) {
         console.log(`[${a.id}] ${a.title}`);
-        console.log(`  Category: ${a.category} | Agent: ${a.requesting_agent} | Org: ${a.org ?? env.org} | Created: ${a.created_at}`);
+        console.log(`  Status: ${a.status} | Category: ${a.category} | Agent: ${a.requesting_agent} | Org: ${a.org ?? env.org} | Created: ${a.created_at}`);
         if (a.description) console.log(`  Context: ${a.description}`);
         console.log('');
       }
-      console.log(`Total: ${approvals.length} pending`);
+      console.log(`Total: ${approvals.length} (${status})`);
     } else {
       console.log(JSON.stringify(approvals, null, 2));
     }
