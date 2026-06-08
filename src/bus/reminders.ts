@@ -12,11 +12,15 @@
  *   3. Agent processes the reminder, calls `cortextos bus ack-reminder <id>`
  */
 
-import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { randomBytes } from 'crypto';
-import { ensureDir } from '../utils/atomic.js';
+import { atomicWriteSync, ensureDir } from '../utils/atomic.js';
 import type { BusPaths } from '../types/index.js';
+
+function sanitizeForLog(value: unknown): string {
+  return String(value).replace(/[\r\n\t\f\v\u0000-\u001F\u007F]/g, ' ');
+}
 
 export interface Reminder {
   id: string;
@@ -37,15 +41,30 @@ function readReminders(paths: BusPaths): Reminder[] {
   try {
     const raw = readFileSync(filePath, 'utf-8');
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
+    if (!Array.isArray(parsed)) {
+      // Loud, never silent: an unparseable/wrong-shape reminders file used
+      // to read as "no reminders" — indistinguishable from an empty queue
+      // (the 2026-06-06 list-reminders-showed-nothing mystery). The file
+      // still exists on disk, so nothing is lost; the operator just needs
+      // to know the read failed rather than trust an empty answer.
+      console.error('[bus/reminders] WARNING: pending-reminders.json exists but is not a reminder array — treating as empty. Inspect the file; reminders may be hidden, not gone.');
+      return [];
+    }
+    return parsed;
+  } catch (err) {
+    const safeErr = sanitizeForLog(err instanceof Error ? err.message : err);
+    console.error(`[bus/reminders] WARNING: failed to read/parse pending-reminders.json (${safeErr}) — treating as empty. Inspect the file; reminders may be hidden, not gone.`);
     return [];
   }
 }
 
 function writeReminders(paths: BusPaths, reminders: Reminder[]): void {
   ensureDir(paths.stateDir);
-  writeFileSync(remindersPath(paths), JSON.stringify(reminders, null, 2) + '\n', 'utf-8');
+  // atomicWriteSync (cross-review MEDIUM #4): a plain writeFileSync here
+  // could be torn-read by the fast-checker's reminder sweep in another
+  // process — JSON.parse fails, getOverdueReminders returns [], and the
+  // sweep's backoff map gets wrongly pruned (immediate re-injection).
+  atomicWriteSync(remindersPath(paths), JSON.stringify(reminders, null, 2) + '\n');
 }
 
 /**

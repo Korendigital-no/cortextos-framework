@@ -11,6 +11,7 @@ import {
 } from './stale-detector.js';
 import type { InboxMessage, BusPaths, TelegramMessage, TelegramCallbackQuery } from '../types/index.js';
 import { checkInbox, ackInbox } from '../bus/message.js';
+import { getOverdueReminders } from '../bus/reminders.js';
 import { updateApproval } from '../bus/approval.js';
 import { AgentProcess } from './agent-process.js';
 import type { TelegramAPI } from '../telegram/api.js';
@@ -140,7 +141,7 @@ export class FastChecker {
     while (this.running) {
       try {
         // Check for urgent signal file
-        this.checkUrgentSignal();
+        await this.checkUrgentSignal();
         await this.pollCycle();
       } catch (err) {
         this.log(`Poll error: ${err}`);
@@ -185,35 +186,42 @@ export class FastChecker {
 
   /**
    * Single poll cycle: check inbox + queued Telegram messages.
+   *
+   * DISPATCH-BUG FIX (2026-06-07): this method used to ack-inbox every
+   * message the moment injectMessage returned — i.e. when bytes hit the
+   * PTY, not when the agent processed anything. That made the documented
+   * "un-ACK'd messages redeliver after 5 min" contract impossible for
+   * daemon-delivered messages: a HIGH-prio message injected into a
+   * wedged/idle session was instantly marked processed and lost for 3h.
+   * Now: messages stay in inflight/ after injection; the AGENT acks (by
+   * replying with reply_to or ack-inbox, per AGENTS.md), and
+   * recoverStaleInflight redelivers anything still un-ACK'd after 5 min.
    */
   private async pollCycle(): Promise<void> {
     let messageBlock = '';
-    const ackIds: string[] = [];
 
     // Process queued Telegram messages
     let hasTelegramMessage = false;
+    const telegramBatch: Array<{ formatted: string; ackIds: string[] }> = [];
     while (this.telegramMessages.length > 0) {
       const msg = this.telegramMessages.shift()!;
+      telegramBatch.push(msg);
       messageBlock += msg.formatted;
       hasTelegramMessage = true;
     }
 
-    // Check agent inbox
+    // Check agent inbox (moves messages to inflight/ — they stay there
+    // until the agent acks, with 5-min stale recovery for redelivery)
     const inboxMessages = checkInbox(this.paths);
     for (const msg of inboxMessages) {
       messageBlock += this.formatInboxMessage(msg);
-      ackIds.push(msg.id);
     }
 
     // Inject if there's anything
     if (messageBlock) {
-      const injected = this.agent.injectMessage(messageBlock);
-      if (injected) {
-        // ACK inbox messages
-        for (const id of ackIds) {
-          ackInbox(this.paths, id);
-        }
-        this.log(`Injected ${messageBlock.length} bytes`);
+      const result = await this.agent.injectMessageDetailed(messageBlock);
+      if (result.ok) {
+        this.log(`Injected ${messageBlock.length} bytes (${inboxMessages.length} inbox message(s) left in inflight pending agent ACK)`);
         // Only update typing timestamp for Telegram messages, not inbox/cron.
         // Inbox messages (agent-to-agent, session continuations) must not
         // restart the typing indicator after Stop has cleared it.
@@ -222,8 +230,24 @@ export class FastChecker {
         }
         // Cooldown after injection
         await sleep(5000);
+      } else {
+        // Telegram messages have no disk backing — re-queue them so a
+        // transient failure (NOT_RUNNING during restart window) does not
+        // silently drop operator messages. Inbox messages are already in
+        // inflight/ and will redeliver via stale recovery.
+        this.telegramMessages.unshift(...telegramBatch);
+        this.log(
+          `Injection failed (${result.code}): ${result.message} — ` +
+          `${telegramBatch.length} Telegram message(s) re-queued; ` +
+          `${inboxMessages.length} inbox message(s) await 5-min stale redelivery`,
+        );
       }
     }
+
+    // Overdue persistent reminders: runtime dispatch (previously these only
+    // fired via the boot prompt, so a reminder due mid-session sat pending
+    // until the next restart — the Vidda repro)
+    await this.checkOverdueReminders();
 
     // Typing indicator: send while Claude is actively working
     if (this.chatId && this.telegramApi && this.isAgentActive()) {
@@ -235,6 +259,60 @@ export class FastChecker {
 
     // Self-inflicted-stale detector: prompts going IN, no agent heartbeat OUT
     this.checkSelfInflictedStale();
+  }
+
+  /** Last runtime injection per reminder id — re-inject backoff tracking. */
+  private reminderInjectedAt: Map<string, number> = new Map();
+  private reminderLastSweepMs = 0;
+  /** Re-inject an un-ACK'd overdue reminder at most this often. */
+  private static readonly REMINDER_REINJECT_MS = 10 * 60 * 1000;
+
+  /**
+   * Runtime dispatch for overdue persistent reminders (dispatch-bug fix,
+   * 2026-06-07). Reminders were boot-prompt-only: getOverdueReminders()
+   * was consulted exclusively when building the session start prompt, so
+   * a reminder whose fire_at passed mid-session never fired until the
+   * next restart (47 min overdue in the repro). This sweep injects
+   * overdue reminders into the RUNNING session, instructs the agent to
+   * ack-reminder (mark-after-handle, never auto-ack), and re-injects
+   * un-ACK'd reminders with a 10-min backoff. The injected timestamp
+   * salts the content so MessageDedup does not swallow re-injections.
+   */
+  private async checkOverdueReminders(): Promise<void> {
+    const now = Date.now();
+    if (now - this.reminderLastSweepMs < 60_000) return; // sweep at most 1/min
+    this.reminderLastSweepMs = now;
+
+    let overdue: Array<{ id: string; fire_at: string; prompt: string }>;
+    try {
+      overdue = getOverdueReminders(this.paths);
+    } catch (err) {
+      this.log(`Reminder sweep failed to read reminders: ${err}`);
+      return;
+    }
+
+    // Prune backoff entries for reminders that are no longer overdue/pending
+    const overdueIds = new Set(overdue.map(r => r.id));
+    for (const id of this.reminderInjectedAt.keys()) {
+      if (!overdueIds.has(id)) this.reminderInjectedAt.delete(id);
+    }
+
+    for (const r of overdue) {
+      const lastInjected = this.reminderInjectedAt.get(r.id) ?? 0;
+      if (now - lastInjected < FastChecker.REMINDER_REINJECT_MS) continue;
+
+      const block =
+        `=== REMINDER OVERDUE [${r.id}] (due ${r.fire_at}, injected ${new Date(now).toISOString()}) ===\n` +
+        `${r.prompt}\n` +
+        `Handle this now, then run: cortextos bus ack-reminder ${r.id}\n\n`;
+      const result = await this.agent.injectMessageDetailed(block);
+      if (result.ok) {
+        this.reminderInjectedAt.set(r.id, now);
+        this.log(`Injected overdue reminder ${r.id} (due ${r.fire_at})`);
+      } else {
+        this.log(`Overdue reminder ${r.id} injection failed (${result.code}) — will retry next sweep`);
+      }
+    }
   }
 
   /**
@@ -319,11 +397,18 @@ export class FastChecker {
 
   /**
    * Format an inbox message for injection.
-   * Matches bash fast-checker.sh format exactly.
+   * Matches bash fast-checker.sh format, plus a [delivered: <ts>] stamp.
+   *
+   * The delivery stamp salts the content per delivery attempt so that a
+   * 5-min stale REDELIVERY of an un-ACK'd message is not swallowed by
+   * MessageDedup (which hashes the full injected text — without the salt,
+   * the redelivered copy is byte-identical to the first injection and
+   * gets silently DEDUPED, defeating the redelivery contract).
    */
   private formatInboxMessage(msg: InboxMessage): string {
     const replyNote = msg.reply_to ? ` [reply_to: ${msg.reply_to}]` : '';
-    return `=== AGENT MESSAGE from ${msg.from}${replyNote} [msg_id: ${msg.id}] ===
+    const deliveredAt = new Date().toISOString();
+    return `=== AGENT MESSAGE from ${msg.from}${replyNote} [msg_id: ${msg.id}] [delivered: ${deliveredAt}] ===
 \`\`\`
 ${msg.text}
 \`\`\`
@@ -953,19 +1038,38 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
 
   /**
    * Check for .urgent-signal file and process it.
+   *
+   * DISPATCH-BUG FIX (2026-06-07): the previous version unlinked the
+   * signal file BEFORE injecting and ignored the injection result — a
+   * NOT_RUNNING window (mid-restart) consumed the signal and lost it
+   * forever (the lost activation-go repro). Now: inject first, unlink
+   * only when delivery succeeded. NOT_RUNNING retains the file so the
+   * next poll retries. DEDUPED also unlinks — identical content in the
+   * dedup window means this exact signal was already injected once
+   * (signals carry a creation timestamp in their JSON, so two deliberate
+   * sends are never byte-identical).
    */
-  private checkUrgentSignal(): void {
+  private async checkUrgentSignal(): Promise<void> {
     const urgentPath = join(this.paths.stateDir, '.urgent-signal');
     if (existsSync(urgentPath)) {
       try {
         const content = readFileSync(urgentPath, 'utf-8').trim();
         this.log(`Urgent signal detected: ${content}`);
-        unlinkSync(urgentPath);
 
-        // Inject the urgent message
-        if (content) {
-          const urgentMsg = `=== URGENT SIGNAL ===\n\`\`\`\n${content}\n\`\`\`\n\n`;
-          this.agent.injectMessage(urgentMsg);
+        if (!content) {
+          unlinkSync(urgentPath); // empty file — nothing to deliver
+          return;
+        }
+
+        const urgentMsg = `=== URGENT SIGNAL ===\n\`\`\`\n${content}\n\`\`\`\n\n`;
+        const result = await this.agent.injectMessageDetailed(urgentMsg);
+        if (result.ok || result.code === 'DEDUPED') {
+          unlinkSync(urgentPath);
+          if (result.ok) this.log('Urgent signal delivered');
+          else this.log('Urgent signal already delivered (dedup hit) — consumed');
+        } else {
+          // NOT_RUNNING — keep the file; next poll retries once the PTY is back
+          this.log(`Urgent signal NOT delivered (${result.code}) — retained for retry next poll`);
         }
       } catch (err) {
         this.log(`Error processing urgent signal: ${err}`);
@@ -1075,7 +1179,7 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
       this.ctxWarningFiredAt = now;
       const pctRound = Math.round(effectivePct);
       const statusSuffix = effectivePct >= handoff ? 'Handoff in progress.' : `Handoff triggers at ${handoff}%.`;
-      this.agent.injectMessage(`[CONTEXT] Window at ${pctRound}%. ${statusSuffix}`);
+      await this.agent.injectMessage(`[CONTEXT] Window at ${pctRound}%. ${statusSuffix}`);
       this.log(`Context warning fired at ${pctRound}%`);
     }
 
@@ -1090,7 +1194,7 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
       } catch { /* non-fatal */ }
       const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19) + 'Z';
       const handoffPrompt = `[CONTEXT HANDOFF REQUIRED] Context is at ${Math.round(effectivePct)}%. Write a handoff document to memory/handoffs/handoff-${ts}.md with these sections: ## Current Tasks, ## Next Actions, ## Active Crons, ## Key Context, ## Files Modified This Session. Then run: cortextos bus hard-restart --reason "context handoff at ${Math.round(effectivePct)}%" --handoff-doc <absolute path to the handoff doc you just wrote>. Do this NOW before the context window is exhausted.`;
-      this.agent.injectMessage(handoffPrompt);
+      await this.agent.injectMessage(handoffPrompt);
       this.log(`Handoff prompt injected at ${Math.round(effectivePct)}%`);
       // Pre-arm .force-fresh so the next restart is always a clean fresh session.
       // If the agent cooperates and calls hard-restart, it also writes .force-fresh — no-op.

@@ -1041,8 +1041,8 @@ export class AgentManager {
    * Used by `cortextos bus test-cron-fire` to fire a cron immediately for testing.
    * Returns true if the agent is running and the inject succeeded; false otherwise.
    */
-  injectAgent(agentName: string, text: string): boolean {
-    return this.injectAgentDetailed(agentName, text).ok;
+  async injectAgent(agentName: string, text: string): Promise<boolean> {
+    return (await this.injectAgentDetailed(agentName, text)).ok;
   }
 
   /**
@@ -1052,11 +1052,16 @@ export class AgentManager {
    * registered but the PTY is gone, DEDUPED on a MessageDedup hash hit. The
    * boolean-returning `injectAgent()` is preserved for callers (cron
    * scheduler, fast-checker, fire-cron) that only need pass/fail.
+   *
+   * Async since the dispatch-bug fix (2026-06-07): resolves after the
+   * injection's paste + Enter are both written, so callers that persist
+   * "delivered" state (cron last_fired_at, fire-cron responses) mark
+   * after delivery, not after the first byte.
    */
-  injectAgentDetailed(agentName: string, text: string): { ok: true } | { ok: false; code: 'NOT_FOUND' | 'NOT_RUNNING' | 'DEDUPED'; message: string } {
+  injectAgentDetailed(agentName: string, text: string): Promise<{ ok: true } | { ok: false; code: 'NOT_FOUND' | 'NOT_RUNNING' | 'DEDUPED'; message: string }> {
     const entry = this.agents.get(agentName);
     if (!entry) {
-      return { ok: false, code: 'NOT_FOUND', message: `agent "${agentName}" not in registry` };
+      return Promise.resolve({ ok: false, code: 'NOT_FOUND' as const, message: `agent "${agentName}" not in registry` });
     }
     return entry.process.injectMessageDetailed(text);
   }
@@ -1140,7 +1145,11 @@ export class AgentManager {
       // dedup-rejected and treated as a dispatch failure.
       const firedAt = new Date().toISOString();
       const injection = `[CRON FIRED ${firedAt}] ${cron.name}: ${prompt}`;
-      const injected = this.injectAgent(agentName, injection);
+      // Await full delivery (paste + Enter, serialized against concurrent
+      // injections) before the scheduler may persist last_fired_at — the
+      // 2026-06-07 dispatch bug marked catch-up batches as fired while
+      // their prompts concatenated in the input box and never executed.
+      const injected = await this.injectAgent(agentName, injection);
       if (!injected) {
         throw new Error(`injectAgent returned false for agent "${agentName}" — agent may not be running`);
       }
