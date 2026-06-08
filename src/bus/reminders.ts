@@ -47,15 +47,13 @@ function readReminders(paths: BusPaths): Reminder[] {
       // (the 2026-06-06 list-reminders-showed-nothing mystery). The file
       // still exists on disk, so nothing is lost; the operator just needs
       // to know the read failed rather than trust an empty answer.
-      const safeFilePath = sanitizeForLog(filePath);
-      console.error(`[bus/reminders] WARNING: ${safeFilePath} exists but is not a reminder array — treating as empty. Inspect the file; reminders may be hidden, not gone.`);
+      console.error('[bus/reminders] WARNING: pending-reminders.json exists but is not a reminder array — treating as empty. Inspect the file; reminders may be hidden, not gone.');
       return [];
     }
     return parsed;
   } catch (err) {
-    const safeFilePath = sanitizeForLog(filePath);
     const safeErr = sanitizeForLog(err instanceof Error ? err.message : err);
-    console.error(`[bus/reminders] WARNING: failed to read/parse ${safeFilePath} (${safeErr}) — treating as empty. Inspect the file; reminders may be hidden, not gone.`);
+    console.error(`[bus/reminders] WARNING: failed to read/parse pending-reminders.json (${safeErr}) — treating as empty. Inspect the file; reminders may be hidden, not gone.`);
     return [];
   }
 }
