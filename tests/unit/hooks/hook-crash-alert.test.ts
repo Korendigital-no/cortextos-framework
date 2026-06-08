@@ -52,8 +52,18 @@ describe('readMaxCrashesPerDay', () => {
 });
 
 describe('notifyAgents', () => {
+  // Env-independence (task_1780792108485): notifyAgents branches on
+  // CTX_FRAMEWORK_ROOT (node + dist/cli.js vs PATH 'cortextos'). Pin it
+  // UNSET so behaviour is identical from a live agent shell and clean CI;
+  // the cliPath branch is covered explicitly below.
+  const savedFwRoot = process.env.CTX_FRAMEWORK_ROOT;
   beforeEach(() => {
     execFileMock.mockReset();
+    delete process.env.CTX_FRAMEWORK_ROOT;
+  });
+  afterEach(() => {
+    if (savedFwRoot === undefined) delete process.env.CTX_FRAMEWORK_ROOT;
+    else process.env.CTX_FRAMEWORK_ROOT = savedFwRoot;
   });
 
   it('sends one bus send-message per recipient', () => {
@@ -144,6 +154,23 @@ describe('notifyAgents', () => {
     })).not.toThrow();
     // Second recipient still attempted
     expect(execFileMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('cliPath branch (CTX_FRAMEWORK_ROOT set): invokes node + dist/cli.js, args shifted by one', () => {
+    process.env.CTX_FRAMEWORK_ROOT = '/fw/root';
+    notifyAgents({
+      agentName: 'dev',
+      endType: 'crash',
+      reason: 'r',
+      lastTask: 't',
+      crashCount: 1,
+      restartAttempted: true,
+      recipients: ['chief'],
+    });
+    const [cmd, args] = execFileMock.mock.calls[0];
+    expect(cmd).toBe(process.execPath);
+    expect(args[0]).toBe(join('/fw/root', 'dist', 'cli.js'));
+    expect(args.slice(1, 5)).toEqual(['bus', 'send-message', 'chief', 'high']);
   });
 });
 
