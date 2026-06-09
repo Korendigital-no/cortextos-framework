@@ -3007,6 +3007,20 @@ crmDeals.command('list')
     console.log(`\n${deals.length} deal(s)`);
   });
 
+crmDeals.command('stale')
+  .description('Open deals with no touch in N days (default 7) — excludes closed deals and deals with a pending follow-up; a resolved follow-up counts as a touch')
+  .option('--days <n>', 'Staleness window in days', (v) => parseInt(v, 10), 7)
+  .action((opts: { days: number }) => {
+    const db = getCrmDb();
+    const days = Number.isFinite(opts.days) && opts.days > 0 ? opts.days : 7;
+    const stale = crm.getStaleDeals(db, { days });
+    if (stale.length === 0) { console.log(`No stale deals (window: ${days}d).`); return; }
+    for (const d of stale) {
+      console.log(`${d.id}  ${String(d.days_stale).padStart(3)}d  last:${d.last_touch.substring(0, 10)}  ${d.stage.padEnd(12)}  ${d.title}`);
+    }
+    console.log(`\n${stale.length} stale deal(s) (window: ${days}d)`);
+  });
+
 crmDeals.command('get').argument('<id>').action((id: string) => {
   const db = getCrmDb();
   const deal = crm.getDeal(db, id);
