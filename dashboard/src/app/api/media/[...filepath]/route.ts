@@ -4,6 +4,7 @@ import path from 'path';
 import { marked } from 'marked';
 import DOMPurify from 'isomorphic-dompurify';
 import { getCTXRoot, getFrameworkRoot, getAllowedRootsConfigPath } from '@/lib/config';
+import { mediaResponseHeaders } from '@/lib/media-headers';
 
 export const dynamic = 'force-dynamic';
 
@@ -74,9 +75,6 @@ const MIME_TYPES: Record<string, string> = {
   '.csv': 'text/csv; charset=utf-8',
   '.svg': 'image/svg+xml',
 };
-
-const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg']);
-const INLINE_EXTENSIONS = new Set(['.md', '.html', '.htm', '.txt', '.ts', '.tsx', '.js', '.css', '.sh', '.json', '.csv']);
 
 /**
  * GET /api/media/[...filepath]
@@ -192,17 +190,12 @@ export async function GET(
   const mimeType = MIME_TYPES[ext] || 'application/octet-stream';
   const fileBuffer = fs.readFileSync(realFullPath);
 
-  const headers: Record<string, string> = {
-    'Content-Type': mimeType,
-    'Content-Length': String(fileBuffer.length),
-    'Cache-Control': 'private, max-age=3600',
-  };
-
-  if (IMAGE_EXTENSIONS.has(ext) || INLINE_EXTENSIONS.has(ext)) {
-    headers['Content-Disposition'] = `inline; filename="${path.basename(realFullPath)}"`;
-  } else {
-    headers['Content-Disposition'] = `attachment; filename="${path.basename(realFullPath)}"`;
-  }
+  const headers = mediaResponseHeaders(
+    ext,
+    mimeType,
+    fileBuffer.length,
+    path.basename(realFullPath),
+  );
 
   return new Response(fileBuffer, { status: 200, headers });
 }
