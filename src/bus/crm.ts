@@ -325,6 +325,74 @@ export function getPipeline(db: Database.Database): PipelineStage[] {
   return rows;
 }
 
+export interface StaleDeal extends CrmDeal {
+  /** Most recent touch across activity created_at, activity completed_at, and the deal's own updated_at. */
+  last_touch: string;
+  /** Whole days between last_touch and now. */
+  days_stale: number;
+}
+
+/**
+ * Open deals that have gone untouched for `days` (default 7) — the "neglected
+ * pipeline" signal, distinct from overdue follow-ups (getFollowUps).
+ *
+ * Correctness this fixes (resolution-join bug): the naive sweep read only an
+ * activity's created_at, so a deal whose follow-up was *resolved* (completed)
+ * after a quiet stretch kept re-flagging as stale every run even though sales
+ * had triaged it. Here last_touch is the greatest of:
+ *   - MAX(activity.created_at)   — last logged interaction
+ *   - MAX(activity.completed_at) — resolving a follow-up IS a touch
+ *   - deal.updated_at            — stage/notes change is a touch
+ * so a triaged/void cohort with closed follow-ups drops out instead of looping.
+ *
+ * Excluded entirely:
+ *   - closed deals (stage closed_won/closed_lost, or closed_at set)
+ *   - deals with a *pending* follow-up (open task with a due date) — those are
+ *     already tracked by the follow-up sweep, so they aren't "neglected".
+ *     Parking a quiet lead is therefore as simple as giving it a future-dated
+ *     follow-up.
+ */
+export function getStaleDeals(
+  db: Database.Database,
+  opts?: { days?: number },
+): StaleDeal[] {
+  const days = opts?.days ?? 7;
+  const nowMs = Date.now();
+  const cutoff = new Date(nowMs - days * 86400000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+
+  const rows = db.prepare(`
+    SELECT d.*,
+      (
+        SELECT MAX(t) FROM (
+          SELECT MAX(a.created_at)   AS t FROM crm_activities a WHERE a.deal_id = d.id
+          UNION ALL
+          SELECT MAX(a.completed_at) AS t FROM crm_activities a WHERE a.deal_id = d.id
+          UNION ALL
+          SELECT d.updated_at        AS t
+        )
+      ) AS last_touch
+    FROM crm_deals d
+    WHERE d.stage NOT IN ('closed_won', 'closed_lost')
+      AND d.closed_at IS NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM crm_activities a
+        WHERE a.deal_id = d.id
+          AND a.type = 'task'
+          AND a.due_at IS NOT NULL
+          AND a.completed_at IS NULL
+      )
+    ORDER BY last_touch ASC
+  `).all() as Array<CrmDeal & { last_touch: string | null }>;
+
+  return rows
+    .map((r) => ({ ...r, last_touch: r.last_touch ?? r.updated_at }))
+    .filter((r) => r.last_touch < cutoff)
+    .map((r) => ({
+      ...r,
+      days_stale: Math.floor((nowMs - Date.parse(r.last_touch)) / 86400000),
+    }));
+}
+
 // --- Activities ---
 
 export function createActivity(

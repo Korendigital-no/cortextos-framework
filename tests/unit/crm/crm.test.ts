@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
+import { randomUUID } from 'crypto';
 import { mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -7,7 +8,7 @@ import { initializeCrmSchema } from '../../../src/bus/crm-schema.js';
 import {
   createContact, getContact, listContacts, updateContact, upsertContactByEmail,
   createCompany, getCompany, listCompanies, updateCompany,
-  createDeal, getDeal, listDeals, updateDeal, getPipeline,
+  createDeal, getDeal, listDeals, updateDeal, getPipeline, getStaleDeals,
   createActivity, listActivities, getFollowUps, completeActivity, deleteActivity,
   getActivity, isPendingFollowUp,
   createMeeting, getMeeting, listMeetings,
@@ -185,6 +186,127 @@ describe('Deals', () => {
     expect(pipeline.find(p => p.stage === 'closed_lost')).toBeUndefined();
     // Total active value must not include the lost deal's 999999.
     expect(pipeline.reduce((s, p) => s + p.total_value, 0)).toBe(10000);
+  });
+});
+
+describe('getStaleDeals (resolution-join staleness)', () => {
+  const iso = (msAgo: number) =>
+    new Date(Date.now() - msAgo).toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const daysAgo = (n: number) => iso(n * 86400000);
+
+  // createDeal stamps updated_at = now(), so a deal is never stale until we
+  // backdate it. This mirrors a deal that genuinely went quiet.
+  function backdateDeal(id: string, isoTs: string) {
+    db.prepare('UPDATE crm_deals SET created_at = ?, updated_at = ? WHERE id = ?').run(isoTs, isoTs, id);
+  }
+  function insertActivity(opts: {
+    deal_id: string; type?: string; created_at: string; completed_at?: string | null; due_at?: string | null;
+  }) {
+    db.prepare(
+      `INSERT INTO crm_activities (id, type, deal_id, due_at, completed_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(randomUUID(), opts.type ?? 'email', opts.deal_id, opts.due_at ?? null, opts.completed_at ?? null, opts.created_at);
+  }
+
+  it('flags an open deal whose last activity is older than the window', () => {
+    const deal = createDeal(db, { title: 'Quiet Lead', stage: 'contacted' });
+    backdateDeal(deal.id, daysAgo(10));
+    insertActivity({ deal_id: deal.id, created_at: daysAgo(10) });
+
+    const stale = getStaleDeals(db);
+    expect(stale.map(d => d.id)).toContain(deal.id);
+    expect(stale.find(d => d.id === deal.id)!.days_stale).toBeGreaterThanOrEqual(7);
+  });
+
+  it('does NOT re-flag a deal whose follow-up was resolved recently (the bug)', () => {
+    // Created 10d ago, follow-up logged 10d ago BUT completed 1d ago. The naive
+    // sweep read created_at only and re-flagged it every run; completing a
+    // follow-up is a touch, so last_touch is 1d and it must drop out.
+    const deal = createDeal(db, { title: 'Triaged/Void', stage: 'contacted' });
+    backdateDeal(deal.id, daysAgo(10));
+    insertActivity({
+      deal_id: deal.id, type: 'task',
+      created_at: daysAgo(10), due_at: daysAgo(9), completed_at: daysAgo(1),
+    });
+
+    expect(getStaleDeals(db).map(d => d.id)).not.toContain(deal.id);
+  });
+
+  it('excludes deals that already have a pending follow-up (tracked elsewhere)', () => {
+    const deal = createDeal(db, { title: 'Has Open Follow-up', stage: 'contacted' });
+    backdateDeal(deal.id, daysAgo(20));
+    insertActivity({
+      deal_id: deal.id, type: 'task',
+      created_at: daysAgo(20), due_at: daysAgo(2), completed_at: null,
+    });
+
+    expect(getStaleDeals(db).map(d => d.id)).not.toContain(deal.id);
+  });
+
+  it('excludes closed_won and closed_lost deals regardless of age', () => {
+    const won = createDeal(db, { title: 'Won', stage: 'contacted' });
+    const lost = createDeal(db, { title: 'Lost', stage: 'contacted' });
+    backdateDeal(won.id, daysAgo(30));
+    backdateDeal(lost.id, daysAgo(30));
+    updateDeal(db, won.id, { stage: 'closed_won' });
+    updateDeal(db, lost.id, { stage: 'closed_lost' });
+    // updateDeal refreshes updated_at; re-backdate to prove it's the stage, not age, that excludes.
+    backdateDeal(won.id, daysAgo(30));
+    backdateDeal(lost.id, daysAgo(30));
+
+    const ids = getStaleDeals(db).map(d => d.id);
+    expect(ids).not.toContain(won.id);
+    expect(ids).not.toContain(lost.id);
+  });
+
+  it('treats a recent activity as a touch (not stale)', () => {
+    const deal = createDeal(db, { title: 'Recently Touched', stage: 'contacted' });
+    backdateDeal(deal.id, daysAgo(30));
+    insertActivity({ deal_id: deal.id, created_at: daysAgo(1) });
+
+    expect(getStaleDeals(db).map(d => d.id)).not.toContain(deal.id);
+  });
+
+  it('treats a recent stage change (updated_at) as a touch', () => {
+    const deal = createDeal(db, { title: 'Just Moved', stage: 'lead' });
+    backdateDeal(deal.id, daysAgo(30));
+    updateDeal(db, deal.id, { stage: 'contacted' }); // refreshes updated_at to now
+
+    expect(getStaleDeals(db).map(d => d.id)).not.toContain(deal.id);
+  });
+
+  it('flags an open deal with NO activities once its own age passes the window', () => {
+    const deal = createDeal(db, { title: 'Never Worked', stage: 'lead' });
+    backdateDeal(deal.id, daysAgo(15));
+
+    const stale = getStaleDeals(db);
+    expect(stale.map(d => d.id)).toContain(deal.id);
+  });
+
+  it('respects a custom window — a 10d-quiet deal is not stale at days=30', () => {
+    const deal = createDeal(db, { title: 'Quiet 10d', stage: 'contacted' });
+    backdateDeal(deal.id, daysAgo(10));
+    insertActivity({ deal_id: deal.id, created_at: daysAgo(10) });
+
+    expect(getStaleDeals(db, { days: 30 }).map(d => d.id)).not.toContain(deal.id);
+    expect(getStaleDeals(db, { days: 7 }).map(d => d.id)).toContain(deal.id);
+  });
+
+  it('orders most-stale first', () => {
+    const a = createDeal(db, { title: 'A 8d', stage: 'contacted' });
+    const b = createDeal(db, { title: 'B 20d', stage: 'contacted' });
+    backdateDeal(a.id, daysAgo(8));
+    backdateDeal(b.id, daysAgo(20));
+
+    const stale = getStaleDeals(db);
+    const aIdx = stale.findIndex(d => d.id === a.id);
+    const bIdx = stale.findIndex(d => d.id === b.id);
+    expect(bIdx).toBeLessThan(aIdx); // 20d-stale before 8d-stale
+  });
+
+  it('returns an empty list when there is nothing stale', () => {
+    createDeal(db, { title: 'Fresh', stage: 'lead' });
+    expect(getStaleDeals(db)).toEqual([]);
   });
 });
 
