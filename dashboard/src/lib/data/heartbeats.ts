@@ -3,7 +3,7 @@
 
 import fs from 'fs/promises';
 import path from 'path';
-import { CTX_ROOT, getHeartbeatPath } from '@/lib/config';
+import { CTX_ROOT, getHeartbeatPath, getAllAgents } from '@/lib/config';
 import type { Heartbeat, HealthStatus, AgentHealth, HealthSummary } from '@/lib/types';
 
 // Default staleness thresholds (minutes)
@@ -123,7 +123,12 @@ export async function getStaleAgents(): Promise<Heartbeat[]> {
  * Get a health summary across all agents (optionally filtered by org).
  */
 export async function getHealthSummary(org?: string): Promise<HealthSummary> {
-  const heartbeats = await getHeartbeats(org);
+  // Only count REGISTERED agents (enabled-agents.json + org agent dirs). Stray
+  // state dirs for non-agent services (e.g. dashboard/oauth/usage) leave heartbeat
+  // dirs but never beat — without this filter they show as perpetual "down" and
+  // inflate "actions needed" / System Health with false alarms.
+  const roster = new Set(getAllAgents().map((a) => a.name));
+  const heartbeats = (await getHeartbeats(org)).filter((hb) => roster.has(hb.agent));
 
   const summary: HealthSummary = {
     healthy: 0,
