@@ -8,6 +8,7 @@ import {
   withFileLockSync,
   stealStaleLock,
   EMPTY_LOCK_STALE_MS,
+  STEAL_TTL_MS,
 } from '../../../src/utils/lock';
 
 /** Backdate a path's mtime so it looks `ageMs` old. */
@@ -121,6 +122,37 @@ describe('empty/corrupt .lock.d recovery (crash between mkdir and pid-write)', (
     mkdirSync(lockDir); // fresh — could be a live mid-acquire
     expect(() => withFileLockSync(testDir, () => 'ran', { timeoutMs: 250 }))
       .toThrow(/failed to acquire lock/);
+  });
+
+  it('#76 P2: a steal-mutex orphaned with a LIVE pid but aged past STEAL_TTL is reaped (no deadlock)', () => {
+    // A stealable stale lock...
+    mkdirSync(lockDir);
+    backdate(lockDir, EMPTY_LOCK_STALE_MS + 5_000);
+    // ...but a prior stealer's finally-cleanup failed, orphaning the steal-mutex
+    // with its still-LIVE pid (this process). Aged past STEAL_TTL = provably
+    // orphaned despite the live pid — the exact deadlock #76 P2 fixes: the old
+    // code saw lockState='held' and never reaped, so recovery hung forever.
+    const stealDir = lockDir + '.steal.d';
+    mkdirSync(stealDir);
+    writeFileSync(join(stealDir, 'pid'), String(process.pid));
+    backdate(stealDir, STEAL_TTL_MS + 5_000);
+
+    const out = withFileLockSync(testDir, () => 'ran', { timeoutMs: 3_000 });
+    expect(out).toBe('ran');
+    expect(existsSync(stealDir)).toBe(false); // orphan reaped, not deadlocked
+  });
+
+  it('TTL safety: a FRESH steal-mutex (a live steal in progress) is NOT falsely reaped', () => {
+    mkdirSync(lockDir);
+    backdate(lockDir, EMPTY_LOCK_STALE_MS + 5_000);
+    // A real steal in progress: the mutex is young and its holder is live.
+    const stealDir = lockDir + '.steal.d';
+    mkdirSync(stealDir);
+    writeFileSync(join(stealDir, 'pid'), String(process.pid)); // live pid, fresh mtime
+    // Must back off WITHOUT reaping — reaping a live steal would reopen the
+    // double-acquire race the whole mechanism closes.
+    expect(stealStaleLock(lockDir, pidFile)).toBe(false);
+    expect(existsSync(stealDir)).toBe(true); // untouched
   });
 });
 

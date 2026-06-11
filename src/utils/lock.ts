@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync, readFileSync, rmSync, statSync } from 'fs';
+import { mkdirSync, writeFileSync, readFileSync, rmSync, statSync, renameSync } from 'fs';
 import { join } from 'path';
 
 /**
@@ -75,6 +75,37 @@ function lockState(lockDir: string, pidFile: string): 'free' | 'held' | 'stale' 
 }
 
 /**
+ * STEAL_TTL_MS — a steal-mutex is held only MOMENTARILY: the window between
+ * mkdirSync(stealDir) and the finally rmSync is a single short critical section
+ * (a handful of mkdir/write/rm syscalls, sub-millisecond in practice). 30s is
+ * many orders of magnitude above any legitimate hold, so a steal-mutex older
+ * than this is provably orphaned — even if its pid is still alive (the live-pid
+ * orphan a failed finally-cleanup leaves behind, #76 P2).
+ *
+ * Do NOT lower this toward real hold times: a steal-mutex younger than the TTL
+ * may be a live steal in progress, and reaping it would reopen the
+ * double-acquire race this whole mechanism exists to close.
+ */
+export const STEAL_TTL_MS = 30_000;
+
+/**
+ * Is a steal-mutex safe to reap? True when it is older than STEAL_TTL_MS (which
+ * covers a live-pid orphan left by a failed cleanup, #76 P2) OR its holder is
+ * provably dead. A young mutex with a live holder is a steal in progress and is
+ * never reaped.
+ */
+function stealMutexOrphaned(stealDir: string, stealPidFile: string): boolean {
+  let mtimeMs: number;
+  try {
+    mtimeMs = statSync(stealDir).mtimeMs;
+  } catch {
+    return false; // vanished — nothing to reap
+  }
+  if (Date.now() - mtimeMs >= STEAL_TTL_MS) return true; // age covers live-pid orphans
+  return lockState(stealDir, stealPidFile) === 'stale';
+}
+
+/**
  * Recover a stale .lock.d, serialized through an exclusive steal-mutex.
  *
  * THE RACE THIS CLOSES (double-acquire): two processes both pass the staleness
@@ -91,13 +122,12 @@ function lockState(lockDir: string, pidFile: string): 'free' | 'held' | 'stale' 
  * anyone's live lock. If re-verify says 'free' instead, the rm is SKIPPED and
  * we fall through to a plain mkdir, which races fresh acquirers atomically.
  *
- * A stealer that crashes mid-steal orphans the mutex; that is recovered with
- * the same dead-pid / old-empty classification (reap, then back off so the
- * retry path re-evaluates everything from scratch). Residual exposure: reaping
- * a crashed mutex is itself a check-then-rm and could in theory hit a mutex
- * recreated in that microsecond window — but that requires a crashed stealer
- * AND two new stealers AND a reaper interleaving within microseconds, versus
- * the closed race's window of an entire critical section.
+ * A stealer that crashes mid-steal (or whose finally-cleanup fails) orphans the
+ * mutex; an orphan is recovered by stealMutexOrphaned() — dead holder, or older
+ * than STEAL_TTL_MS so a live-pid orphan also clears (#76 P2) — and the reap is
+ * ATOMIC via renameSync (#76 P1): only one contender can rename a given source
+ * path, so the rm can never hit a freshly recreated mutex. No check-then-rm
+ * race remains; a young mutex with a live holder is never reaped.
  *
  * Returns true if the lock was acquired; false to let the caller back off and
  * retry (mutex contention, reaped-crashed-mutex, or lock no longer stale).
@@ -112,10 +142,25 @@ export function stealStaleLock(lockDir: string, pidFile: string): boolean {
     mkdirSync(stealDir);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
-    // Another stealer holds the mutex — or one crashed mid-steal and left it
-    // orphaned. Reap only a provably-dead mutex; back off either way.
-    if (lockState(stealDir, stealPidFile) === 'stale') {
-      rmSync(stealDir, { recursive: true, force: true });
+    // Another stealer holds the mutex, or one orphaned it. We do NOT do a racy
+    // check-then-rmSync here (#76 P1): two contenders could both classify the
+    // mutex stale, and one rmSync could then delete a mutex a third contender
+    // freshly recreated in the gap, reopening the double-acquire race.
+    //
+    // Reap ONLY a provably-orphaned mutex (dead holder, or older than
+    // STEAL_TTL_MS — which also clears a live-pid orphan, #76 P2), and reap it
+    // ATOMICALLY: renameSync claims the specific dir instance — only one
+    // contender can rename a given source path; the rest get ENOENT and back
+    // off — so the subsequent rm can never hit a freshly recreated mutex.
+    if (stealMutexOrphaned(stealDir, stealPidFile)) {
+      const reapDir = `${stealDir}.reap.${process.pid}`;
+      try {
+        renameSync(stealDir, reapDir);
+        rmSync(reapDir, { recursive: true, force: true });
+      } catch {
+        // Lost the claim (ENOENT — another contender already renamed/reaped it)
+        // or a transient FS error: back off and let the retry path re-evaluate.
+      }
     }
     return false;
   }
@@ -143,10 +188,15 @@ export function stealStaleLock(lockDir: string, pidFile: string): boolean {
     if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
     return false;
   } finally {
-    // Best-effort release of the steal-mutex. Must NOT throw: an exception
-    // out of a finally would replace the function's result and crash the
-    // caller's retry loop. If cleanup fails (EPERM/EBUSY), the orphaned
-    // mutex is reaped by the next contender once our pid is dead.
+    // Best-effort release of the steal-mutex. Must NOT throw: an exception out
+    // of a finally would replace the function's result and crash the caller's
+    // retry loop. If cleanup fails (EPERM/EBUSY) the mutex is orphaned with our
+    // LIVE pid — but that is no longer a deadlock (#76 P2): stealMutexOrphaned()
+    // reaps any steal-mutex older than STEAL_TTL_MS regardless of pid-liveness.
+    // Worst case is a ~STEAL_TTL_MS acquisition delay for the next contender
+    // until the orphan ages out. That bounded delay is the accepted trade-off
+    // of removing the racy immediate reap — it is NOT a bug, and must not be
+    // "fixed" by reintroducing a check-then-rm.
     try {
       rmSync(stealDir, { recursive: true, force: true });
     } catch {
