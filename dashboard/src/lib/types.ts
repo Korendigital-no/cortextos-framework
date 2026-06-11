@@ -3,7 +3,11 @@
 
 // -- Health & Action Types --
 
-export type HealthStatus = 'healthy' | 'stale' | 'down';
+// 'idle' = process alive (a recent daemon [watchdog] beat) but the agent is
+// resting between turns — distinct from 'stale' (no beat at all within the
+// liveness window = the process is hung/dead). An idle standby agent is the
+// NORMAL resting state, not a fault.
+export type HealthStatus = 'healthy' | 'idle' | 'stale' | 'down';
 
 export interface ActionResult {
   success: boolean;
