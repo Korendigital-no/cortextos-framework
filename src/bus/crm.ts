@@ -296,9 +296,15 @@ export function updateDeal(
   }
   if (sets.length === 0) return;
 
-  if (fields.stage === 'closed_won' || fields.stage === 'closed_lost') {
+  // Auto-manage closed_at from stage transitions, unless the caller set it
+  // explicitly. A closing stage stamps it; any move to a non-closed stage (a
+  // reopen) CLEARS it — otherwise closed_at lingers after a reopen and the
+  // `closed_at IS NULL` guard in getStaleDeals (and the sibling-count subquery)
+  // excludes the now-open deal from the stale sweep forever. Codex #95 P2.
+  if (fields.stage !== undefined && fields.closed_at === undefined) {
+    const closing = fields.stage === 'closed_won' || fields.stage === 'closed_lost';
     sets.push('closed_at = ?');
-    params.push(now());
+    params.push(closing ? now() : null);
   }
 
   sets.push('updated_at = ?');

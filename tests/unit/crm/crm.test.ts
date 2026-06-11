@@ -154,6 +154,20 @@ describe('Deals', () => {
     expect(updated.closed_at).toBeTruthy();
   });
 
+  it('clears closed_at when a deal is reopened to a non-closed stage (Codex #95 P2)', () => {
+    const deal = createDeal(db, { title: 'Reopened Deal', stage: 'qualified' });
+    updateDeal(db, deal.id, { stage: 'closed_lost' });
+    expect(getDeal(db, deal.id)!.closed_at).toBeTruthy();
+    updateDeal(db, deal.id, { stage: 'qualified' }); // reopen
+    expect(getDeal(db, deal.id)!.closed_at).toBeNull();
+  });
+
+  it('respects an explicit closed_at on update — does not auto-clobber when caller sets it', () => {
+    const deal = createDeal(db, { title: 'Explicit close', stage: 'qualified' });
+    updateDeal(db, deal.id, { stage: 'contacted', closed_at: '2026-01-01T00:00:00Z' });
+    expect(getDeal(db, deal.id)!.closed_at).toBe('2026-01-01T00:00:00Z');
+  });
+
   it('returns pipeline aggregation', () => {
     createDeal(db, { title: 'A', value_nok: 10000, stage: 'lead' });
     createDeal(db, { title: 'B', value_nok: 20000, stage: 'lead' });
@@ -316,6 +330,20 @@ describe('getStaleDeals (resolution-join staleness)', () => {
     const ids = getStaleDeals(db).map(d => d.id);
     expect(ids).not.toContain(won.id);
     expect(ids).not.toContain(lost.id);
+  });
+
+  it('a reopened deal can become stale again — closed_at is cleared on reopen (Codex #95 P2)', () => {
+    // A deal closed then reopened (stage moved back to an open stage) must
+    // re-enter the stale sweep. Before the fix, closed_at lingered after the
+    // close, so the `closed_at IS NULL` guard excluded the deal permanently even
+    // though it is open and has gone quiet.
+    const deal = createDeal(db, { title: 'Reopened & quiet', stage: 'contacted' });
+    updateDeal(db, deal.id, { stage: 'closed_lost' }); // closed (stamps closed_at)
+    updateDeal(db, deal.id, { stage: 'contacted' });   // reopened (must clear closed_at)
+    backdateDeal(deal.id, daysAgo(10));                // went quiet after reopen
+    insertActivity({ deal_id: deal.id, created_at: daysAgo(10) });
+
+    expect(getStaleDeals(db).map(d => d.id)).toContain(deal.id);
   });
 
   it('treats a recent activity as a touch (not stale)', () => {
