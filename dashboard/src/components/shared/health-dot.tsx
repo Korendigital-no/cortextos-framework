@@ -14,6 +14,9 @@ export interface HealthDotProps {
 
 const statusConfig: Record<HealthStatus, { color: string; label: string }> = {
   healthy: { color: 'bg-success', label: 'Healthy' },
+  // idle = alive but resting (recent daemon watchdog beat). Muted/neutral, not a
+  // warning — a standby agent at idle is the normal state, never a fault.
+  idle: { color: 'bg-muted-foreground/50', label: 'Idle' },
   stale: { color: 'bg-warning', label: 'Stale' },
   down: { color: 'bg-destructive', label: 'Down' },
 };

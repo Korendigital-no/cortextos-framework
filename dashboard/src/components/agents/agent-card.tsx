@@ -33,6 +33,7 @@ export function AgentCard({ agent }: AgentCardProps) {
 
   const healthLabel =
     agent.health === 'healthy' ? 'Online' :
+    agent.health === 'idle' ? 'Idle' :
     agent.health === 'stale' ? 'Stale' : 'Offline';
 
   return (
@@ -85,7 +86,7 @@ export function AgentCard({ agent }: AgentCardProps) {
           ) : (
             <div className="rounded-md bg-muted/20 px-2.5 py-2">
               <p className="text-[11px] text-muted-foreground">
-                {agent.health === 'healthy' ? 'Idle' : healthLabel}
+                {healthLabel}
               </p>
             </div>
           )}

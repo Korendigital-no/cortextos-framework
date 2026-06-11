@@ -5,10 +5,12 @@ import fs from 'fs/promises';
 import path from 'path';
 import { CTX_ROOT, getHeartbeatPath, getAllAgents } from '@/lib/config';
 import type { Heartbeat, HealthStatus, AgentHealth, HealthSummary } from '@/lib/types';
+import { agentLiveness } from '@/lib/agent-liveness';
 
-// Default staleness thresholds (minutes)
-const STALE_THRESHOLD_MIN = 300; // 5 hours
-const DOWN_THRESHOLD_MIN = 1440; // 24 hours
+// agentLiveness (the unified active/idle/stale/down classifier) lives in the
+// dependency-free @/lib/agent-liveness so reports.ts can share it without
+// pulling @/lib/config. Re-exported here for existing import sites.
+export { agentLiveness, isWatchdogStatus } from '@/lib/agent-liveness';
 
 /**
  * Get heartbeat for a single agent. Returns null if not found.
@@ -71,44 +73,32 @@ export async function getHeartbeats(org?: string): Promise<Heartbeat[]> {
 }
 
 /**
- * Compute health status from a heartbeat based on staleness.
+ * Compute health status from a heartbeat. Thin wrapper over agentLiveness;
+ * thresholdMinutes is accepted for backward-compat but the unified classifier
+ * owns the windows.
  */
 export function computeHealth(
   heartbeat: Heartbeat,
-  thresholdMinutes?: number
+  _thresholdMinutes?: number
 ): HealthStatus {
-  return isAgentHealthy(heartbeat, thresholdMinutes) ? 'healthy' : 'stale';
+  return agentLiveness(heartbeat);
 }
 
 /**
- * Check whether an agent heartbeat is healthy (not stale).
+ * Check whether an agent's process is alive (healthy OR idle) — i.e. NOT stale
+ * or down. An idle standby agent is alive, so it is "healthy" by this predicate.
  */
 export function isAgentHealthy(
   heartbeat: Heartbeat,
-  thresholdMinutes: number = STALE_THRESHOLD_MIN
+  _thresholdMinutes?: number
 ): boolean {
-  if (!heartbeat.last_heartbeat) return false;
-
-  const lastBeat = new Date(heartbeat.last_heartbeat).getTime();
-  const now = Date.now();
-  const diffMinutes = (now - lastBeat) / (1000 * 60);
-
-  return diffMinutes <= thresholdMinutes;
+  const s = agentLiveness(heartbeat);
+  return s === 'healthy' || s === 'idle';
 }
 
-/**
- * Get detailed health status (healthy / stale / down).
- */
+/** Detailed health status — unified through agentLiveness (healthy/idle/stale/down). */
 export function getHealthStatus(heartbeat: Heartbeat): HealthStatus {
-  if (!heartbeat.last_heartbeat) return 'down';
-
-  const lastBeat = new Date(heartbeat.last_heartbeat).getTime();
-  const now = Date.now();
-  const diffMinutes = (now - lastBeat) / (1000 * 60);
-
-  if (diffMinutes <= STALE_THRESHOLD_MIN) return 'healthy';
-  if (diffMinutes <= DOWN_THRESHOLD_MIN) return 'stale';
-  return 'down';
+  return agentLiveness(heartbeat);
 }
 
 /**
@@ -140,7 +130,10 @@ export async function getHealthSummary(org?: string): Promise<HealthSummary> {
   for (const hb of heartbeats) {
     const health = getHealthStatus(hb);
 
-    if (health === 'healthy') summary.healthy++;
+    // 'idle' is alive (resting) — fold it into the healthy/alive count for this
+    // high-level summary so a standby agent never inflates stale/down. The
+    // per-agent view (agents-grid) surfaces idle as its own state.
+    if (health === 'healthy' || health === 'idle') summary.healthy++;
     else if (health === 'stale') summary.stale++;
     else summary.down++;
 
