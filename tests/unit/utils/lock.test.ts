@@ -8,8 +8,10 @@ import {
   withFileLockSync,
   stealStaleLock,
   EMPTY_LOCK_STALE_MS,
-  STEAL_TTL_MS,
 } from '../../../src/utils/lock';
+
+/** A pid that is essentially never a live process — its kill(pid,0) throws. */
+const DEAD_PID = '2147483646';
 
 /** Backdate a path's mtime so it looks `ageMs` old. */
 function backdate(path: string, ageMs: number): void {
@@ -124,35 +126,47 @@ describe('empty/corrupt .lock.d recovery (crash between mkdir and pid-write)', (
       .toThrow(/failed to acquire lock/);
   });
 
-  it('#76 P2: a steal-mutex orphaned with a LIVE pid but aged past STEAL_TTL is reaped (no deadlock)', () => {
-    // A stealable stale lock...
+  it('#76 P1: a DEAD-pid steal-mutex orphan is reaped atomically — recovery proceeds', () => {
     mkdirSync(lockDir);
-    backdate(lockDir, EMPTY_LOCK_STALE_MS + 5_000);
-    // ...but a prior stealer's finally-cleanup failed, orphaning the steal-mutex
-    // with its still-LIVE pid (this process). Aged past STEAL_TTL = provably
-    // orphaned despite the live pid — the exact deadlock #76 P2 fixes: the old
-    // code saw lockState='held' and never reaped, so recovery hung forever.
+    backdate(lockDir, EMPTY_LOCK_STALE_MS + 5_000); // a stealable stale lock
+    // A prior stealer crashed mid-steal: its steal-mutex carries a DEAD pid.
     const stealDir = lockDir + '.steal.d';
     mkdirSync(stealDir);
-    writeFileSync(join(stealDir, 'pid'), String(process.pid));
-    backdate(stealDir, STEAL_TTL_MS + 5_000);
+    writeFileSync(join(stealDir, 'pid'), DEAD_PID);
 
     const out = withFileLockSync(testDir, () => 'ran', { timeoutMs: 3_000 });
     expect(out).toBe('ran');
-    expect(existsSync(stealDir)).toBe(false); // orphan reaped, not deadlocked
+    expect(existsSync(stealDir)).toBe(false); // dead orphan reaped
   });
 
-  it('TTL safety: a FRESH steal-mutex (a live steal in progress) is NOT falsely reaped', () => {
+  it('codex r7 P1: a LIVE-pid steal-mutex is NEVER reaped, even aged — age cannot orphan a live holder (no double-acquire)', () => {
     mkdirSync(lockDir);
     backdate(lockDir, EMPTY_LOCK_STALE_MS + 5_000);
-    // A real steal in progress: the mutex is young and its holder is live.
     const stealDir = lockDir + '.steal.d';
     mkdirSync(stealDir);
-    writeFileSync(join(stealDir, 'pid'), String(process.pid)); // live pid, fresh mtime
-    // Must back off WITHOUT reaping — reaping a live steal would reopen the
-    // double-acquire race the whole mechanism closes.
+    writeFileSync(join(stealDir, 'pid'), String(process.pid)); // LIVE pid
+    backdate(stealDir, 60 * 60 * 1000); // aged 1h — irrelevant: a live holder is never reaped by age.
+    // A process suspended mid-steal can exceed any TTL; reaping it would let a
+    // second process steal the lock and BOTH acquire (the corruption the prior
+    // lease-TTL design reintroduced). It must NOT be reaped.
     expect(stealStaleLock(lockDir, pidFile)).toBe(false);
-    expect(existsSync(stealDir)).toBe(true); // untouched
+    expect(existsSync(stealDir)).toBe(true); // untouched despite age
+  });
+
+  it('codex r7 P2: a leftover reap dir from a failed cleanup does NOT block reaping a dead orphan', () => {
+    mkdirSync(lockDir);
+    backdate(lockDir, EMPTY_LOCK_STALE_MS + 5_000);
+    const stealDir = lockDir + '.steal.d';
+    mkdirSync(stealDir);
+    writeFileSync(join(stealDir, 'pid'), DEAD_PID); // a dead orphan to reap
+    // Non-empty leftovers from prior failed cleanups at plausible reap-dest
+    // names — the unique-per-reap dest + pre-clear must not be blocked by them.
+    for (const n of [`${stealDir}.reap.${process.pid}`, `${stealDir}.reap.${process.pid}.0`]) {
+      mkdirSync(n);
+      writeFileSync(join(n, 'junk'), 'x');
+    }
+    const out = withFileLockSync(testDir, () => 'ran', { timeoutMs: 3_000 });
+    expect(out).toBe('ran'); // reap succeeded despite the leftovers — no deadlock
   });
 });
 
