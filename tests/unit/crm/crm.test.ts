@@ -232,6 +232,29 @@ describe('getStaleDeals (resolution-join staleness)', () => {
     expect(getStaleDeals(db).map(d => d.id)).not.toContain(deal.id);
   });
 
+  it('counts contact-linked activities — a quiet deal whose contact was just met is not false-flagged (Codex #95 follow-up)', () => {
+    // Cal.com bookings + Fathom meetings write an activity with contact_id but
+    // NO deal_id. A deal whose deal-linked activity is old but whose CONTACT
+    // was met 1d ago must NOT re-flag stale.
+    const contact = createContact(db, { name: 'Met Recently', email: 'met@test.com' });
+    const deal = createDeal(db, { title: 'Quiet but contact met', stage: 'contacted', contact_id: contact.id });
+    backdateDeal(deal.id, daysAgo(10));
+    insertActivity({ deal_id: deal.id, created_at: daysAgo(10) }); // old deal-linked touch
+    createActivity(db, { type: 'meeting', subject: 'Cal booking', contact_id: contact.id }); // recent, no deal_id
+
+    expect(getStaleDeals(db).map(d => d.id)).not.toContain(deal.id);
+  });
+
+  it('contactless deal stays on the deal_id path — an unrelated contact activity does not rescue it (IS NOT NULL guard)', () => {
+    const other = createContact(db, { name: 'Unrelated', email: 'unrelated@test.com' });
+    const deal = createDeal(db, { title: 'Contactless quiet', stage: 'contacted' }); // contact_id NULL
+    backdateDeal(deal.id, daysAgo(10));
+    insertActivity({ deal_id: deal.id, created_at: daysAgo(10) });
+    createActivity(db, { type: 'meeting', subject: 'someone else', contact_id: other.id }); // recent, unrelated
+
+    expect(getStaleDeals(db).map(d => d.id)).toContain(deal.id);
+  });
+
   it('excludes deals that already have a pending follow-up (tracked elsewhere)', () => {
     const deal = createDeal(db, { title: 'Has Open Follow-up', stage: 'contacted' });
     backdateDeal(deal.id, daysAgo(20));

@@ -340,10 +340,17 @@ export interface StaleDeal extends CrmDeal {
  * activity's created_at, so a deal whose follow-up was *resolved* (completed)
  * after a quiet stretch kept re-flagging as stale every run even though sales
  * had triaged it. Here last_touch is the greatest of:
- *   - MAX(activity.created_at)   — last logged interaction
+ *   - MAX(activity.created_at)   — last logged interaction (deal- OR contact-linked)
  *   - MAX(activity.completed_at) — resolving a follow-up IS a touch
  *   - deal.updated_at            — stage/notes change is a touch
  * so a triaged/void cohort with closed follow-ups drops out instead of looping.
+ *
+ * Contact-linked join (Codex #95 follow-up): Cal.com bookings and Fathom
+ * meetings write an activity carrying contact_id but no deal_id, so without the
+ * contact_id = deal.contact_id branch a deal whose contact was just met would
+ * be false-flagged stale despite a real touch. The IS NOT NULL guard keeps
+ * contactless deals on the deal_id path only (NULL never matches NULL in SQL,
+ * but the guard makes that explicit and avoids a full-table contactless scan).
  *
  * Excluded entirely:
  *   - closed deals (stage closed_won/closed_lost, or closed_at set)
@@ -367,6 +374,13 @@ export function getStaleDeals(
           SELECT MAX(a.created_at)   AS t FROM crm_activities a WHERE a.deal_id = d.id
           UNION ALL
           SELECT MAX(a.completed_at) AS t FROM crm_activities a WHERE a.deal_id = d.id
+          UNION ALL
+          -- Contact-linked touches: Cal.com bookings + Fathom meetings write an
+          -- activity with contact_id but NO deal_id, so a quiet deal whose
+          -- contact was just met would otherwise re-flag stale every run.
+          SELECT MAX(a.created_at)   AS t FROM crm_activities a WHERE d.contact_id IS NOT NULL AND a.contact_id = d.contact_id
+          UNION ALL
+          SELECT MAX(a.completed_at) AS t FROM crm_activities a WHERE d.contact_id IS NOT NULL AND a.contact_id = d.contact_id
           UNION ALL
           SELECT d.updated_at        AS t
         )
