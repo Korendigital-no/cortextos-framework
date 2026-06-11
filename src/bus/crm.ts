@@ -378,9 +378,12 @@ export function getStaleDeals(
           -- Contact-linked touches: Cal.com bookings + Fathom meetings write an
           -- activity with contact_id but NO deal_id, so a quiet deal whose
           -- contact was just met would otherwise re-flag stale every run.
-          SELECT MAX(a.created_at)   AS t FROM crm_activities a WHERE d.contact_id IS NOT NULL AND a.contact_id = d.contact_id
+          -- a.deal_id IS NULL is essential (Codex P2): without it an activity
+          -- explicitly linked to deal A would count as a touch for every OTHER
+          -- deal sharing that contact, hiding a genuinely stale sibling deal.
+          SELECT MAX(a.created_at)   AS t FROM crm_activities a WHERE d.contact_id IS NOT NULL AND a.contact_id = d.contact_id AND a.deal_id IS NULL
           UNION ALL
-          SELECT MAX(a.completed_at) AS t FROM crm_activities a WHERE d.contact_id IS NOT NULL AND a.contact_id = d.contact_id
+          SELECT MAX(a.completed_at) AS t FROM crm_activities a WHERE d.contact_id IS NOT NULL AND a.contact_id = d.contact_id AND a.deal_id IS NULL
           UNION ALL
           SELECT d.updated_at        AS t
         )

@@ -255,6 +255,23 @@ describe('getStaleDeals (resolution-join staleness)', () => {
     expect(getStaleDeals(db).map(d => d.id)).toContain(deal.id);
   });
 
+  it('a sibling deal sharing the contact is NOT rescued by an activity linked to another deal (Codex P2)', () => {
+    // Contact has deal A (recent activity linked to A) and deal B (quiet). B
+    // must still flag stale — A's deal-linked activity is not a touch for B,
+    // because the contact branch only counts activities with deal_id IS NULL.
+    const contact = createContact(db, { name: 'Two Deals', email: 'two@test.com' });
+    const dealA = createDeal(db, { title: 'Active A', stage: 'contacted', contact_id: contact.id });
+    const dealB = createDeal(db, { title: 'Quiet B', stage: 'contacted', contact_id: contact.id });
+    backdateDeal(dealA.id, daysAgo(10));
+    backdateDeal(dealB.id, daysAgo(10));
+    insertActivity({ deal_id: dealA.id, created_at: daysAgo(1) });  // recent, linked to A only
+    insertActivity({ deal_id: dealB.id, created_at: daysAgo(10) }); // B's own touch is old
+
+    const ids = getStaleDeals(db).map(d => d.id);
+    expect(ids).not.toContain(dealA.id); // A is fresh
+    expect(ids).toContain(dealB.id);     // B still stale — A's activity must not rescue it
+  });
+
   it('excludes deals that already have a pending follow-up (tracked elsewhere)', () => {
     const deal = createDeal(db, { title: 'Has Open Follow-up', stage: 'contacted' });
     backdateDeal(deal.id, daysAgo(20));
