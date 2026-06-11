@@ -12,6 +12,18 @@
 // healthy/stale classifiers ignored that signal, so healthy standby agents read
 // as STALE (4-6 false tags/day). This distinguishes alive-but-resting ('idle')
 // from genuinely hung/dead ('stale').
+//
+// KNOWN LIMITATION (Codex P2, accepted at this dashboard-only scope): the
+// watchdog overwrites the single heartbeat record every 50 min regardless of
+// REPL state, and logEvent preserves that status. So an agent that is actively
+// working but quiet (no explicit update-heartbeat) can read 'idle' from the
+// moment a watchdog beat fires until its next agent-originated beat. This is
+// benign — 'idle' is an alive state, not an alarm, and self-corrects on the next
+// real beat — and far less harmful than the false-STALE this replaces. The
+// proper root-fix (have the watchdog skip sessions with a recent agent beat
+// instead of firing unconditionally) is a DAEMON change, out of this
+// dashboard-side fix; tracked as a follow-up. The dashboard can only classify
+// the latest signal the daemon left in the single heartbeat record.
 
 import type { HealthStatus } from '@/lib/types';
 

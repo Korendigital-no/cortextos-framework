@@ -104,7 +104,9 @@ export function AgentActions({
   }
 
   const isDown = health === 'down' || health === 'stale';
-  const isHealthy = health === 'healthy';
+  // idle = alive (process running, just resting), so it's a running state: the
+  // user must be able to Stop a standby agent (Codex P1).
+  const isHealthy = health === 'healthy' || health === 'idle';
 
   return (
     <>
