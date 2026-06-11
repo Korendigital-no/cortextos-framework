@@ -232,6 +232,65 @@ describe('getStaleDeals (resolution-join staleness)', () => {
     expect(getStaleDeals(db).map(d => d.id)).not.toContain(deal.id);
   });
 
+  it('counts contact-linked activities — a quiet deal whose contact was just met is not false-flagged (Codex #95 follow-up)', () => {
+    // Cal.com bookings + Fathom meetings write an activity with contact_id but
+    // NO deal_id. A deal whose deal-linked activity is old but whose CONTACT
+    // was met 1d ago must NOT re-flag stale.
+    const contact = createContact(db, { name: 'Met Recently', email: 'met@test.com' });
+    const deal = createDeal(db, { title: 'Quiet but contact met', stage: 'contacted', contact_id: contact.id });
+    backdateDeal(deal.id, daysAgo(10));
+    insertActivity({ deal_id: deal.id, created_at: daysAgo(10) }); // old deal-linked touch
+    createActivity(db, { type: 'meeting', subject: 'Cal booking', contact_id: contact.id }); // recent, no deal_id
+
+    expect(getStaleDeals(db).map(d => d.id)).not.toContain(deal.id);
+  });
+
+  it('contactless deal stays on the deal_id path — an unrelated contact activity does not rescue it (IS NOT NULL guard)', () => {
+    const other = createContact(db, { name: 'Unrelated', email: 'unrelated@test.com' });
+    const deal = createDeal(db, { title: 'Contactless quiet', stage: 'contacted' }); // contact_id NULL
+    backdateDeal(deal.id, daysAgo(10));
+    insertActivity({ deal_id: deal.id, created_at: daysAgo(10) });
+    createActivity(db, { type: 'meeting', subject: 'someone else', contact_id: other.id }); // recent, unrelated
+
+    expect(getStaleDeals(db).map(d => d.id)).toContain(deal.id);
+  });
+
+  it('a sibling deal sharing the contact is NOT rescued by an activity linked to another deal (Codex P2)', () => {
+    // Contact has deal A (recent activity linked to A) and deal B (quiet). B
+    // must still flag stale — A's deal-linked activity is not a touch for B,
+    // because the contact branch only counts activities with deal_id IS NULL.
+    const contact = createContact(db, { name: 'Two Deals', email: 'two@test.com' });
+    const dealA = createDeal(db, { title: 'Active A', stage: 'contacted', contact_id: contact.id });
+    const dealB = createDeal(db, { title: 'Quiet B', stage: 'contacted', contact_id: contact.id });
+    backdateDeal(dealA.id, daysAgo(10));
+    backdateDeal(dealB.id, daysAgo(10));
+    insertActivity({ deal_id: dealA.id, created_at: daysAgo(1) });  // recent, linked to A only
+    insertActivity({ deal_id: dealB.id, created_at: daysAgo(10) }); // B's own touch is old
+
+    const ids = getStaleDeals(db).map(d => d.id);
+    expect(ids).not.toContain(dealA.id); // A is fresh
+    expect(ids).toContain(dealB.id);     // B still stale — A's activity must not rescue it
+  });
+
+  it('contact-only touch is ambiguous with multiple open deals — falls back to deal_id-only (Codex P2 round 2)', () => {
+    // Contact has TWO open deals. A Cal/Fathom meeting logged contact-only (no
+    // deal_id) cannot be attributed to one deal, so neither is rescued — a
+    // genuinely neglected sibling must still surface (a false-negative that
+    // hides a stale deal is worse than a false-positive sales can dismiss).
+    const contact = createContact(db, { name: 'Ambiguous', email: 'amb@test.com' });
+    const dealA = createDeal(db, { title: 'Open A', stage: 'contacted', contact_id: contact.id });
+    const dealB = createDeal(db, { title: 'Open B', stage: 'contacted', contact_id: contact.id });
+    backdateDeal(dealA.id, daysAgo(10));
+    backdateDeal(dealB.id, daysAgo(10));
+    insertActivity({ deal_id: dealA.id, created_at: daysAgo(10) });
+    insertActivity({ deal_id: dealB.id, created_at: daysAgo(10) });
+    createActivity(db, { type: 'meeting', subject: 'contact-only', contact_id: contact.id }); // recent, no deal_id
+
+    const ids = getStaleDeals(db).map(d => d.id);
+    expect(ids).toContain(dealA.id); // ambiguous touch does not rescue either
+    expect(ids).toContain(dealB.id);
+  });
+
   it('excludes deals that already have a pending follow-up (tracked elsewhere)', () => {
     const deal = createDeal(db, { title: 'Has Open Follow-up', stage: 'contacted' });
     backdateDeal(deal.id, daysAgo(20));
