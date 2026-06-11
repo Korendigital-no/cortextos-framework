@@ -376,14 +376,26 @@ export function getStaleDeals(
           SELECT MAX(a.completed_at) AS t FROM crm_activities a WHERE a.deal_id = d.id
           UNION ALL
           -- Contact-linked touches: Cal.com bookings + Fathom meetings write an
-          -- activity with contact_id but NO deal_id, so a quiet deal whose
-          -- contact was just met would otherwise re-flag stale every run.
-          -- a.deal_id IS NULL is essential (Codex P2): without it an activity
-          -- explicitly linked to deal A would count as a touch for every OTHER
-          -- deal sharing that contact, hiding a genuinely stale sibling deal.
-          SELECT MAX(a.created_at)   AS t FROM crm_activities a WHERE d.contact_id IS NOT NULL AND a.contact_id = d.contact_id AND a.deal_id IS NULL
+          -- activity with contact_id but NO deal_id (a.deal_id IS NULL), so a
+          -- quiet deal whose contact was just met would otherwise re-flag stale.
+          -- Two guards, both essential (Codex P2 ×2):
+          --   * a.deal_id IS NULL — a deal-A-linked activity must NOT touch a
+          --     sibling deal B sharing the contact.
+          --   * sole-open-deal — a CONTACT-only touch is ambiguous when the
+          --     contact has multiple open deals (which deal was the meeting
+          --     about?). Attribute it only when it is the contact's ONLY open
+          --     deal; otherwise fall back to deal_id-only, accepting a possible
+          --     false-positive rather than hiding a genuinely neglected sibling
+          --     (a false-negative defeats the whole stale-sweep).
+          SELECT MAX(a.created_at)   AS t FROM crm_activities a
+            WHERE d.contact_id IS NOT NULL AND a.contact_id = d.contact_id AND a.deal_id IS NULL
+              AND (SELECT COUNT(*) FROM crm_deals sib
+                   WHERE sib.contact_id = d.contact_id AND sib.stage NOT IN ('closed_won', 'closed_lost') AND sib.closed_at IS NULL) = 1
           UNION ALL
-          SELECT MAX(a.completed_at) AS t FROM crm_activities a WHERE d.contact_id IS NOT NULL AND a.contact_id = d.contact_id AND a.deal_id IS NULL
+          SELECT MAX(a.completed_at) AS t FROM crm_activities a
+            WHERE d.contact_id IS NOT NULL AND a.contact_id = d.contact_id AND a.deal_id IS NULL
+              AND (SELECT COUNT(*) FROM crm_deals sib
+                   WHERE sib.contact_id = d.contact_id AND sib.stage NOT IN ('closed_won', 'closed_lost') AND sib.closed_at IS NULL) = 1
           UNION ALL
           SELECT d.updated_at        AS t
         )

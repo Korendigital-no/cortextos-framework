@@ -272,6 +272,25 @@ describe('getStaleDeals (resolution-join staleness)', () => {
     expect(ids).toContain(dealB.id);     // B still stale — A's activity must not rescue it
   });
 
+  it('contact-only touch is ambiguous with multiple open deals — falls back to deal_id-only (Codex P2 round 2)', () => {
+    // Contact has TWO open deals. A Cal/Fathom meeting logged contact-only (no
+    // deal_id) cannot be attributed to one deal, so neither is rescued — a
+    // genuinely neglected sibling must still surface (a false-negative that
+    // hides a stale deal is worse than a false-positive sales can dismiss).
+    const contact = createContact(db, { name: 'Ambiguous', email: 'amb@test.com' });
+    const dealA = createDeal(db, { title: 'Open A', stage: 'contacted', contact_id: contact.id });
+    const dealB = createDeal(db, { title: 'Open B', stage: 'contacted', contact_id: contact.id });
+    backdateDeal(dealA.id, daysAgo(10));
+    backdateDeal(dealB.id, daysAgo(10));
+    insertActivity({ deal_id: dealA.id, created_at: daysAgo(10) });
+    insertActivity({ deal_id: dealB.id, created_at: daysAgo(10) });
+    createActivity(db, { type: 'meeting', subject: 'contact-only', contact_id: contact.id }); // recent, no deal_id
+
+    const ids = getStaleDeals(db).map(d => d.id);
+    expect(ids).toContain(dealA.id); // ambiguous touch does not rescue either
+    expect(ids).toContain(dealB.id);
+  });
+
   it('excludes deals that already have a pending follow-up (tracked elsewhere)', () => {
     const deal = createDeal(db, { title: 'Has Open Follow-up', stage: 'contacted' });
     backdateDeal(deal.id, daysAgo(20));
