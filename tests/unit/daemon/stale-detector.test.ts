@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   isSelfInflictedStale, isWatchdogHeartbeat, shouldFireIdleWatchdog, staleThresholdsFromEnv,
-  circuitAllowsRestart, recordCircuitRestart,
+  circuitAllowsRestart, recordCircuitRestart, formatStaleDetectorArmed,
   DEFAULT_STALE_THRESHOLDS, STALE_CIRCUIT_MAX, STALE_CIRCUIT_WINDOW_MS,
 } from '../../../src/daemon/stale-detector.js';
 
@@ -123,5 +123,24 @@ describe('stale circuit breaker', () => {
     for (let i = 0; i < STALE_CIRCUIT_MAX; i++) c = recordCircuitRestart(c, T0);
     expect(circuitAllowsRestart(c, T0 + 1)).toBe(false);
     expect(circuitAllowsRestart(c, T0 + STALE_CIRCUIT_WINDOW_MS + 1)).toBe(true);
+  });
+});
+
+describe('formatStaleDetectorArmed (greppable init line)', () => {
+  it('is a single greppable line carrying the active thresholds', () => {
+    const line = formatStaleDetectorArmed(DEFAULT_STALE_THRESHOLDS);
+    expect(line).toContain('stale-detector armed');
+    expect(line).toContain(`minInjections=${DEFAULT_STALE_THRESHOLDS.minInjections}`);
+    expect(line).toContain(`window=${Math.round(DEFAULT_STALE_THRESHOLDS.windowMs / 60_000)}min`);
+    expect(line).toContain(
+      `circuit=${STALE_CIRCUIT_MAX} restarts/${Math.round(STALE_CIRCUIT_WINDOW_MS / 3_600_000)}h`,
+    );
+    expect(line.split('\n')).toHaveLength(1); // one line → one grep
+  });
+
+  it('reflects custom thresholds rather than hardcoding defaults', () => {
+    const line = formatStaleDetectorArmed({ minInjections: 9, windowMs: 30 * 60_000 });
+    expect(line).toContain('minInjections=9');
+    expect(line).toContain('window=30min');
   });
 });
