@@ -343,8 +343,12 @@ export class FastChecker {
     // Refresh the agent-beat mark from heartbeat.json
     try {
       const hbPath = join(this.paths.stateDir, 'heartbeat.json');
-      const hb = JSON.parse(readFileSync(hbPath, 'utf-8')) as { status?: string; last_heartbeat?: string };
-      const ts = Date.parse(hb.last_heartbeat ?? '');
+      const hb = JSON.parse(readFileSync(hbPath, 'utf-8')) as { status?: string; last_heartbeat?: string; timestamp?: string };
+      // `timestamp` is the legacy field name (Heartbeat type) — fall back to it as
+      // other heartbeat readers do (bus/agents.ts), or a legacy record with only
+      // `timestamp` is treated as "no agent beat" and could false-trigger a stale
+      // restart. Mirrors shouldFireIdleWatchdog.
+      const ts = Date.parse(hb.last_heartbeat ?? hb.timestamp ?? '');
       if (Number.isFinite(ts) && ts > this.staleLastAgentBeatMs && !isWatchdogHeartbeat(hb.status ?? '')) {
         this.staleLastAgentBeatMs = ts;
         this.agent.markInjectionsSeen();
