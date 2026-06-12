@@ -3,7 +3,7 @@
  * Each hook reads JSON from stdin, processes it, and writes JSON to stdout.
  */
 
-import { readFileSync, existsSync, watch, statSync, unlinkSync, mkdirSync, realpathSync, lstatSync } from 'fs';
+import { readFileSync, existsSync, watch, unlinkSync, mkdirSync, realpathSync, lstatSync } from 'fs';
 import { join, resolve, sep, dirname, basename } from 'path';
 import { homedir } from 'os';
 import * as crypto from 'crypto';
