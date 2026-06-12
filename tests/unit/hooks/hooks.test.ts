@@ -213,6 +213,45 @@ describe('Hook Utilities', () => {
       }
     });
 
+    it('allows an ABSOLUTE file_path under a symlinked agent-dir (#594)', () => {
+      const base = mkdtempSync(join(tmpdir(), 'hookperm-'));
+      try {
+        const realRoot = join(base, 'real');
+        mkdirSync(join(realRoot, '.claude'), { recursive: true });
+        const linkDir = join(base, 'link');
+        symlinkSync(realRoot, linkDir); // agentDir reached via a symlink
+        // Claude passes ABSOLUTE file_paths. An absolute path expressed through the
+        // symlinked agentDir must still resolve into the canonical .claude root.
+        // Before #594 the raw symlinked prefix failed lexical containment and the
+        // write was wrongly refused (fail-safe, but wrong).
+        expect(isClaudeDirOperation('Write',
+          { file_path: join(linkDir, '.claude', 'ok.txt') }, linkDir)).toBe(true);
+        // An absolute path NOT under .claude (via the symlinked base) is still refused.
+        expect(isClaudeDirOperation('Write',
+          { file_path: join(linkDir, 'outside.txt') }, linkDir)).toBe(false);
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+      }
+    });
+
+    it('refuses a relative ..-escape reinterpreted through a symlinked alias (#594 regression)', () => {
+      const base = mkdtempSync(join(tmpdir(), 'hookperm-'));
+      try {
+        const realRoot = join(base, 'agent');
+        mkdirSync(join(realRoot, '.claude'), { recursive: true });
+        const linkDir = join(base, 'alias');
+        symlinkSync(realRoot, linkDir); // agentDir via a DIFFERENTLY-NAMED symlink
+        // `../alias/.claude/pwn` canonically resolves OUTSIDE the agent dir
+        // (parent/alias/.claude vs the canonical .../agent/.claude). Relative paths
+        // must anchor to the CANONICAL agent dir — resolving them against the raw
+        // symlinked base would remap this and wrongly auto-approve it.
+        expect(isClaudeDirOperation('Write',
+          { file_path: join('..', 'alias', '.claude', 'pwn') }, linkDir)).toBe(false);
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+      }
+    });
+
     it('does not auto-approve without an explicit agent-dir boundary (no cwd fallback)', () => {
       const saved = process.env.CTX_AGENT_DIR;
       delete process.env.CTX_AGENT_DIR;

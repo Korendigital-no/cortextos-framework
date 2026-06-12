@@ -4,7 +4,7 @@
  */
 
 import { readFileSync, existsSync, watch, unlinkSync, mkdirSync, realpathSync, lstatSync } from 'fs';
-import { join, resolve, sep, dirname, basename } from 'path';
+import { join, resolve, sep, dirname, basename, isAbsolute } from 'path';
 import { homedir } from 'os';
 import * as crypto from 'crypto';
 
@@ -254,7 +254,24 @@ export function isClaudeDirOperation(
   // thing left to vet.
   const canonAgentDir = canonicalizePath(resolve(base));
   const claudeRoot = join(canonAgentDir, '.claude');
-  const target = resolve(canonAgentDir, filePath);
+  // Relative file_paths resolve against the CANONICAL agent dir — a `..` must not
+  // be reinterpreted through a symlinked alias (resolving relatives against the
+  // raw base would let `../alias/.claude/x` be remapped and wrongly approved).
+  // Absolute file_paths (which Claude passes) ignore canonAgentDir in resolve(),
+  // so when they sit under the RAW (pre-canonicalization) base — e.g. a symlinked
+  // install path /var -> /private/var — we remap that prefix to the canonical
+  // base; otherwise lexical containment breaks and a legitimate .claude write is
+  // wrongly refused. (Fail-safe even without this: it refused, never over-allowed.)
+  let target: string;
+  if (isAbsolute(filePath)) {
+    target = resolve(filePath);
+    const rawBase = resolve(base);
+    if (target === rawBase || target.startsWith(rawBase + sep)) {
+      target = canonAgentDir + target.slice(rawBase.length);
+    }
+  } else {
+    target = resolve(canonAgentDir, filePath);
+  }
 
   // Lexical containment within the agent's own .claude/.
   if (target !== claudeRoot && !target.startsWith(claudeRoot + sep)) return false;
