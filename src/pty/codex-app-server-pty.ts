@@ -301,9 +301,27 @@ export class CodexAppServerPTY {
       break;
     }
 
-    const fencedBlocks = [...beforeReply.matchAll(/```(?:[a-zA-Z0-9_-]+)?\n([\s\S]*?)\n```/g)];
+    // Match a dynamically-sized fence (3+ backticks): wrapFenceSafe (sender side)
+    // grows the fence to outlast any backtick run in the body, so the close must
+    // be the same length as the open (backreference \1); group 2 is the body.
+    // Mirrors buildMediaPayload — the general text path must handle the same
+    // dynamic fences, or a 4+-backtick-wrapped code-block body mis-parses (the
+    // upstream-sync exposed this: the text sender now uses wrapFenceSafe too).
+    const fencedBlocks = [...beforeReply.matchAll(/(`{3,})(?:[a-zA-Z0-9_-]+)?\n([\s\S]*?)\n\1/g)];
     if (fencedBlocks.length > 0) {
-      return wrap(fencedBlocks[fencedBlocks.length - 1]?.[1]?.trim() || null);
+      return wrap(fencedBlocks[fencedBlocks.length - 1]?.[2]?.trim() || null);
+    }
+
+    // Custom inline-button callbacks (unhandled-callback path, upstream #604)
+    // arrive as "callback_data: <data>\nmessage_id: <id>". The generic last-line
+    // fallback below would return only "message_id: ..." and silently drop the
+    // action — surface both so the codex agent can act on the button press.
+    const callbackData = beforeReply.match(/^callback_data:\s*(.+)$/m);
+    if (callbackData) {
+      const callbackMsgId = beforeReply.match(/^message_id:\s*(.+)$/m);
+      const parts = [`callback_data: ${callbackData[1].trim()}`];
+      if (callbackMsgId) parts.push(`message_id: ${callbackMsgId[1].trim()}`);
+      return wrap(parts.join('\n'));
     }
 
     for (let i = lines.length - 1; i >= 0; i -= 1) {
@@ -319,11 +337,14 @@ export class CodexAppServerPTY {
   }
 
   private buildMediaPayload(mediaType: string, beforeReply: string): string | null {
-    const captionMatch = beforeReply.match(/caption:\s*\n```(?:[a-zA-Z0-9_-]+)?\n([\s\S]*?)\n```/);
-    const caption = captionMatch?.[1]?.trim() ?? '';
+    // Match a dynamically-sized fence (3+ backticks): wrapFenceSafe grows the
+    // fence to outlast any backtick run in the body, so the close must be the
+    // same length as the open (backreference \1). Group 2 is the body.
+    const captionMatch = beforeReply.match(/caption:\s*\n(`{3,})(?:[a-zA-Z0-9_-]+)?\n([\s\S]*?)\n\1/);
+    const caption = captionMatch?.[2]?.trim() ?? '';
 
-    const transcriptMatch = beforeReply.match(/transcript:\s*\n```(?:[a-zA-Z0-9_-]+)?\n([\s\S]*?)\n```/);
-    const transcript = transcriptMatch?.[1]?.trim() ?? '';
+    const transcriptMatch = beforeReply.match(/transcript:\s*\n(`{3,})(?:[a-zA-Z0-9_-]+)?\n([\s\S]*?)\n\1/);
+    const transcript = transcriptMatch?.[2]?.trim() ?? '';
 
     const localFileMatch = beforeReply.match(/^local_file:\s*(.+)$/m);
     const localFile = localFileMatch?.[1]?.trim() ?? '';
@@ -479,7 +500,8 @@ export class CodexAppServerPTY {
     // self-inflicted-stale watchdog) exists precisely to DISCARD a degraded
     // conversation. Resuming the persisted thread here would reload the
     // poisoned state and loop the recovery forever — drop the state file and
-    // fall through to thread/start.
+    // fall through to thread/start. ('continue' mode keeps upstream #437
+    // resume-on-restart behavior.)
     if (mode === 'fresh') {
       try { unlinkSync(this._threadStatePath); } catch { /* nothing persisted */ }
     }
