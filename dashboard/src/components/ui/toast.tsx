@@ -41,6 +41,9 @@ export interface ToastItem {
   variant: ToastVariant;
   /** Auto-dismiss after this many ms. Default 5000. */
   duration?: number;
+  /** Optional inline action (e.g. "Restore" for an undo toast). Clicking it runs
+   *  onClick and then dismisses the toast. */
+  action?: { label: string; onClick: () => void };
 }
 
 interface ToastContextValue {
@@ -153,6 +156,17 @@ function ToastItemComponent({
         .join(' ')}
     >
       <span className="flex-1">{t.message}</span>
+      {t.action && (
+        <button
+          onClick={() => {
+            t.action!.onClick();
+            handleDismiss();
+          }}
+          className="shrink-0 font-semibold underline underline-offset-2 opacity-90 hover:opacity-100 transition-opacity text-current"
+        >
+          {t.action.label}
+        </button>
+      )}
       <button
         onClick={handleDismiss}
         aria-label="Dismiss"

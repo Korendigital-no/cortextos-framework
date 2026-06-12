@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ToastProvider, useToast } from '@/components/ui/toast';
 import DeleteTaskDialog from '@/components/clients/delete-task-dialog';
+import DeleteTimeEntryDialog from '@/components/clients/delete-time-entry-dialog';
 import { deleteClientTask } from '@/lib/client-tasks';
 import {
   IconArrowLeft, IconClock, IconPlus, IconFolder, IconChecklist,
@@ -74,6 +75,7 @@ function ClientDetailView() {
   const [taskDue, setTaskDue] = useState('');
   const [taskPriority, setTaskPriority] = useState('normal');
   const [taskToDelete, setTaskToDelete] = useState<ClientTask | null>(null);
+  const [timeEntryToDelete, setTimeEntryToDelete] = useState<TimeEntry | null>(null);
 
   const [showAddNote, setShowAddNote] = useState(false);
   const [noteBody, setNoteBody] = useState('');
@@ -167,6 +169,39 @@ function ClientDetailView() {
     }
   }
 
+  async function confirmDeleteTimeEntry() {
+    if (!timeEntryToDelete) return;
+    const target = timeEntryToDelete;
+    setTimeEntryToDelete(null);
+    const res = await fetch(`/api/clients/${id}/time-entries/${target.id}`, { method: 'DELETE' });
+    if (!res.ok) {
+      toast({ message: 'Could not delete time entry', variant: 'error' });
+      return;
+    }
+    // Optimistic drop for instant feedback, then refetch so the work log and the
+    // overview totals (total_hours / entry_count) stay correct.
+    setTimeEntries(prev => prev.filter(t => t.id !== target.id));
+    fetchAll();
+    // The entry was archived, not destroyed — offer a one-click restore so a
+    // mis-click never loses logged time.
+    toast({
+      message: `Deleted ${target.hours.toFixed(1)}h — ${target.description}`,
+      variant: 'info',
+      action: {
+        label: 'Undo',
+        onClick: async () => {
+          const r = await fetch(`/api/clients/${id}/time-entries/${target.id}/restore`, { method: 'POST' });
+          if (r.ok) {
+            toast({ message: 'Time entry restored', variant: 'success' });
+            fetchAll();
+          } else {
+            toast({ message: 'Could not restore time entry', variant: 'error' });
+          }
+        },
+      },
+    });
+  }
+
   if (loading) return <div className="space-y-4"><div className="h-8 w-48 rounded bg-muted/30 animate-pulse" /><div className="h-64 rounded-lg bg-muted/30 animate-pulse" /></div>;
   if (!client) return <div className="space-y-4"><Link href="/clients"><Button variant="ghost" size="sm"><IconArrowLeft className="size-4 mr-1" />Back</Button></Link><p className="text-sm text-muted-foreground">Client not found.</p></div>;
 
@@ -232,13 +267,29 @@ function ClientDetailView() {
             ) : (
               <div className="rounded-lg border divide-y">
                 {timeEntries.slice(0, 10).map(e => (
-                  <div key={e.id} className="flex items-center justify-between px-4 py-3">
+                  <div key={e.id} className="group flex items-center justify-between px-4 py-3">
                     <div><p className="text-sm">{e.description}</p><p className="text-xs text-muted-foreground">{formatDate(e.date)}</p></div>
-                    <div className="flex items-center gap-1 text-sm font-medium"><IconClock className="size-3.5 text-muted-foreground" />{e.hours.toFixed(1)}h</div>
+                    <div className="flex items-center gap-3">
+                      <span className="flex items-center gap-1 text-sm font-medium"><IconClock className="size-3.5 text-muted-foreground" />{e.hours.toFixed(1)}h</span>
+                      <button
+                        onClick={() => setTimeEntryToDelete(e)}
+                        aria-label="Delete time entry"
+                        className="text-muted-foreground/40 hover:text-destructive transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100"
+                      >
+                        <IconTrash className="size-4" />
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
             )}
+            <DeleteTimeEntryDialog
+              open={timeEntryToDelete !== null}
+              description={timeEntryToDelete?.description ?? ''}
+              hours={timeEntryToDelete?.hours ?? 0}
+              onConfirm={confirmDeleteTimeEntry}
+              onCancel={() => setTimeEntryToDelete(null)}
+            />
           </div>
         </div>
       )}
