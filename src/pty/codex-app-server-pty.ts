@@ -301,9 +301,15 @@ export class CodexAppServerPTY {
       break;
     }
 
-    const fencedBlocks = [...beforeReply.matchAll(/```(?:[a-zA-Z0-9_-]+)?\n([\s\S]*?)\n```/g)];
+    // Match a dynamically-sized fence (3+ backticks): wrapFenceSafe (sender side)
+    // grows the fence to outlast any backtick run in the body, so the close must
+    // be the same length as the open (backreference \1); group 2 is the body.
+    // Mirrors buildMediaPayload — the general text path must handle the same
+    // dynamic fences, or a 4+-backtick-wrapped code-block body mis-parses (the
+    // upstream-sync exposed this: the text sender now uses wrapFenceSafe too).
+    const fencedBlocks = [...beforeReply.matchAll(/(`{3,})(?:[a-zA-Z0-9_-]+)?\n([\s\S]*?)\n\1/g)];
     if (fencedBlocks.length > 0) {
-      return wrap(fencedBlocks[fencedBlocks.length - 1]?.[1]?.trim() || null);
+      return wrap(fencedBlocks[fencedBlocks.length - 1]?.[2]?.trim() || null);
     }
 
     for (let i = lines.length - 1; i >= 0; i -= 1) {
