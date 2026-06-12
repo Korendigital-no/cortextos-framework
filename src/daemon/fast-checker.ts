@@ -5,7 +5,7 @@ import { createHash } from 'crypto';
 import { hardRestart } from '../bus/system.js';
 import { atomicWriteSync } from '../utils/atomic.js';
 import {
-  isSelfInflictedStale, isWatchdogHeartbeat, staleThresholdsFromEnv,
+  isSelfInflictedStale, isWatchdogHeartbeat, shouldFireIdleWatchdog, staleThresholdsFromEnv,
   circuitAllowsRestart, recordCircuitRestart,
   type StaleCircuit, type StaleThresholds,
 } from './stale-detector.js';
@@ -128,10 +128,21 @@ export class FastChecker {
     await this.waitForBootstrap();
     this.log('Bootstrap complete. Beginning poll loop.');
 
-    // Idle-session heartbeat watchdog: fires every 50 min regardless of REPL state
+    // Idle-session heartbeat watchdog: fires every 50 min, but SKIPS when the
+    // agent has posted its OWN heartbeat within the window — firing unconditionally
+    // overwrites a fresh agent beat with a "[watchdog] … idle" status and makes an
+    // actively-working but quiet agent look idle until its next beat (PR #100 codex
+    // P2). Genuine idle (no/stale agent beat, or only the daemon's own [watchdog]
+    // beats) still fires the liveness proof.
     const HEARTBEAT_INTERVAL_MS = 50 * 60 * 1000;
     const agentName = this.agent.name;
+    const hbPath = join(this.paths.stateDir, 'heartbeat.json');
     this.heartbeatTimer = setInterval(() => {
+      let hb: { status?: string; last_heartbeat?: string; timestamp?: string } | null = null;
+      try {
+        hb = JSON.parse(readFileSync(hbPath, 'utf-8'));
+      } catch { /* no/unreadable heartbeat.json — treated as idle, fire below */ }
+      if (!shouldFireIdleWatchdog(hb, Date.now(), HEARTBEAT_INTERVAL_MS)) return;
       const ts = new Date().toISOString();
       execFile('cortextos', ['bus', 'update-heartbeat', `[watchdog] ${agentName} alive — idle session ${ts}`], (err) => {
         if (err) this.log(`Heartbeat watchdog error: ${err.message}`);
