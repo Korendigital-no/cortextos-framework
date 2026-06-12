@@ -312,6 +312,18 @@ export class CodexAppServerPTY {
       return wrap(fencedBlocks[fencedBlocks.length - 1]?.[2]?.trim() || null);
     }
 
+    // Custom inline-button callbacks (unhandled-callback path, upstream #604)
+    // arrive as "callback_data: <data>\nmessage_id: <id>". The generic last-line
+    // fallback below would return only "message_id: ..." and silently drop the
+    // action — surface both so the codex agent can act on the button press.
+    const callbackData = beforeReply.match(/^callback_data:\s*(.+)$/m);
+    if (callbackData) {
+      const callbackMsgId = beforeReply.match(/^message_id:\s*(.+)$/m);
+      const parts = [`callback_data: ${callbackData[1].trim()}`];
+      if (callbackMsgId) parts.push(`message_id: ${callbackMsgId[1].trim()}`);
+      return wrap(parts.join('\n'));
+    }
+
     for (let i = lines.length - 1; i >= 0; i -= 1) {
       const line = lines[i];
       if (line.startsWith('=== TELEGRAM')) continue;

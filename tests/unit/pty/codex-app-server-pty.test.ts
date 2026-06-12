@@ -626,6 +626,20 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
     expect(out).toContain('```js'); // inner code block survives byte-exact
   });
 
+  it('codex callback: surfaces callback_data (+message_id), not just the trailing line', () => {
+    // Unhandled custom inline-button callback (upstream #604). The generic
+    // last-line fallback would return only "message_id: ..." and silently drop
+    // the action — both must reach the codex agent so it can act on the press.
+    const inject = `=== TELEGRAM from [USER: James] (chat_id:7940429114) ===
+callback_data: approve_invoice_42
+message_id: 8123
+Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
+`;
+    const out = extract(inject);
+    expect(out).toContain('callback_data: approve_invoice_42');
+    expect(out).toContain('message_id: 8123');
+  });
+
   it('reply_to with no outbound log: appends bare in-reply-to marker', () => {
     fsMocks.existsSync.mockImplementation((p: string) => !String(p).endsWith('outbound-messages.jsonl'));
     const inject = `=== TELEGRAM from James (chat_id:7940429114) ===
