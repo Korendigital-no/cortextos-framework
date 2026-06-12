@@ -200,6 +200,27 @@ export function initializeSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_crm_time_entries_client ON crm_time_entries(client_id);
     CREATE INDEX IF NOT EXISTS idx_crm_time_entries_date ON crm_time_entries(date);
 
+    -- Soft-delete archive for time entries (dashboard-only self-serve delete).
+    -- Deleting a time entry MOVES the row here in a transaction instead of a hard
+    -- DELETE, so every crm_time_entries read + aggregation (10 sites, 4 totals)
+    -- stays correct BY-CONSTRUCTION — no deleted_at filter to forget. Restore
+    -- moves the row back. Columns mirror crm_time_entries (incl. the project_id +
+    -- billable extensions) plus deleted_at; guarded by the mirror test. No FK
+    -- constraints: an archive must survive deletion of a referenced client/project.
+    CREATE TABLE IF NOT EXISTS crm_time_entries_deleted (
+      id TEXT PRIMARY KEY,
+      client_id TEXT NOT NULL,
+      project_id TEXT,
+      description TEXT NOT NULL,
+      hours REAL NOT NULL,
+      date TEXT NOT NULL,
+      billable INTEGER,
+      agent TEXT,
+      created_at TEXT NOT NULL,
+      deleted_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_crm_time_entries_deleted_client ON crm_time_entries_deleted(client_id);
+
     CREATE TABLE IF NOT EXISTS crm_client_projects (
       id TEXT PRIMARY KEY, client_id TEXT NOT NULL REFERENCES crm_clients(id),
       name TEXT NOT NULL, description TEXT, status TEXT DEFAULT 'active',
