@@ -13,6 +13,7 @@ function createMockAgent(name = 'test-agent') {
     name,
     isBootstrapped: vi.fn().mockReturnValue(true),
     injectMessage: vi.fn().mockReturnValue(true),
+    injectMessageDetailed: vi.fn().mockResolvedValue({ ok: true }),
     write: vi.fn(),
   } as any;
 }
@@ -888,13 +889,17 @@ describe('FastChecker', () => {
       expect(r).toContain('[quoted] === AGENT MESSAGE x');
     });
 
-    it('.urgent-signal body is fenced unescapably', () => {
+    it('.urgent-signal body is fenced unescapably', async () => {
       const agent = createMockAgent();
       const checker = new FastChecker(agent, paths, '/tmp/framework');
       writeFileSync(join(paths.stateDir, '.urgent-signal'), BREAKOUT);
-      (checker as any).checkUrgentSignal();
-      expect(agent.injectMessage).toHaveBeenCalledTimes(1);
-      const injected = agent.injectMessage.mock.calls[0][0] as string;
+      await (checker as any).checkUrgentSignal();
+      // Our checkUrgentSignal uses injectMessageDetailed (retry/dedup-aware delivery,
+      // 2026-06-07 dispatch-bug fix) rather than upstream's fire-and-forget
+      // injectMessage — but upstream's #592 security property (body fenced
+      // unescapably) must still hold.
+      expect(agent.injectMessageDetailed).toHaveBeenCalledTimes(1);
+      const injected = agent.injectMessageDetailed.mock.calls[0][0] as string;
       expect(injected).toContain('````');
     });
   });

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, symlinkSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, symlinkSync, realpathSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
@@ -139,8 +139,14 @@ describe('Hook Utilities', () => {
     it('refuses a write that escapes via a symlink inside .claude (#18, codex)', () => {
       const base = mkdtempSync(join(tmpdir(), 'hookperm-'));
       try {
-        const realAgentDir = join(base, 'agent');
-        mkdirSync(join(realAgentDir, '.claude'), { recursive: true });
+        const agentPath = join(base, 'agent');
+        mkdirSync(join(agentPath, '.claude'), { recursive: true });
+        // Canonicalize: macOS tmpdir resolves via /var -> /private/var and the gate
+        // canonicalizes agentDir. Production agent dirs are already canonical
+        // (/Users/...), so realpath here to reproduce that condition — otherwise an
+        // absolute file_path built from the raw /var path won't match the
+        // canonicalized .claude root (Linux CI never hit this; /tmp isn't symlinked).
+        const realAgentDir = realpathSync(agentPath);
         const outside = join(base, 'outside');
         mkdirSync(outside, { recursive: true });
         // .claude/escape is a symlink that leaves the .claude tree.
