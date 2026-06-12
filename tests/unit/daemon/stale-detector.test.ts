@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  isSelfInflictedStale, isWatchdogHeartbeat, staleThresholdsFromEnv,
+  isSelfInflictedStale, isWatchdogHeartbeat, shouldFireIdleWatchdog, staleThresholdsFromEnv,
   circuitAllowsRestart, recordCircuitRestart,
   DEFAULT_STALE_THRESHOLDS, STALE_CIRCUIT_MAX, STALE_CIRCUIT_WINDOW_MS,
 } from '../../../src/daemon/stale-detector.js';
@@ -54,6 +54,45 @@ describe('isWatchdogHeartbeat', () => {
   it('daemon idle-watchdog beats never reset the detector', () => {
     expect(isWatchdogHeartbeat('[watchdog] analyst alive — idle session 2026-06-05T20:00:00Z')).toBe(true);
     expect(isWatchdogHeartbeat('working on PR #69')).toBe(false);
+  });
+});
+
+describe('shouldFireIdleWatchdog', () => {
+  const INTERVAL = 50 * 60 * 1000;
+  const now = 1_000_000_000_000;
+  const iso = (ms: number) => new Date(ms).toISOString();
+
+  it('SKIPS when a fresh agent beat is within the window', () => {
+    const hb = { status: 'working on PR #69', last_heartbeat: iso(now - 10 * 60 * 1000) };
+    expect(shouldFireIdleWatchdog(hb, now, INTERVAL)).toBe(false);
+  });
+
+  it('FIRES when the latest agent beat is older than the window (genuine idle)', () => {
+    const hb = { status: 'working on PR #69', last_heartbeat: iso(now - 60 * 60 * 1000) };
+    expect(shouldFireIdleWatchdog(hb, now, INTERVAL)).toBe(true);
+  });
+
+  it('FIRES when the only recent beat is the daemon\'s own [watchdog] writer', () => {
+    const hb = { status: '[watchdog] agent alive — idle session', last_heartbeat: iso(now - 1000) };
+    expect(shouldFireIdleWatchdog(hb, now, INTERVAL)).toBe(true);
+  });
+
+  it('honors the legacy `timestamp` field when last_heartbeat is absent (skips on fresh legacy beat)', () => {
+    const hb = { status: 'working', timestamp: iso(now - 5 * 60 * 1000) };
+    expect(shouldFireIdleWatchdog(hb, now, INTERVAL)).toBe(false);
+    const stale = { status: 'working', timestamp: iso(now - 60 * 60 * 1000) };
+    expect(shouldFireIdleWatchdog(stale, now, INTERVAL)).toBe(true);
+  });
+
+  it('FIRES when there is no heartbeat record or it is unparseable', () => {
+    expect(shouldFireIdleWatchdog(null, now, INTERVAL)).toBe(true);
+    expect(shouldFireIdleWatchdog({ status: 'x', last_heartbeat: 'not-a-date' }, now, INTERVAL)).toBe(true);
+    expect(shouldFireIdleWatchdog({}, now, INTERVAL)).toBe(true);
+  });
+
+  it('fires exactly at the interval boundary (>= interval)', () => {
+    const hb = { status: 'busy', last_heartbeat: iso(now - INTERVAL) };
+    expect(shouldFireIdleWatchdog(hb, now, INTERVAL)).toBe(true);
   });
 });
 
