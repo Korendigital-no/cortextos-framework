@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
@@ -80,7 +80,15 @@ function ClientDetailView() {
   const [showAddNote, setShowAddNote] = useState(false);
   const [noteBody, setNoteBody] = useState('');
 
+  // Monotonic request id: a later fetchAll() supersedes an in-flight earlier one,
+  // so out-of-order responses are discarded. Without this, clicking Undo while
+  // the post-delete fetchAll() is still running could let the deleted-state
+  // response land AFTER the restore refresh and overwrite the restored entry
+  // and totals (codex P2). Only the latest request applies its result.
+  const fetchSeq = useRef(0);
+
   const fetchAll = useCallback(async () => {
+    const seq = ++fetchSeq.current;
     try {
       const [cRes, pRes, tRes, nRes] = await Promise.all([
         fetch(`/api/clients/${id}`),
@@ -88,17 +96,25 @@ function ClientDetailView() {
         fetch(`/api/clients/${id}/tasks`),
         fetch(`/api/clients/${id}/notes`),
       ]);
-      if (cRes.ok) {
-        const data = await cRes.json();
-        setClient(data.client);
-        setTimeEntries(data.timeEntries);
-        setTotals(data.totals);
+      // Read all bodies, THEN gate on the sequence so a superseded response
+      // cannot apply even partially.
+      const [cData, pData, tData, nData] = await Promise.all([
+        cRes.ok ? cRes.json() : null,
+        pRes.ok ? pRes.json() : null,
+        tRes.ok ? tRes.json() : null,
+        nRes.ok ? nRes.json() : null,
+      ]);
+      if (seq !== fetchSeq.current) return; // superseded — discard stale state
+      if (cData) {
+        setClient(cData.client);
+        setTimeEntries(cData.timeEntries);
+        setTotals(cData.totals);
       }
-      if (pRes.ok) setProjects(await pRes.json());
-      if (tRes.ok) setTasks(await tRes.json());
-      if (nRes.ok) setNotes(await nRes.json());
+      if (pData) setProjects(pData);
+      if (tData) setTasks(tData);
+      if (nData) setNotes(nData);
     } finally {
-      setLoading(false);
+      if (seq === fetchSeq.current) setLoading(false);
     }
   }, [id]);
 
