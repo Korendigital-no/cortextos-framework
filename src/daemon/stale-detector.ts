@@ -114,3 +114,17 @@ export function circuitAllowsRestart(circuit: StaleCircuit, nowMs: number): bool
 export function recordCircuitRestart(circuit: StaleCircuit, nowMs: number): StaleCircuit {
   return { restarts: [...circuit.restarts.filter(ts => nowMs - ts < STALE_CIRCUIT_WINDOW_MS), nowMs] };
 }
+
+/**
+ * One-line, greppable arming summary the fast-checker logs when it activates the
+ * detector. The detector deliberately did nothing observable at init, so proving
+ * "is the self-inflicted-stale guard live on this build?" took a commit → dist
+ * marker → process-start chain. This line makes it a single
+ * `grep 'stale-detector armed'` of the fast-checker log. Verifiability is a
+ * feature (task_1780797704445). Pure, so the exact format is unit-tested.
+ */
+export function formatStaleDetectorArmed(t: StaleThresholds = DEFAULT_STALE_THRESHOLDS): string {
+  const windowMin = Math.round(t.windowMs / 60_000);
+  const circuitWindowH = Math.round(STALE_CIRCUIT_WINDOW_MS / 3_600_000);
+  return `stale-detector armed: minInjections=${t.minInjections}, window=${windowMin}min, circuit=${STALE_CIRCUIT_MAX} restarts/${circuitWindowH}h`;
+}

@@ -6,7 +6,7 @@ import { hardRestart } from '../bus/system.js';
 import { atomicWriteSync } from '../utils/atomic.js';
 import {
   isSelfInflictedStale, isWatchdogHeartbeat, shouldFireIdleWatchdog, staleThresholdsFromEnv,
-  circuitAllowsRestart, recordCircuitRestart,
+  circuitAllowsRestart, recordCircuitRestart, formatStaleDetectorArmed,
   type StaleCircuit, type StaleThresholds,
 } from './stale-detector.js';
 import type { InboxMessage, BusPaths, TelegramMessage, TelegramCallbackQuery } from '../types/index.js';
@@ -127,6 +127,10 @@ export class FastChecker {
     // Wait for bootstrap
     await this.waitForBootstrap();
     this.log('Bootstrap complete. Beginning poll loop.');
+
+    // Arming line for the self-inflicted-stale detector — one greppable record
+    // that the guard is live on this build (verifiability is the feature).
+    this.log(formatStaleDetectorArmed(this.staleThresholds));
 
     // Idle-session heartbeat watchdog: fires every 50 min, but SKIPS when the
     // agent has posted its OWN heartbeat within the window — firing unconditionally
