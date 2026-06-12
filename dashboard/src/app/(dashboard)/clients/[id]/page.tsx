@@ -290,7 +290,7 @@ function ClientDetailView() {
                       <button
                         onClick={() => setTimeEntryToDelete(e)}
                         aria-label="Delete time entry"
-                        className="text-muted-foreground/40 hover:text-destructive transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100"
+                        className="text-muted-foreground/40 hover:text-destructive transition-colors [@media(hover:hover)]:opacity-0 group-hover:opacity-100 focus:opacity-100"
                       >
                         <IconTrash className="size-4" />
                       </button>
