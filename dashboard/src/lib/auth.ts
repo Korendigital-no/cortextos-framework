@@ -6,7 +6,7 @@ import Credentials from 'next-auth/providers/credentials';
 import bcrypt from 'bcryptjs';
 import { db } from './db';
 import { checkRateLimit, resetRateLimit } from './rate-limit';
-import type { User } from './types';
+import { findUserByUsername, normalizeUsername } from './user-lookup';
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
   trustHost: true,
@@ -69,9 +69,9 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         // Seed admin user on first auth attempt if no users exist
         await seedAdminUser();
 
-        const user = db
-          .prepare('SELECT * FROM users WHERE username = ?')
-          .get(credentials.username as string) as User | undefined;
+        // Case-insensitive lookup so mobile autocaps / stray whitespace can't
+        // lock the user out (the stored username is matched COLLATE NOCASE).
+        const user = findUserByUsername(credentials.username as string);
         if (!user) return null;
 
         const valid = await bcrypt.compare(
@@ -128,7 +128,7 @@ export async function seedAdminUser(): Promise<void> {
     return;
   }
 
-  const username = process.env.ADMIN_USERNAME ?? 'admin';
+  const username = normalizeUsername(process.env.ADMIN_USERNAME ?? 'admin');
 
   // Security (H8): Do not fall back to hardcoded password.
   // Only validate when we actually need the password (seeding or syncing).
@@ -145,14 +145,12 @@ export async function seedAdminUser(): Promise<void> {
     // Opt-in password sync: only update stored hash when SYNC_ADMIN_PASSWORD=true.
     // This prevents the dashboard from silently overwriting a password that was
     // changed through the UI on every restart.
-    const user = db
-      .prepare('SELECT password_hash FROM users WHERE username = ?')
-      .get(username) as { password_hash: string } | undefined;
+    const user = findUserByUsername(username);
     if (user) {
       const matches = await bcrypt.compare(password, user.password_hash);
       if (!matches) {
         const hash = await bcrypt.hash(password, 12);
-        db.prepare('UPDATE users SET password_hash = ? WHERE username = ?').run(hash, username);
+        db.prepare('UPDATE users SET password_hash = ? WHERE username = ? COLLATE NOCASE').run(hash, username);
         console.log(`[auth] Admin password updated from environment (SYNC_ADMIN_PASSWORD=true)`);
       }
     }
