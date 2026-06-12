@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { db } from '@/lib/db';
 import bcrypt from 'bcryptjs';
+import { findUserByUsername, normalizeUsername } from '@/lib/user-lookup';
 
 export const dynamic = 'force-dynamic';
 
@@ -27,11 +28,13 @@ export async function POST(request: NextRequest) {
     if (!trimmed || trimmed.length < 3) return Response.json({ error: 'Username must be at least 3 characters' }, { status: 400 });
     if (!password || password.length < 12) return Response.json({ error: 'Password must be at least 12 characters' }, { status: 400 });
 
-    const existing = db.prepare('SELECT id FROM users WHERE username = ?').get(trimmed);
-    if (existing) return Response.json({ error: 'Username already exists' }, { status: 409 });
+    // Case-insensitive: store normalized + reject case-variant duplicates so the
+    // COLLATE NOCASE login lookup stays unambiguous.
+    const normalized = normalizeUsername(username ?? '');
+    if (findUserByUsername(normalized)) return Response.json({ error: 'Username already exists' }, { status: 409 });
 
     const hash = await bcrypt.hash(password, 12);
-    db.prepare('INSERT INTO users (username, password_hash) VALUES (?, ?)').run(trimmed, hash);
+    db.prepare('INSERT INTO users (username, password_hash) VALUES (?, ?)').run(normalized, hash);
     return Response.json({ success: true });
   } catch (err) {
     console.error('[api/settings/users] POST error:', err);
