@@ -7,6 +7,7 @@ import { revalidatePath } from 'next/cache';
 import { CTX_ROOT, getOrgs, getAgentsForOrg, getAgentDir, getOrgContextPath, getOrgBrandVoicePath, getAllowedRootsConfigPath } from '@/lib/config';
 import { db } from '@/lib/db';
 import { requireSession } from '@/lib/require-session';
+import { findUserByUsername, normalizeUsername } from '@/lib/user-lookup';
 import type { ActionResult, User } from '@/lib/types';
 
 // ---------------------------------------------------------------------------
@@ -253,12 +254,14 @@ export async function addUser(username: string, password: string): Promise<Actio
     if (trimmed.length > 50) return { success: false, error: 'Username must be under 50 characters' };
     if (!password || password.length < 6) return { success: false, error: 'Password must be at least 6 characters' };
 
-    // Check for duplicate
-    const existing = db.prepare('SELECT id FROM users WHERE username = ?').get(trimmed) as User | undefined;
-    if (existing) return { success: false, error: 'Username already exists' };
+    // Usernames are case-insensitive identities: store normalized + block
+    // case-variant duplicates ("Admin" vs "admin") so the login lookup stays
+    // unambiguous (matches the COLLATE NOCASE login path).
+    const normalized = normalizeUsername(username);
+    if (findUserByUsername(normalized)) return { success: false, error: 'Username already exists' };
 
     const hash = await bcrypt.hash(password, 12);
-    db.prepare('INSERT INTO users (username, password_hash) VALUES (?, ?)').run(trimmed, hash);
+    db.prepare('INSERT INTO users (username, password_hash) VALUES (?, ?)').run(normalized, hash);
 
     revalidatePath('/settings');
     return { success: true };

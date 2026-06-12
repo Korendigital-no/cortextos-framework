@@ -1,8 +1,7 @@
 import { NextRequest } from 'next/server';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import { db } from '@/lib/db';
-import type { User } from '@/lib/types';
+import { findUserByUsername } from '@/lib/user-lookup';
 import { checkRateLimit, resetRateLimit } from '@/lib/rate-limit';
 
 export const dynamic = 'force-dynamic';
@@ -48,9 +47,9 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const user = db
-      .prepare('SELECT * FROM users WHERE username = ?')
-      .get(username) as User | undefined;
+    // Case-insensitive lookup so mobile autocaps / whitespace can't lock out the
+    // user (matches the web login path; bcrypt below still gates the password).
+    const user = findUserByUsername(username);
 
     if (!user) {
       // Constant-time defense: run a dummy bcrypt comparison so the response time
