@@ -980,7 +980,11 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
         `message_id: ${messageId}`,
         `Reply using: cortextos bus send-telegram ${chatId} '<your reply>'`,
       ].join('\n');
-      const injected = this.agent.injectMessage(msg);
+      // injectMessage is async in our fork (injection-serialization queue) — await
+      // the real delivery result so the Telegram "Got it" ack only fires when the
+      // callback was actually injected (upstream #604 assumed a sync return; an
+      // un-awaited Promise is always truthy → ack on failed delivery).
+      const injected = await this.agent.injectMessage(msg);
       if (injected && this.telegramApi) {
         try { await this.telegramApi.answerCallbackQuery(callbackQueryId, 'Got it'); } catch { /* ignore */ }
       }
