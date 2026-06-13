@@ -154,11 +154,27 @@ export function bashWriteTargets(sub: string): string[] {
     for (const t of sub.split(/\s+/)) if (t && !t.startsWith('-')) targets.push(stripQuotes(t));
   }
   for (const m of sub.matchAll(/\bof=([^\s|;&]+)/g)) targets.push(stripQuotes(m[1]));
-  // downloader / output-file flags: curl -o FILE, wget -O FILE (incl. combined
-  // flag clusters like -fsSLo), --output[-document][=| ]FILE. Over-matching -o/-O
-  // is harmless — only a trust-anchor target actually flags.
-  for (const m of sub.matchAll(/(?:^|\s)-[a-zA-Z]*[oO](?:\s+|=)([^\s|;&]+)/g)) targets.push(stripQuotes(m[1]));
-  for (const m of sub.matchAll(/--output(?:-document)?[= ]([^\s|;&]+)/g)) targets.push(stripQuotes(m[1]));
+  // Downloader output. Explicit output-file flags (-o/-O/--output FILE) — but a URL
+  // captured after `curl -O` is NOT a file (that's remote-name, handled below), so
+  // skip http(s) captures. Over-matching -o on other tools is harmless — only a
+  // trust-anchor target flags.
+  for (const m of sub.matchAll(/(?:^|\s)-[a-zA-Z]*[oO](?:\s+|=)([^\s|;&]+)/g)) {
+    if (!/^https?:\/\//i.test(m[1])) targets.push(stripQuotes(m[1]));
+  }
+  for (const m of sub.matchAll(/--output(?:-document)?[= ]([^\s|;&]+)/g)) {
+    if (!/^https?:\/\//i.test(m[1])) targets.push(stripQuotes(m[1]));
+  }
+  // Remote-name basename writes into cwd: `curl -O URL` and `wget URL` (no output
+  // flag) write basename(URL) into the current dir — a bare-cwd trust anchor if the
+  // URL ends in e.g. /config.json or /.env.
+  const curlRemoteName = /\bcurl\b/.test(sub) && /(?:^|\s)-[a-zA-Z]*O\b/.test(sub);
+  const wgetDefault = /\bwget\b/.test(sub) && !/(?:^|\s)-O(?:\s|=)/.test(sub) && !/--output-document/.test(sub);
+  if (curlRemoteName || wgetDefault) {
+    for (const m of sub.matchAll(/\bhttps?:\/\/[^\s|;&'"]+/gi)) {
+      const b = m[0].replace(/[?#].*$/, '').split('/').pop();
+      if (b) targets.push(b); // bare cwd basename
+    }
+  }
   return targets;
 }
 
