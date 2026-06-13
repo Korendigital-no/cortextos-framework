@@ -138,6 +138,17 @@ describe('action-patterns: classifyBashSubcommand', () => {
     expect(classifyBashSubcommand('cp -t approvals/pending forged.json').category).toBe('config-change');
   });
 
+  it('in-place editors writing a trust anchor are caught (sed -i / perl -pi / awk -i / dd)', () => {
+    expect(classifyBashSubcommand("sed -i '' 's/enforce/off/' orgs/acme/context.json").category).toBe('config-change');
+    expect(classifyBashSubcommand('sed -i.bak s/a/b/ orgs/x/agents/y/config.json').category).toBe('config-change');
+    expect(classifyBashSubcommand("perl -pi -e 's/x/y/' orgs/x/agents/y/config.json").category).toBe('config-change');
+    expect(classifyBashSubcommand('awk -i inplace "{print}" .env').category).toBe('config-change');
+    expect(classifyBashSubcommand('dd if=/tmp/x of=orgs/x/agents/y/config.json').category).toBe('config-change');
+    // in-place edit / read of a CODE file is NOT config-change
+    expect(classifyBashSubcommand("sed -i '' 's/a/b/' src/foo.ts").category).toBeNull();
+    expect(classifyBashSubcommand("perl -ne 'print' orgs/x/agents/y/config.json").category).toBeNull(); // -ne is a READ, no -i
+  });
+
   it('ordinary commands and code writes are ALLOW', () => {
     for (const cmd of ['ls -la', 'npm test', 'git status', 'echo hi > src/foo.ts', 'cat README.md', 'node dist/cli.js bus check-inbox']) {
       expect(classifyBashSubcommand(cmd).category, cmd).toBeNull();

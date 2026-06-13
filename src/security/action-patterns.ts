@@ -86,8 +86,20 @@ export function isConfigChangeDir(targetPath: string): boolean {
   return false;
 }
 
-/** Collect EVERY write-destination token in a single sub-command (redirects, tee
- * targets, and cp/mv/install/rsync/ln destinations incl. the `-t <dir>` form). */
+/**
+ * Collect every write-destination token in a single sub-command: redirects (incl.
+ * multi-target), tee targets, cp/mv/install/rsync/ln destinations (incl. `-t <dir>`),
+ * in-place editors (sed -i / perl -i / awk -i inplace), and `dd of=`.
+ *
+ * BEST-EFFORT BOUNDARY (Doc 3 §7): this enumerates COMMON write primitives — it is
+ * not, and cannot be, exhaustive. A file write via an interpreter
+ * (`python -c "open('config.json','w')…"`, `node -e …`) is the documented
+ * string-classifier limit, closed only by Phase-2 isolation. The COMPLETE
+ * config-change protection does not rely on parsing bash at all: the `Write`/`Edit`
+ * TOOL calls carry a structured `path` that `classifyAction` classifies directly
+ * (Doc 3's surface), and the bus/CLI surface gates by descriptor — both unbypassable
+ * by shell-string tricks. This deny-list is the additional bash-surface layer.
+ */
 export function bashWriteTargets(sub: string): string[] {
   const targets: string[] = [];
   // all `>` / `>>` redirect targets (not just the first)
@@ -109,6 +121,16 @@ export function bashWriteTargets(sub: string): string[] {
     if (!dest) { const nonFlag = toks.filter(t => !t.startsWith('-')); dest = nonFlag[nonFlag.length - 1]; }
     if (dest) targets.push(stripQuotes(dest));
   }
+  // In-place editors (sed -i, perl -i/-pi, awk -i inplace) modify a file directly
+  // without a redirect. Every non-flag operand is a candidate file — a sed/awk
+  // SCRIPT operand never matches a trust-anchor BASENAME, so scanning all operands
+  // is safe (no false positive from the expression). `dd of=<file>` writes too.
+  if (/\bsed\b[^|;&]*\s-i/.test(sub)
+      || /\bperl\b[^|;&]*\s-[a-zA-Z]*i\b/.test(sub)
+      || /\bawk\b[^|;&]*\s-i\s+inplace/.test(sub)) {
+    for (const t of sub.split(/\s+/)) if (t && !t.startsWith('-')) targets.push(stripQuotes(t));
+  }
+  for (const m of sub.matchAll(/\bof=([^\s|;&]+)/g)) targets.push(stripQuotes(m[1]));
   return targets;
 }
 
