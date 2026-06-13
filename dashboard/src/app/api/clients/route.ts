@@ -11,6 +11,7 @@ export async function GET() {
       (SELECT date FROM crm_time_entries WHERE client_id = c.id ORDER BY date DESC LIMIT 1) as last_activity
     FROM crm_clients c
     LEFT JOIN crm_companies co ON c.company_id = co.id
+    WHERE c.deleted_at IS NULL
     ORDER BY c.status = 'active' DESC, c.updated_at DESC
   `).all();
   return Response.json(clients);

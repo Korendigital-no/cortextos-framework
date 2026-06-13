@@ -1,17 +1,19 @@
 'use client';
 
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ToastProvider, useToast } from '@/components/ui/toast';
 import DeleteTaskDialog from '@/components/clients/delete-task-dialog';
 import DeleteTimeEntryDialog from '@/components/clients/delete-time-entry-dialog';
+import EditClientDialog from '@/components/clients/edit-client-dialog';
+import DeleteClientDialog from '@/components/clients/delete-client-dialog';
 import { deleteClientTask } from '@/lib/client-tasks';
 import {
-  IconArrowLeft, IconClock, IconPlus, IconFolder, IconChecklist,
-  IconNote, IconCircleCheck, IconCircle, IconTrash,
+  IconArrowLeft, IconClock, IconPlus, IconCircleCheck, IconCircle, IconTrash,
+  IconPencil, IconArchive, IconArchiveOff,
 } from '@tabler/icons-react';
 
 interface Client {
@@ -22,8 +24,10 @@ interface Client {
   deal_type: string | null;
   rate_nok: number | null;
   hours_commitment: string | null;
+  rate_description: string | null;
   status: string;
   notes: string | null;
+  deleted_at: string | null;
 }
 
 interface TimeEntry { id: string; description: string; hours: number; date: string; agent: string | null; project_id: string | null; }
@@ -51,8 +55,14 @@ export default function ClientDetailPage() {
 
 function ClientDetailView() {
   const { id } = useParams<{ id: string }>();
+  const router = useRouter();
   const { toast } = useToast();
   const [tab, setTab] = useState<Tab>('overview');
+  const [showEdit, setShowEdit] = useState(false);
+  const [showDelete, setShowDelete] = useState(false);
+  // Server truth for the archive-vs-delete decision (counts trashed entries too,
+  // unlike totals.entry_count which is live-only).
+  const [hasTimeHistory, setHasTimeHistory] = useState(false);
   const [client, setClient] = useState<Client | null>(null);
   const [timeEntries, setTimeEntries] = useState<TimeEntry[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -109,6 +119,7 @@ function ClientDetailView() {
         setClient(cData.client);
         setTimeEntries(cData.timeEntries);
         setTotals(cData.totals);
+        setHasTimeHistory(!!cData.has_time_history);
       }
       if (pData) setProjects(pData);
       if (tData) setTasks(tData);
@@ -218,6 +229,40 @@ function ClientDetailView() {
     });
   }
 
+  async function handleRestore() {
+    const res = await fetch(`/api/clients/${id}/restore`, { method: 'POST' });
+    if (res.ok) {
+      toast({ message: 'Client restored', variant: 'success' });
+      fetchAll();
+    } else {
+      toast({ message: 'Could not restore client', variant: 'error' });
+    }
+  }
+
+  async function handleDeleteClient() {
+    setShowDelete(false);
+    const name = client?.company_name ?? 'client';
+    const res = await fetch(`/api/clients/${id}`, { method: 'DELETE' });
+    if (!res.ok) {
+      toast({ message: 'Could not remove client', variant: 'error' });
+      return;
+    }
+    const data = await res.json().catch(() => ({}));
+    if (data.soft) {
+      // Archived (recoverable): stay, refresh to surface the archived state, and
+      // offer an instant Undo. Billing history is preserved on the server.
+      fetchAll();
+      toast({
+        message: `Archived ${name} — billing history preserved`,
+        variant: 'info',
+        action: { label: 'Undo', onClick: handleRestore },
+      });
+    } else {
+      // Hard-deleted (a client that never logged time) — it's gone; go back.
+      router.push('/clients');
+    }
+  }
+
   if (loading) return <div className="space-y-4"><div className="h-8 w-48 rounded bg-muted/30 animate-pulse" /><div className="h-64 rounded-lg bg-muted/30 animate-pulse" /></div>;
   if (!client) return <div className="space-y-4"><Link href="/clients"><Button variant="ghost" size="sm"><IconArrowLeft className="size-4 mr-1" />Back</Button></Link><p className="text-sm text-muted-foreground">Client not found.</p></div>;
 
@@ -234,6 +279,7 @@ function ClientDetailView() {
             <div className="flex items-center gap-2">
               <h1 className="text-2xl font-semibold">{client.company_name}</h1>
               <Badge variant="secondary" className={client.status === 'active' ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400' : ''}>{client.status}</Badge>
+              {client.deleted_at && <Badge variant="secondary" className="bg-amber-500/10 text-amber-700 dark:text-amber-400">Archived</Badge>}
             </div>
             <div className="flex items-center gap-4 mt-1 text-sm text-muted-foreground">
               {client.contact_name && <span>{client.contact_name}</span>}
@@ -243,7 +289,48 @@ function ClientDetailView() {
             </div>
           </div>
         </div>
+        <div className="flex items-center gap-2">
+          {client.deleted_at ? (
+            <Button variant="outline" size="sm" onClick={handleRestore}><IconArchiveOff className="size-4 mr-1" />Restore</Button>
+          ) : (
+            <>
+              <Button variant="outline" size="sm" onClick={() => setShowEdit(true)}><IconPencil className="size-4 mr-1" />Edit</Button>
+              <Button variant="outline" size="sm" onClick={() => setShowDelete(true)} className="text-destructive hover:text-destructive">
+                {hasTimeHistory ? <IconArchive className="size-4 mr-1" /> : <IconTrash className="size-4 mr-1" />}
+                {hasTimeHistory ? 'Archive' : 'Delete'}
+              </Button>
+            </>
+          )}
+        </div>
       </div>
+
+      <EditClientDialog
+        open={showEdit}
+        client={{
+          id: client.id,
+          company_name: client.company_name,
+          contact_name: client.contact_name,
+          contact_email: client.contact_email,
+          deal_type: client.deal_type,
+          rate_nok: client.rate_nok,
+          rate_description: client.rate_description,
+          hours_commitment: client.hours_commitment,
+          status: client.status,
+          notes: client.notes,
+        }}
+        onSaved={() => { setShowEdit(false); fetchAll(); }}
+        onCancel={() => setShowEdit(false)}
+      />
+      <DeleteClientDialog
+        open={showDelete}
+        companyName={client.company_name}
+        hasTimeHistory={hasTimeHistory}
+        entryCount={totals.entry_count}
+        totalHours={totals.total_hours}
+        projectCount={projects.length}
+        onConfirm={handleDeleteClient}
+        onCancel={() => setShowDelete(false)}
+      />
 
       <div className="border-b">
         {(['overview', 'projects', 'tasks', 'notes'] as Tab[]).map(t => (

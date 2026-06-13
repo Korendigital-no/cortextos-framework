@@ -1,12 +1,14 @@
 import { NextRequest } from 'next/server';
 import { db } from '@/lib/db';
-import { projectBelongsToClient } from '@/lib/crm-client-auth';
+import { projectBelongsToClient, clientIsActive } from '@/lib/crm-client-auth';
 import { normalizeBillable } from '@/lib/billable';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id: clientId } = await params;
+  // Write gate: no logging time against a missing or archived client.
+  if (!clientIsActive(clientId)) return Response.json({ error: 'Client not found or archived' }, { status: 404 });
   const body = await request.json();
   const { description, hours, date, project_id, billable } = body;
 
