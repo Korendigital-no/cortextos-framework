@@ -323,4 +323,35 @@ describe('action-gate: config-change auto-enforce + catastrophic (interlock via 
     expect(d.allow).toBe(false);          // config-change is catastrophic ⇒ fail-closed on error
     expect(d.error).toBe(true);
   });
+
+  function writeAgentConfig(rules: { always_ask: string[]; never_ask: string[] }) {
+    const dir = join(testDir, 'orgs', ORG, 'agents', AGENT);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ approval_rules: rules }));
+  }
+
+  it('config-change is UN-WAIVABLE: agent never_ask cannot waive it under enforce', () => {
+    writeContext({ action_gate_mode: 'enforce', action_gate_enforce: ['external-comms'], owner_telegram_chat_ids: [OWNER] });
+    writeAgentConfig({ always_ask: ['external-comms'], never_ask: ['config-change'] }); // attempt to self-waive
+    const d = evaluateGate({ paths, frameworkRoot: testDir, org: ORG, agent: AGENT, descriptor: writeConfig });
+    expect(d.allow).toBe(false); // never_ask ignored for the anchor
+  });
+
+  it('config-change is UN-WAIVABLE: agent always_ask omitting it (old defaults) still blocks under enforce', () => {
+    writeContext({ action_gate_mode: 'enforce', action_gate_enforce: ['external-comms'], owner_telegram_chat_ids: [OWNER] });
+    writeAgentConfig({ always_ask: ['external-comms', 'data-deletion'], never_ask: [] }); // no config-change
+    const d = evaluateGate({ paths, frameworkRoot: testDir, org: ORG, agent: AGENT, descriptor: writeConfig });
+    expect(d.allow).toBe(false); // always_ask omission ignored for the anchor
+  });
+});
+
+describe('action-gate: Write/Edit content-bound fingerprint (P2, for Doc 3)', () => {
+  it('same path + different content ⇒ different fp (an approved write cannot be re-spent for a new payload)', () => {
+    const p = 'orgs/x/agents/y/config.json';
+    const fpA = fingerprint('config-change', { kind: 'write', path: p, content: 'benign' });
+    const fpB = fingerprint('config-change', { kind: 'write', path: p, content: 'MALICIOUS' });
+    expect(fpA).not.toBe(fpB);
+    // and stable for the same content
+    expect(fingerprint('config-change', { kind: 'write', path: p, content: 'benign' })).toBe(fpA);
+  });
 });

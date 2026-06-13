@@ -67,6 +67,22 @@ async function gateBusAction(descriptor: ActionDescriptor): Promise<void> {
   if (!env.org || !env.agentName || !env.frameworkRoot) return; // cannot gate without context → allow
   const paths = resolvePaths(env.agentName, env.instanceId, env.org, env.ctxRoot);
 
+  // Env-trust note (the honest Phase-1 limit): Surface A reads its config from
+  // frameworkRoot, which is env-derived (CTX_FRAMEWORK_ROOT) and thus
+  // agent-settable on a shared uid. An agent that points frameworkRoot at a
+  // config-less dir can null this in-process gate. That bypass is structurally
+  // closed by Surface B (Doc 3's PreToolUse hook), which classifies the Bash
+  // COMMAND STRING (`cortextos bus send-telegram …`) independent of env, before
+  // the process runs. As a cheap visibility win, emit a `gate_unconfigured`
+  // signal when the org context is absent at frameworkRoot, so an env-spoof to a
+  // config-less root leaves a trace rather than passing silently.
+  try {
+    if (!existsSync(join(env.frameworkRoot, 'orgs', env.org, 'context.json'))) {
+      logEvent(paths, env.agentName, env.org, 'action', 'gate_unconfigured', 'warning',
+        JSON.stringify({ kind: descriptor.kind, framework_root: env.frameworkRoot }));
+    }
+  } catch { /* best-effort */ }
+
   const decision = evaluateGate({
     paths, frameworkRoot: env.frameworkRoot, org: env.org, agent: env.agentName, descriptor,
   });

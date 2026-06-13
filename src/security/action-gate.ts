@@ -42,7 +42,11 @@ import { findApproval, consumeApproval, writePendingApproval } from './approval-
 export type ActionDescriptor =
   | { kind: 'telegram'; to: string; text: string; mediaType?: 'photo' | 'document' | null; filePath?: string }
   | { kind: 'bash'; command: string }
-  | { kind: 'write' | 'edit'; path: string }
+  // `content` (the bytes being written) binds the approval to a specific payload —
+  // Doc 3's Write/Edit hook populates it so an approved benign write to a path
+  // cannot be spent by a different payload to the same path (P2). Optional for
+  // callers that only have the path.
+  | { kind: 'write' | 'edit'; path: string; content?: string }
   | { kind: 'bus-command'; subcommand: string; detail?: string };
 
 /**
@@ -158,7 +162,9 @@ export function fingerprint(category: ApprovalCategory, d: ActionDescriptor): st
       break;
     case 'write':
     case 'edit':
-      norm = `${d.kind}\n${d.path}`;
+      // bind the path AND the content hash (when present) so an approval for one
+      // payload to a path cannot be spent by a different payload to the same path.
+      norm = `${d.kind}\n${d.path}\n${d.content !== undefined ? sha256(d.content) : ''}`;
       break;
     case 'bus-command':
       norm = `bus\n${d.subcommand}\n${d.detail ?? ''}`;
@@ -287,10 +293,18 @@ export function evaluateGate(input: GateInput): GateDecision {
     return errorDecision(descriptor, config.ownerChatIds, 'policy-load');
   }
 
-  if (policy.never_ask.includes(category)) return { allow: true };
-  if (!policy.always_ask.includes(category)) {
-    // Not a gated category for THIS agent — log-only.
-    return { allow: true, soft: true, category, wouldBlockReason: `${category} not in always_ask` };
+  // config-change is the gate's SELF-PROTECTION anchor and is UN-WAIVABLE: it is
+  // always gated regardless of the agent's MUTABLE approval_rules. Subjecting it
+  // to agent policy would be circular — an injected agent could add
+  // never_ask:['config-change'] (or ship old defaults that omit it from
+  // always_ask) and then self-resolve / rewrite policy / forge an approval row.
+  // Other categories consult the agent policy (safe because config.json writes are
+  // themselves config-change-gated — the #1↔#8 interlock).
+  if (category !== 'config-change') {
+    if (policy.never_ask.includes(category)) return { allow: true };
+    if (!policy.always_ask.includes(category)) {
+      return { allow: true, soft: true, category, wouldBlockReason: `${category} not in always_ask` };
+    }
   }
 
   // 4) Category IS gated for this agent → bind to an approval.

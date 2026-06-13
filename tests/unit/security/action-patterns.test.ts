@@ -111,6 +111,14 @@ describe('action-patterns: classifyBashSubcommand', () => {
     expect(classifyBashSubcommand("printf y >> '.env'").category).toBe('config-change');
   });
 
+  it('copy/move/link ONTO a trust-anchor path is config-change (cp/mv/rsync/ln)', () => {
+    expect(classifyBashSubcommand('cp /tmp/evil orgs/x/agents/y/config.json').category).toBe('config-change');
+    expect(classifyBashSubcommand('mv /tmp/forged orgs/x/approvals/resolved/appr_1.json').category).toBe('config-change');
+    expect(classifyBashSubcommand('rsync -a /tmp/x orgs/x/agents/y/.claude/settings.json').category).toBe('config-change');
+    // moving a code file is NOT config-change
+    expect(classifyBashSubcommand('mv src/a.ts src/b.ts').category).toBeNull();
+  });
+
   it('ordinary commands and code writes are ALLOW', () => {
     for (const cmd of ['ls -la', 'npm test', 'git status', 'echo hi > src/foo.ts', 'cat README.md', 'node dist/cli.js bus check-inbox']) {
       expect(classifyBashSubcommand(cmd).category, cmd).toBeNull();

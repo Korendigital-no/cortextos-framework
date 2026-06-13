@@ -225,6 +225,17 @@ export function classifyBashSubcommand(sub: string, opts: BashClassifyOptions = 
   if (redirectMatch && isConfigChangePath(stripQuotes(redirectMatch[1]))) {
     return { category: 'config-change', catastrophic: true, label: 'shell-write-config' };
   }
+  // copy/move/link/sync a file ONTO a trust-anchor path — same class as
+  // redirection (e.g. `mv /tmp/x .../approvals/resolved/y.json`, `cp evil
+  // .../config.json`). The destination is the last non-flag operand.
+  const copyMatch = s.match(/\b(cp|mv|install|rsync|ln)\b\s+(.*)$/i);
+  if (copyMatch) {
+    const operands = copyMatch[2].split(/\s+/).filter(t => t && !t.startsWith('-')).map(stripQuotes);
+    const dest = operands[operands.length - 1];
+    if (dest && isConfigChangePath(dest)) {
+      return { category: 'config-change', catastrophic: true, label: 'shell-copy-config' };
+    }
+  }
 
   // --- self-CLI subversion: an agent shelling a GATED bus subcommand directly ---
   // (e.g. `CTX_AGENT_NAME=dashboard cortextos bus update-approval X approved` to
