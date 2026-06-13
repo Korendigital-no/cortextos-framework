@@ -21,7 +21,7 @@
  */
 
 import { createHash } from 'crypto';
-import { existsSync, readFileSync, statSync } from 'fs';
+import { readFileSync, statSync } from 'fs';
 import type { ApprovalCategory, BusPaths } from '../types/index.js';
 import {
   ALLOW,

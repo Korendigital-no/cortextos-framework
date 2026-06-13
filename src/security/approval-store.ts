@@ -11,7 +11,7 @@
  * listApprovals / the dashboard / update-approval all see them.
  */
 
-import { existsSync, readdirSync, readFileSync, renameSync } from 'fs';
+import { readdirSync, readFileSync, renameSync } from 'fs';
 import { join } from 'path';
 import type { Approval, ApprovalCategory, BusPaths } from '../types/index.js';
 import { atomicWriteSync, ensureDir } from '../utils/atomic.js';

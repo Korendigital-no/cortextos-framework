@@ -225,6 +225,24 @@ export function extractTelegramChatId(sub: string): string | null {
   return m ? m[1] : null;
 }
 
+/**
+ * True if `command` contains a URL whose HOST is exactly `host`, matched at a proper
+ * host boundary — NOT a bare substring (CodeQL js/incomplete-url-substring-sanitization).
+ * The host must follow `scheme://` and terminate at a host/path/query boundary, so:
+ *   - `https://api.telegram.org.evil.com/…`  → NO match (longer host; `.` after the org)
+ *   - `https://evil.com/?x=api.telegram.org` → NO match (substring is in the query, not
+ *     the authority)
+ *   - `https://api.telegram.org/bot…`        → match
+ * This matters MOST for the telegram owner-exemption (a POSITIVE allow): a substring
+ * match would let `api.telegram.org.evil.com?chat_id=<owner>` be exempted. `host` may
+ * carry a leading path segment (e.g. `slack.com/api`); the boundary is enforced after it.
+ */
+export function urlHasHost(command: string, host: string): boolean {
+  const esc = host.replace(/[.]/g, '\\.').replace(/\//g, '\\/');
+  // require an explicit scheme so the authority is unambiguous; end at a host boundary.
+  return new RegExp('https?:\\/\\/' + esc + "(?=[\\/:?#\"'\\s]|$)", 'i').test(command);
+}
+
 export interface BashClassifyOptions {
   scratchPrefixes?: string[];
   /** Owner Telegram chat ids — a telegram-API curl to one of these is exempt
@@ -291,7 +309,12 @@ export function classifyBashSubcommand(sub: string, opts: BashClassifyOptions = 
   // --- external-comms / financial (host checks are CASE-INSENSITIVE — hosts are
   // lowercase, so an UPPERCASE url like API.STRIPE.COM must not evade) ---
   if (/\b(curl|wget|http|https|fetch)\b/.test(lower)) {
-    if (lower.includes(TELEGRAM_API_HOST)) {
+    // Host checks are anchored to the URL authority (urlHasHost), NOT bare substring,
+    // so `api.telegram.org.evil.com` / `evil.com?x=api.telegram.org` cannot match — the
+    // telegram match feeds the owner-EXEMPTION (a positive allow), where a substring
+    // match was an incomplete-sanitization bypass (CodeQL high). `s` (original case) is
+    // matched case-insensitively by the helper.
+    if (urlHasHost(s, TELEGRAM_API_HOST)) {
       const chatId = extractTelegramChatId(s);
       const owners = opts.ownerChatIds;
       // Owner-ness undeterminable (no owner list) → ALLOW (never freeze the owner
@@ -300,10 +323,10 @@ export function classifyBashSubcommand(sub: string, opts: BashClassifyOptions = 
       if (chatId !== null && owners.includes(chatId)) return ALLOW; // owner — exempt
       return { category: 'external-comms', catastrophic: true, label: 'telegram-nonowner' };
     }
-    if (FINANCIAL_HOSTS.some(h => lower.includes(h))) {
+    if (FINANCIAL_HOSTS.some(h => urlHasHost(s, h))) {
       return { category: 'financial', catastrophic: true, label: 'financial-endpoint' };
     }
-    if (SEND_ENDPOINT_HOSTS.some(h => lower.includes(h))) {
+    if (SEND_ENDPOINT_HOSTS.some(h => urlHasHost(s, h))) {
       return { category: 'external-comms', catastrophic: true, label: 'external-send-endpoint' };
     }
   }
