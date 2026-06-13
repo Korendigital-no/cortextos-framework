@@ -258,10 +258,38 @@ export function urlHasHost(command: string, host: string): boolean {
       continue; // not a valid URL token
     }
     if (parsed.hostname.toLowerCase() !== wantHost) continue;
-    if (wantPath && !parsed.pathname.toLowerCase().startsWith(wantPath)) continue;
+    if (wantPath) {
+      // Enforce a path SEGMENT boundary so `slack.com/api` does not match
+      // `slack.com/apix` (over-block); accept exactly the prefix or prefix + '/'.
+      const pn = parsed.pathname.toLowerCase();
+      if (pn !== wantPath && !pn.startsWith(wantPath + '/')) continue;
+    }
     return true;
   }
   return false;
+}
+
+/**
+ * Every distinct URL host (parsed authority) appearing as a separate token in a
+ * command. Used to enforce that the owner-Telegram exemption applies ONLY when
+ * api.telegram.org is the SOLE external URL — curl/wget accept multiple URLs and
+ * `-d` posts to ALL of them, so an owner-Telegram URL co-located with ANY other
+ * http(s) URL (known send/financial OR unknown) is an exfil sink, never exempt.
+ */
+export function urlHosts(command: string): string[] {
+  const hosts: string[] = [];
+  for (const token of command.split(/[\s'"`|;&<>()]+/)) {
+    const lower = token.toLowerCase();
+    if (!lower.startsWith('http://') && !lower.startsWith('https://')) continue;
+    try {
+      hosts.push(new URL(token).hostname.toLowerCase());
+    } catch {
+      // a token that looks like a URL but won't parse — treat as a NON-telegram
+      // external target (conservative: it prevents a malformed-URL exemption bypass).
+      hosts.push(' unparseable');
+    }
+  }
+  return hosts;
 }
 
 export interface BashClassifyOptions {
@@ -346,8 +374,14 @@ export function classifyBashSubcommand(sub: string, opts: BashClassifyOptions = 
       return { category: 'financial', catastrophic: true, label: 'financial-endpoint' };
     }
     if (telegram) {
-      // Owner-exemption ONLY when telegram is the sole external target (no send host).
-      if (!send) {
+      // Owner-exemption applies ONLY when api.telegram.org is the SOLE external URL in
+      // the sub. ANY other http(s) URL — a known send/financial host OR an UNKNOWN host
+      // (attacker.example) — co-located in the same curl is an exfil sink (-d posts to
+      // ALL URLs), so it can never be owner-exempted. `!send` alone missed the unknown-
+      // host case (codex): count ALL parsed URL hosts, exempt only when every one is
+      // telegram.
+      const onlyTelegram = urlHosts(s).every(h => h === TELEGRAM_API_HOST);
+      if (onlyTelegram) {
         const owners = opts.ownerChatIds;
         // Owner-ness undeterminable (no owner list) → ALLOW (never freeze the owner
         // control channel on an unresolvable owner list; see action-gate carve-out).
@@ -355,8 +389,8 @@ export function classifyBashSubcommand(sub: string, opts: BashClassifyOptions = 
         const chatId = extractTelegramChatId(s);
         if (chatId !== null && owners.includes(chatId)) return ALLOW; // owner — exempt
       }
-      // non-owner telegram, OR telegram co-located with an exfil endpoint → external-comms.
-      return { category: 'external-comms', catastrophic: true, label: send ? 'telegram-colocated-send' : 'telegram-nonowner' };
+      // non-owner telegram, OR telegram co-located with ANY other URL → external-comms.
+      return { category: 'external-comms', catastrophic: true, label: onlyTelegram ? 'telegram-nonowner' : 'telegram-colocated-exfil' };
     }
     if (send) {
       return { category: 'external-comms', catastrophic: true, label: 'external-send-endpoint' };
