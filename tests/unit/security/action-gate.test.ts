@@ -32,8 +32,10 @@ describe('action-gate: classifyAction', () => {
     expect(classifyAction(send('999'), { ownerChatIds: undefined }).category).toBeNull();
   });
 
-  it('write/edit to a config path ⇒ config-change; to code ⇒ ALLOW', () => {
-    expect(classifyAction({ kind: 'write', path: 'orgs/x/agents/y/config.json' }).category).toBe('config-change');
+  it('write/edit to a config path ⇒ config-change (catastrophic); to code ⇒ ALLOW', () => {
+    const w = classifyAction({ kind: 'write', path: 'orgs/x/agents/y/config.json' });
+    expect(w.category).toBe('config-change');
+    expect(w.catastrophic).toBe(true); // fail-CLOSED on gate error (#1↔#8 interlock)
     expect(classifyAction({ kind: 'edit', path: '.env' }).category).toBe('config-change');
     expect(classifyAction({ kind: 'write', path: 'src/foo.ts' }).category).toBeNull();
   });
@@ -277,5 +279,48 @@ describe('action-gate: OWNER-send fail-OPEN carve-out (the owner channel must ne
     const dNon = evaluateGate({ paths, frameworkRoot: testDir, org: ORG, agent: AGENT, descriptor: toAttacker });
     expect(dOwner.allow).toBe(true);
     expect(dNon.allow).toBe(true); // undeterminable owner ⇒ not a positive non-owner match ⇒ fail-open
+  });
+
+  it('test-5: owner list UNCONFIGURED (valid context, no owner field) + non-owner send in ENFORCE ⇒ ALLOW (never freeze on rollout)', () => {
+    // the prod-edge: a live org without owner_telegram_chat_ids must NOT freeze
+    // every telegram send at enforce flip. Unconfigured ⇒ undefined ⇒ allow.
+    writeContext(ctxJson({ action_gate_mode: 'enforce', action_gate_enforce: ['external-comms'] }));
+    const d = evaluateGate({ paths, frameworkRoot: testDir, org: ORG, agent: AGENT, descriptor: toAttacker });
+    expect(d.allow).toBe(true);
+  });
+});
+
+describe('action-gate: config-change auto-enforce + catastrophic (interlock via real fs)', () => {
+  let testDir: string;
+  let paths: BusPaths;
+  function writeContext(obj: Record<string, unknown>) {
+    const dir = join(testDir, 'orgs', ORG);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'context.json'), ctxJson(obj));
+  }
+  function corruptAgentConfig() {
+    const dir = join(testDir, 'orgs', ORG, 'agents', AGENT);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'config.json'), 'not json {');
+  }
+  beforeEach(() => { testDir = mkdtempSync(join(tmpdir(), 'gate-cc-')); paths = resolvePaths(AGENT, 'default', ORG, testDir); });
+  afterEach(() => rmSync(testDir, { recursive: true, force: true }));
+
+  const writeConfig: ActionDescriptor = { kind: 'write', path: join('orgs', ORG, 'agents', AGENT, 'config.json') };
+
+  it('#3: config-change is force-enforced when ANY category is enforced (else self-resolve hole)', () => {
+    // enforce list lists ONLY external-comms; config-change must still block.
+    writeContext({ action_gate_mode: 'enforce', action_gate_enforce: ['external-comms'], owner_telegram_chat_ids: [OWNER] });
+    const d = evaluateGate({ paths, frameworkRoot: testDir, org: ORG, agent: AGENT, descriptor: writeConfig });
+    expect(d.allow).toBe(false);          // blocked despite not being in the explicit enforce list
+    expect(d.category).toBe('config-change');
+  });
+
+  it('#4: corrupt config + a config-change action ⇒ fail-CLOSED (no manufacture bypass via fail-open)', () => {
+    writeContext({ action_gate_mode: 'enforce', action_gate_enforce: ['external-comms'], owner_telegram_chat_ids: [OWNER] });
+    corruptAgentConfig(); // resolveApprovalPolicy throws ⇒ error path
+    const d = evaluateGate({ paths, frameworkRoot: testDir, org: ORG, agent: AGENT, descriptor: writeConfig });
+    expect(d.allow).toBe(false);          // config-change is catastrophic ⇒ fail-closed on error
+    expect(d.error).toBe(true);
   });
 });

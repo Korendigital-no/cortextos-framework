@@ -38,8 +38,14 @@ export interface ApprovalPolicy {
 export interface ActionGateConfig {
   mode: 'off' | 'shadow' | 'enforce';
   enforce: ApprovalCategory[];
-  /** Trusted owner Telegram chat ids (control-channel exemption anchor). */
-  ownerChatIds: string[];
+  /**
+   * Trusted owner Telegram chat ids (control-channel exemption anchor).
+   * `undefined` ⇒ owner-ness is UNDETERMINABLE (no owners configured) ⇒ telegram
+   * sends classify ALLOW (never freeze the owner channel). NEVER `[]` — an empty
+   * array would mean "every send is non-owner", freezing the operator path on an
+   * unconfigured org (the exact prod-edge that would bite at enforce flip).
+   */
+  ownerChatIds?: string[];
 }
 
 function readJson(path: string): Record<string, unknown> {
@@ -89,11 +95,20 @@ export function resolveActionGateConfig(frameworkRoot: string, org: string): Act
   const rawMode = ctx.action_gate_mode;
   const mode: ActionGateConfig['mode'] =
     rawMode === 'off' || rawMode === 'enforce' ? rawMode : 'shadow';
-  const enforce = Array.isArray(ctx.action_gate_enforce)
+  const rawEnforce = Array.isArray(ctx.action_gate_enforce)
     ? (ctx.action_gate_enforce as ApprovalCategory[])
     : [];
-  const ownerChatIds = Array.isArray(ctx.owner_telegram_chat_ids)
+  // The #1↔#8 interlock requires config-change to be enforced whenever ANY
+  // category is enforced — otherwise an agent could trip a block, then resolve
+  // its own approval through an UN-enforced config-change (the approval resolver
+  // would be the one unprotected category). Force it in when enforcing.
+  const enforce = mode === 'enforce'
+    ? Array.from(new Set<ApprovalCategory>([...rawEnforce, 'config-change']))
+    : rawEnforce;
+  // Unconfigured/empty owner list ⇒ undefined (undeterminable ⇒ never freeze),
+  // NEVER [] (which would make every send a non-owner send → freeze at enforce).
+  const ownerChatIds = Array.isArray(ctx.owner_telegram_chat_ids) && ctx.owner_telegram_chat_ids.length > 0
     ? (ctx.owner_telegram_chat_ids as unknown[]).map(String)
-    : [];
+    : undefined;
   return { mode, enforce, ownerChatIds };
 }

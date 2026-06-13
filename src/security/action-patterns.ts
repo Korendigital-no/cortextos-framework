@@ -121,8 +121,14 @@ export function extractTelegramChatId(sub: string): string | null {
 
 export interface BashClassifyOptions {
   scratchPrefixes?: string[];
-  /** Owner Telegram chat ids — a telegram-API curl to one of these is exempt (null). */
+  /** Owner Telegram chat ids — a telegram-API curl to one of these is exempt
+   * (null). `undefined` ⇒ owner-ness undeterminable ⇒ allow (never freeze). */
   ownerChatIds?: string[];
+}
+
+/** Strip one surrounding layer of single/double quotes from a shell token. */
+function stripQuotes(token: string): string {
+  return token.replace(/^["']/, '').replace(/["']$/, '');
 }
 
 /**
@@ -136,19 +142,23 @@ export function classifyBashSubcommand(sub: string, opts: BashClassifyOptions = 
   const lower = s.toLowerCase();
 
   // --- data-deletion (catastrophic: irreversible) ---
-  // rm with recursive/force against a non-scratch path
-  const rmMatch = s.match(/\brm\b\s+(-[a-z]*\s+)*(.+)/i);
-  if (/\brm\b/.test(s) && /\brm\b\s+(-[a-z]*[rf][a-z]*\s+)/i.test(s)) {
-    // gather the operands (everything after the flags) — if ANY operand is
-    // non-scratch, treat as catastrophic data-deletion.
-    const operands = rmMatch ? rmMatch[2].split(/\s+/).filter(t => t && !t.startsWith('-')) : [];
-    const allScratch = operands.length > 0 && operands.every(op => isScratchPath(op, opts.scratchPrefixes));
-    if (!allScratch) {
-      return { category: 'data-deletion', catastrophic: true, label: 'rm-recursive-nonscratch' };
+  // rm with a recursive/force flag — short (-rf/-r/-f/-R/-d, in any combination)
+  // OR long (--recursive/--force/--dir) — against a NON-scratch operand. Operand
+  // quoting is stripped before the scratch check (`rm -rf "config.json"` evades a
+  // naive matcher otherwise).
+  const rmm = s.match(/\brm\b\s+(.*)$/i);
+  if (rmm) {
+    const tokens = rmm[1].split(/\s+/).filter(Boolean);
+    const destructive = tokens.some(t =>
+      /^-[a-zA-Z]*[rRfd]/.test(t) || t === '--recursive' || t === '--force' || t === '--dir');
+    if (destructive) {
+      const operands = tokens.filter(t => !t.startsWith('-')).map(stripQuotes);
+      const allScratch = operands.length > 0 && operands.every(op => isScratchPath(op, opts.scratchPrefixes));
+      if (!allScratch) return { category: 'data-deletion', catastrophic: true, label: 'rm-recursive-nonscratch' };
+      return ALLOW; // scratch-only delete
     }
-    return ALLOW; // scratch-only delete
   }
-  if (/\bgit\s+push\b/.test(lower) && /(--force\b|--force-with-lease|\+\w|-f\b)/.test(s)) {
+  if (/\bgit\s+push\b/.test(lower) && /(--force\b|--force-with-lease|-f\b)/.test(lower)) {
     return { category: 'data-deletion', catastrophic: true, label: 'git-push-force' };
   }
   if (/\bdrop\s+(table|database|schema)\b/i.test(s)) {
@@ -161,28 +171,33 @@ export function classifyBashSubcommand(sub: string, opts: BashClassifyOptions = 
     return { category: 'data-deletion', catastrophic: true, label: 'sql-truncate' };
   }
 
-  // --- external-comms / financial (depends on endpoint) ---
-  if (/\b(curl|wget|http|https)\b/.test(lower) || /\bfetch\b/.test(lower)) {
-    if (s.includes(TELEGRAM_API_HOST)) {
+  // --- external-comms / financial (host checks are CASE-INSENSITIVE — hosts are
+  // lowercase, so an UPPERCASE url like API.STRIPE.COM must not evade) ---
+  if (/\b(curl|wget|http|https|fetch)\b/.test(lower)) {
+    if (lower.includes(TELEGRAM_API_HOST)) {
       const chatId = extractTelegramChatId(s);
       const owners = opts.ownerChatIds;
-      if (owners === undefined) {
-        // Owner-ness undeterminable (no owner list) → unknown → ALLOW (never freeze
-        // the owner channel on an unresolvable owner list; see action-gate owner carve-out).
-        return ALLOW;
-      }
-      if (chatId !== null && owners.includes(chatId)) {
-        return ALLOW; // owner control channel — exempt
-      }
-      // Non-owner telegram send (or unparseable chat id with a known owner list) → external, catastrophic.
+      // Owner-ness undeterminable (no owner list) → ALLOW (never freeze the owner
+      // channel on an unresolvable owner list; see action-gate owner carve-out).
+      if (owners === undefined) return ALLOW;
+      if (chatId !== null && owners.includes(chatId)) return ALLOW; // owner — exempt
       return { category: 'external-comms', catastrophic: true, label: 'telegram-nonowner' };
     }
-    if (FINANCIAL_HOSTS.some(h => s.includes(h))) {
+    if (FINANCIAL_HOSTS.some(h => lower.includes(h))) {
       return { category: 'financial', catastrophic: true, label: 'financial-endpoint' };
     }
-    if (SEND_ENDPOINT_HOSTS.some(h => s.includes(h))) {
+    if (SEND_ENDPOINT_HOSTS.some(h => lower.includes(h))) {
       return { category: 'external-comms', catastrophic: true, label: 'external-send-endpoint' };
     }
+  }
+
+  // --- our own CLI: `cortextos bus send-telegram <chat> …` to a NON-owner ---
+  const stMatch = s.match(/\bbus\s+send-telegram\s+(-?\d+)/);
+  if (stMatch) {
+    const owners = opts.ownerChatIds;
+    if (owners === undefined) return ALLOW;          // undeterminable ⇒ never freeze
+    if (owners.includes(stMatch[1])) return ALLOW;   // owner — exempt
+    return { category: 'external-comms', catastrophic: true, label: 'cli-send-telegram-nonowner' };
   }
 
   // --- deployment (NOT catastrophic — reversible-ish; fails open on gate error) ---
@@ -202,20 +217,23 @@ export function classifyBashSubcommand(sub: string, opts: BashClassifyOptions = 
     return { category: 'deployment', catastrophic: false, label: 'pm2-restart' };
   }
 
-  // --- config-change (writing secrets/settings via shell redirection or tee) ---
-  // e.g.  echo X > .env   |   tee ~/.claude/settings.json   |   cat > config.json
+  // --- config-change (CATASTROPHIC — trust-anchor writes fail-CLOSED on gate
+  // error so a corrupt config can't become a fail-open manufacture bypass, the
+  // #1↔#8 interlock). Writing secrets/settings via shell redirection or tee; the
+  // redirect target's quotes are stripped (`> "config.json"` must not evade). ---
   const redirectMatch = s.match(/(?:>>?|\btee\b\s+(?:-a\s+)?)\s*([^\s|;&]+)/);
-  if (redirectMatch && isConfigChangePath(redirectMatch[1])) {
-    return { category: 'config-change', catastrophic: false, label: 'shell-write-config' };
+  if (redirectMatch && isConfigChangePath(stripQuotes(redirectMatch[1]))) {
+    return { category: 'config-change', catastrophic: true, label: 'shell-write-config' };
   }
 
   // --- self-CLI subversion: an agent shelling a GATED bus subcommand directly ---
   // (e.g. `CTX_AGENT_NAME=dashboard cortextos bus update-approval X approved` to
-  // spoof the authority exemption, or `cortextos bus crm-contacts delete X`).
+  // forge an authority identity, or `cortextos bus crm-contacts delete X`).
   // Catching it in the shared bash classifier closes the spoof on the tool-call
-  // surface (Doc 3) — Surface A's exemption is for the in-process commander path.
+  // surface (Doc 3). update-approval is config-change (catastrophic): resolving an
+  // approval on a gate error must fail closed, never let a manufacture slip.
   if (/\bbus\s+update-approval\b/.test(lower)) {
-    return { category: 'config-change', catastrophic: false, label: 'cli-update-approval' };
+    return { category: 'config-change', catastrophic: true, label: 'cli-update-approval' };
   }
   if (/\bbus\s+crm-\w+\s+delete\b/.test(lower)) {
     return { category: 'data-deletion', catastrophic: true, label: 'cli-crm-delete' };

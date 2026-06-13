@@ -49,26 +49,22 @@ import type { Priority, Task, TaskStatus, EventCategory, EventSeverity, Approval
  * log command (SEC-INJECTION-v1 §9 — the log line must not become an injection sink).
  */
 /**
- * Caller identities exempt from Surface A gating — human-authority + daemon
- * control surfaces, not autonomous agents (see gateBusAction body). 'dashboard'
- * is the auth-gated operator UI that resolves approvals; 'system' is the daemon.
+ * Surface A gate. Deliberately has NO caller-identity exemption: CTX_AGENT_NAME is
+ * agent-settable on a shared uid, so trusting it for an exemption would itself be a
+ * spoofable bypass (`CTX_AGENT_NAME=dashboard cortextos bus …`). Instead the gate
+ * NEVER-FREEZE properties carry the load:
+ *  - the OWNER control channel is exempt by classification (owner-Telegram ⇒ null),
+ *    not by caller identity — so the operator path is never frozen;
+ *  - approval RESOLUTION needs no exemption here: the dashboard resolves via
+ *    spawnSync of `update-approval.sh` (no PreToolUse hook) reaching the ungated
+ *    commander handler directly; an AGENT can only invoke `update-approval` through
+ *    a Bash tool call, which is Doc 3's surface (the bash classifier maps it to
+ *    config-change). So update-approval is intentionally NOT gated in this
+ *    in-process surface — only genuine agent external/destructive actions are.
  */
-const GATE_EXEMPT_CALLERS = new Set(['dashboard', 'system']);
-
 async function gateBusAction(descriptor: ActionDescriptor): Promise<void> {
   const env = resolveEnv();
   if (!env.org || !env.agentName || !env.frameworkRoot) return; // cannot gate without context → allow
-  // Human-authority / daemon control surfaces are NOT autonomous-agent action
-  // surfaces and must never be gated — gating them would FREEZE the system the
-  // gate protects. The dashboard (behind operator auth) RESOLVES approvals by
-  // shelling `update-approval` with CTX_AGENT_NAME='dashboard'; 'system' is the
-  // daemon's own sender. Blocking either would wedge approval resolution / the
-  // control plane (the same never-freeze invariant as the owner channel). A real
-  // agent that tries to SPOOF this identity must do so via a bash command
-  // (`CTX_AGENT_NAME=dashboard cortextos bus update-approval …`) — that is a Bash
-  // tool call caught by Doc 3's classifier (a `cortextos bus <gated-subcommand>`
-  // pattern → its category), not a path this in-process commander handler exposes.
-  if (GATE_EXEMPT_CALLERS.has(env.agentName)) return;
   const paths = resolvePaths(env.agentName, env.instanceId, env.org, env.ctxRoot);
 
   const decision = evaluateGate({
@@ -1283,18 +1279,17 @@ busCommand
   .argument('<id>', 'Approval ID')
   .argument('<status>', 'Resolution: approved or denied')
   .argument('[note]', 'Resolution note')
-  .action(async (id: string, status: string, note?: string) => {
+  .action((id: string, status: string, note?: string) => {
     const validStatuses: ApprovalStatus[] = ['approved', 'rejected'];
     if (!validStatuses.includes(status as ApprovalStatus)) {
       console.error(`Invalid status '${status}'. Must be one of: approved, rejected`);
       process.exit(1);
     }
-    // Surface A gate (the #1 self-protection interlock): an AGENT resolving an
-    // approval via the CLI is the manufacture vector — resolving is the human's
-    // act (dashboard PATCH / orchestrator callback, which call updateApproval
-    // directly, NOT this CLI). Classified config-change; shadow logs, enforce
-    // blocks. create-approval (requesting) stays ungated.
-    await gateBusAction({ kind: 'bus-command', subcommand: 'update-approval', detail: `${id}:${status}` });
+    // NOTE: this in-process resolver is intentionally NOT gated here — the
+    // dashboard resolves via spawnSync (no hook) and must reach it ungated, while
+    // an AGENT can only invoke update-approval through a Bash tool call, which is
+    // gated on Doc 3's surface (bash classifier → config-change). Gating it here by
+    // CTX_AGENT_NAME would be a spoofable bypass. See gateBusAction header.
     const env = resolveEnv();
     const paths = resolvePaths(env.agentName, env.instanceId, env.org, env.ctxRoot);
     updateApproval(paths, id, status as ApprovalStatus, note);
@@ -3215,7 +3210,8 @@ crmActivities.command('delete')
   .description('Permanently delete an activity (requires --force; data deletion)')
   .argument('<id>')
   .option('--force', 'Confirm permanent deletion')
-  .action((id: string, opts: { force?: boolean }) => {
+  .action(async (id: string, opts: { force?: boolean }) => {
+    await gateBusAction({ kind: 'bus-command', subcommand: 'delete-activity', detail: id });
     const db = getCrmDb();
     if (!opts.force) {
       console.error(`Refusing to delete activity ${id} without --force. This permanently removes the row (data deletion). Re-run with --force to confirm.`);

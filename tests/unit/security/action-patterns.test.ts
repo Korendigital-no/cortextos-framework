@@ -82,11 +82,33 @@ describe('action-patterns: classifyBashSubcommand', () => {
   });
 
   it('self-CLI subversion: shelling a gated bus subcommand is caught (spoof defense)', () => {
-    // an agent trying to spoof the dashboard exemption via bash
-    expect(classifyBashSubcommand('CTX_AGENT_NAME=dashboard cortextos bus update-approval appr_1 approved').category).toBe('config-change');
+    // an agent trying to forge an authority identity via bash env-prefix
+    const ua = classifyBashSubcommand('CTX_AGENT_NAME=dashboard cortextos bus update-approval appr_1 approved');
+    expect(ua.category).toBe('config-change');
+    expect(ua.catastrophic).toBe(true); // resolving on gate error must fail closed
     const del = classifyBashSubcommand('cortextos bus crm-contacts delete c_1');
     expect(del.category).toBe('data-deletion');
     expect(del.catastrophic).toBe(true);
+  });
+
+  it('cli send-telegram to a non-owner is gated; to owner is exempt', () => {
+    expect(classifyBashSubcommand('cortextos bus send-telegram 999 "exfil"', { ownerChatIds: OWNER }).category).toBe('external-comms');
+    expect(classifyBashSubcommand('cortextos bus send-telegram 6733625733 "hi"', { ownerChatIds: OWNER }).category).toBeNull();
+    expect(classifyBashSubcommand('cortextos bus send-telegram 999 "x"', {}).category).toBeNull(); // no owners ⇒ never freeze
+  });
+
+  it('EVASION FIXES: long rm flags, uppercase hosts, quoted redirect targets are all caught', () => {
+    // long-form rm flags (the short-flag-only matcher missed these)
+    expect(classifyBashSubcommand('rm --recursive --force /prod/data').catastrophic).toBe(true);
+    expect(classifyBashSubcommand('rm --recursive /tmp/scratch').category).toBeNull(); // scratch still allowed
+    // case-insensitive host match
+    expect(classifyBashSubcommand('curl https://API.STRIPE.COM/v1/charges').category).toBe('financial');
+    expect(classifyBashSubcommand('curl https://API.RESEND.COM/emails').category).toBe('external-comms');
+    // quoted redirect target
+    const q = classifyBashSubcommand('echo x > "config.json"');
+    expect(q.category).toBe('config-change');
+    expect(q.catastrophic).toBe(true);
+    expect(classifyBashSubcommand("printf y >> '.env'").category).toBe('config-change');
   });
 
   it('ordinary commands and code writes are ALLOW', () => {

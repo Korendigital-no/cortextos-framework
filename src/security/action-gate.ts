@@ -51,11 +51,14 @@ export type ActionDescriptor =
  * approval is the manufacture vector, #1); CRM hard-deletes are data-deletion.
  */
 const BUS_SUBCOMMAND_CATEGORY: Record<string, { category: ApprovalCategory; catastrophic: boolean }> = {
-  'update-approval': { category: 'config-change', catastrophic: false },
+  // update-approval is config-change AND catastrophic: resolving an approval on a
+  // gate error must fail CLOSED (never let a manufacture slip — the #1↔#8 interlock).
+  'update-approval': { category: 'config-change', catastrophic: true },
   'delete-contact': { category: 'data-deletion', catastrophic: true },
   'delete-company': { category: 'data-deletion', catastrophic: true },
   'delete-deal': { category: 'data-deletion', catastrophic: true },
   'delete-document': { category: 'data-deletion', catastrophic: true },
+  'delete-activity': { category: 'data-deletion', catastrophic: true },
   'delete-client': { category: 'data-deletion', catastrophic: true },
 };
 
@@ -87,8 +90,11 @@ export function classifyAction(d: ActionDescriptor, opts: ClassifyOptions = {}):
       return classifyBash(d.command, { scratchPrefixes: opts.scratchPrefixes, ownerChatIds: opts.ownerChatIds });
     case 'write':
     case 'edit':
+      // config-change is catastrophic (fail-CLOSED on gate error): a corrupt
+      // config must not let a trust-anchor write (policy / approvals / owner-chat)
+      // slip via fail-open — the #1↔#8 interlock.
       return isConfigChangePath(d.path)
-        ? { category: 'config-change', catastrophic: false, label: `${d.kind}-config` }
+        ? { category: 'config-change', catastrophic: true, label: `${d.kind}-config` }
         : ALLOW;
     case 'bus-command': {
       const hit = BUS_SUBCOMMAND_CATEGORY[d.subcommand];
