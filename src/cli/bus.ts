@@ -3124,17 +3124,33 @@ crmDeals.command('list')
   });
 
 crmDeals.command('stale')
-  .description('Open deals with no touch in N days (default 7) — excludes closed deals and deals with a pending follow-up; a resolved follow-up counts as a touch')
+  .description('Open deals with no touch in N days (default 7) — excludes closed deals, deals with a pending follow-up, and deals on an intentional hold (snooze / "Q3 send"); a resolved follow-up counts as a touch')
   .option('--days <n>', 'Staleness window in days', (v) => parseInt(v, 10), 7)
   .action((opts: { days: number }) => {
     const db = getCrmDb();
     const days = Number.isFinite(opts.days) && opts.days > 0 ? opts.days : 7;
     const stale = crm.getStaleDeals(db, { days });
-    if (stale.length === 0) { console.log(`No stale deals (window: ${days}d).`); return; }
+    const heldCount = crm.getHeldDeals(db, { days }).length;
+    const heldNote = heldCount > 0 ? ` — ${heldCount} on intentional hold, suppressed (see 'crm-deals held')` : '';
+    if (stale.length === 0) { console.log(`No stale deals (window: ${days}d)${heldNote}.`); return; }
     for (const d of stale) {
       console.log(`${d.id}  ${String(d.days_stale).padStart(3)}d  last:${d.last_touch.substring(0, 10)}  ${d.stage.padEnd(12)}  ${d.title}`);
     }
-    console.log(`\n${stale.length} stale deal(s) (window: ${days}d)`);
+    console.log(`\n${stale.length} stale deal(s) (window: ${days}d)${heldNote}`);
+  });
+
+crmDeals.command('held')
+  .description('Deals that WOULD be stale but are on an intentional hold (explicit snooze, "hold until <date>", or a "Q3 send" tag) — shows when each resurfaces')
+  .option('--days <n>', 'Staleness window in days', (v) => parseInt(v, 10), 7)
+  .action((opts: { days: number }) => {
+    const db = getCrmDb();
+    const days = Number.isFinite(opts.days) && opts.days > 0 ? opts.days : 7;
+    const held = crm.getHeldDeals(db, { days });
+    if (held.length === 0) { console.log(`No deals on intentional hold (window: ${days}d).`); return; }
+    for (const d of held) {
+      console.log(`${d.id}  ${String(d.days_stale).padStart(3)}d quiet  holds-til:${d.held_until.substring(0, 10)}  ${d.stage.padEnd(12)}  ${d.title}`);
+    }
+    console.log(`\n${held.length} held deal(s) (window: ${days}d)`);
   });
 
 crmDeals.command('get').argument('<id>').action((id: string) => {
@@ -3162,13 +3178,28 @@ crmDeals.command('update').argument('<id>')
   .option('--value <nok>', 'Value in NOK', parseFloat)
   .option('--title <title>')
   .option('--notes <notes>')
-  .action((id: string, opts: { stage?: string; value?: number; title?: string; notes?: string }) => {
+  .option('--snooze-until <date>', 'Park the deal off the stale sweep until this date (ISO YYYY-MM-DD)')
+  .option('--clear-snooze', 'Clear an explicit snooze and re-enter the stale sweep')
+  .action((id: string, opts: { stage?: string; value?: number; title?: string; notes?: string; snoozeUntil?: string; clearSnooze?: boolean }) => {
     const db = getCrmDb();
-    const fields: Record<string, string | number | undefined> = {};
+    const fields: Record<string, string | number | null | undefined> = {};
     if (opts.stage !== undefined) fields.stage = opts.stage;
     if (opts.value !== undefined) fields.value_nok = opts.value;
     if (opts.title !== undefined) fields.title = opts.title;
     if (opts.notes !== undefined) fields.notes = opts.notes;
+    if (opts.clearSnooze) {
+      fields.snoozed_until = null;
+    } else if (opts.snoozeUntil !== undefined) {
+      // Validate against the same parser dealHoldUntil uses — otherwise an
+      // unparseable value (e.g. "next tuesday") is stored, Date.parse → NaN, and
+      // the hold silently never takes effect despite an "Updated" confirmation.
+      const iso = crm.parseHoldDate(opts.snoozeUntil);
+      if (!iso) {
+        console.error(`Invalid --snooze-until "${opts.snoozeUntil}". Use ISO YYYY-MM-DD or DD.MM.YYYY.`);
+        process.exit(1);
+      }
+      fields.snoozed_until = iso;
+    }
     crm.updateDeal(db, id, fields);
     console.log(`Updated ${id}`);
   });
