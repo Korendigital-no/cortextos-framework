@@ -3,7 +3,7 @@ import { spawnSync, execFileSync } from 'child_process';
 import { existsSync, readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { sendMessage, checkInbox, ackInbox } from '../bus/message.js';
-import { validateAgentName, validateTaskId } from '../utils/validate.js';
+import { validateAgentName, validateTaskId, VALID_APPROVAL_CATEGORIES } from '../utils/validate.js';
 import { createTask, updateTask, completeTask, claimTask, readTaskAudit, checkTaskDependencies, compactTasks, listTasks, checkStaleTasks, archiveTasks, checkHumanTasks } from '../bus/task.js';
 import type { MeasurementOutcome } from '../bus/measurement.js';
 import { saveOutput } from '../bus/save-output.js';
@@ -13,7 +13,8 @@ import { selfRestart, hardRestart, autoCommit, checkGoalStaleness, postActivity 
 import { createExperiment, runExperiment, evaluateExperiment, listExperiments, gatherContext, manageCycle, loadExperimentConfig } from '../bus/experiment.js';
 import { browseCatalog, installCommunityItem, prepareSubmission, submitCommunityItem } from '../bus/catalog.js';
 import { collectMetrics, parseUsageOutput, storeUsageData, checkUpstream, collectTelegramCommands, registerTelegramCommands } from '../bus/metrics.js';
-import { createApproval, updateApproval, listApprovals, APPROVAL_LIST_FILTERS, type ApprovalListFilter } from '../bus/approval.js';
+import { createApproval, updateApproval, listApprovals, notifyApprovalCreated, APPROVAL_LIST_FILTERS, type ApprovalListFilter } from '../bus/approval.js';
+import { evaluateGate, type ActionDescriptor } from '../security/action-gate.js';
 import { createReminder, listReminders, ackReminder, pruneReminders } from '../bus/reminders.js';
 import { updateCronFire, parseDurationMs, readCronState } from '../bus/cron-state.js';
 import { addCron, removeCron, readCrons, updateCron as updateCronDef, getCronByName, getExecutionLog } from '../bus/crons.js';
@@ -30,6 +31,85 @@ import { IPCClient } from '../daemon/ipc-server.js';
 import { TelegramAPI } from '../telegram/api.js';
 import { logOutboundMessage, cacheLastSent } from '../telegram/logging.js';
 import type { Priority, Task, TaskStatus, EventCategory, EventSeverity, ApprovalCategory, ApprovalStatus, OrgContext, CronDefinition } from '../types/index.js';
+
+/**
+ * Surface A — the bus/CLI enforcement point of the approval action-gate
+ * (SEC-INJECTION-v1 §3). Run a high-impact bus action through the shared
+ * decision core (src/security/action-gate.ts) before it executes. Same core as
+ * the PreToolUse hook surface (Doc 3) — one classifier, one policy, no drift.
+ *
+ * Behaviour by decision:
+ *  - allow / shadow / soft → proceed (shadow logs a would-block but does NOT block).
+ *  - block (enforce) → fire the human notify (AWAITED — this is a short-lived CLI,
+ *    no hook budget), print the reason + approval id to stderr, exit code 3 (a
+ *    distinct code so agents/callers recognise a gate-block vs a real error).
+ *
+ * Fail-safe: missing context (no org/agent/frameworkRoot) ⇒ allow (never freeze).
+ * evaluateGate is total; telemetry never interpolates the action payload into the
+ * log command (SEC-INJECTION-v1 §9 — the log line must not become an injection sink).
+ */
+/**
+ * Caller identities exempt from Surface A gating — human-authority + daemon
+ * control surfaces, not autonomous agents (see gateBusAction body). 'dashboard'
+ * is the auth-gated operator UI that resolves approvals; 'system' is the daemon.
+ */
+const GATE_EXEMPT_CALLERS = new Set(['dashboard', 'system']);
+
+async function gateBusAction(descriptor: ActionDescriptor): Promise<void> {
+  const env = resolveEnv();
+  if (!env.org || !env.agentName || !env.frameworkRoot) return; // cannot gate without context → allow
+  // Human-authority / daemon control surfaces are NOT autonomous-agent action
+  // surfaces and must never be gated — gating them would FREEZE the system the
+  // gate protects. The dashboard (behind operator auth) RESOLVES approvals by
+  // shelling `update-approval` with CTX_AGENT_NAME='dashboard'; 'system' is the
+  // daemon's own sender. Blocking either would wedge approval resolution / the
+  // control plane (the same never-freeze invariant as the owner channel). A real
+  // agent that tries to SPOOF this identity must do so via a bash command
+  // (`CTX_AGENT_NAME=dashboard cortextos bus update-approval …`) — that is a Bash
+  // tool call caught by Doc 3's classifier (a `cortextos bus <gated-subcommand>`
+  // pattern → its category), not a path this in-process commander handler exposes.
+  if (GATE_EXEMPT_CALLERS.has(env.agentName)) return;
+  const paths = resolvePaths(env.agentName, env.instanceId, env.org, env.ctxRoot);
+
+  const decision = evaluateGate({
+    paths, frameworkRoot: env.frameworkRoot, org: env.org, agent: env.agentName, descriptor,
+  });
+
+  // Structured telemetry — category/approval id only, never the payload
+  // (SEC-INJECTION-v1 §9). Skip the boring allow case (no category matched) to
+  // avoid flooding the activity feed on every owner-Telegram / safe action.
+  if (decision.category || !decision.allow || decision.error) {
+    try {
+      const evt = !decision.allow
+        ? (decision.error ? 'gate_error' : 'gate_block')
+        : decision.shadow ? 'gate_shadow_would_block'
+        : decision.soft ? 'gate_soft_allow'
+        : decision.error ? 'gate_error'
+        : 'gate_allow';
+      const severity: EventSeverity = (!decision.allow && decision.error) ? 'critical' : 'info';
+      logEvent(paths, env.agentName, env.org, 'action', evt, severity, JSON.stringify({
+        kind: descriptor.kind,
+        category: decision.category ?? null,
+        approval_id: decision.approvalId ?? null,
+        allow: decision.allow,
+      }));
+    } catch { /* telemetry is best-effort */ }
+  }
+
+  if (!decision.allow) {
+    // Fire the human notify for a freshly-created approval (awaited — see helper).
+    if (decision.notify) {
+      try {
+        await notifyApprovalCreated(
+          paths, env.org, decision.notify.approvalId, decision.notify.title,
+          decision.notify.category, env.agentName, decision.reason, env.frameworkRoot, env.agentDir,
+        );
+      } catch { /* notify best-effort — approval row already written */ }
+    }
+    process.stderr.write(`gate-block: ${decision.reason}\n`);
+    process.exit(3);
+  }
+}
 
 /**
  * Check if the org requires deliverables and the task has none attached.
@@ -1046,6 +1126,19 @@ busCommand
     // does not expand escapes, so they arrive at argv as 2-char literals and
     // Telegram renders them as visible text. Normalize before send + log.
     message = message.replace(/\\n/g, '\n').replace(/\\t/g, '\t');
+
+    // Surface A gate: a send to the OWNER control channel is exempt (classified
+    // null → allow always); a send to a NON-owner is external-comms and is gated
+    // (shadow logs, enforce blocks). Owner chat is resolved from the TRUSTED org
+    // context, not this command's args. exit(3) on a hard block.
+    await gateBusAction({
+      kind: 'telegram',
+      to: chatId,
+      text: message,
+      mediaType: opts.image ? 'photo' : opts.file ? 'document' : null,
+      filePath: opts.image || opts.file,
+    });
+
     // Resolve bot token: agent .env first, then process.env
     const env = resolveEnv();
     let botToken = '';
@@ -1163,12 +1256,13 @@ busCommand
   .command('create-approval')
   .description('Request human approval for a high-stakes action')
   .argument('<title>', 'What you are requesting approval for')
-  .argument('<category>', 'Category: external-comms, financial, deployment, data-deletion, other')
+  // Help text is derived from the single source of truth (VALID_APPROVAL_CATEGORIES)
+  // so it can never drift from what the validator accepts (TOOLS.md<->CLI drift class).
+  .argument('<category>', `Category: ${VALID_APPROVAL_CATEGORIES.join(', ')}`)
   .argument('[context]', 'Additional context')
   .action(async (title: string, category: string, context?: string) => {
-    const validCategories: ApprovalCategory[] = ['external-comms', 'financial', 'deployment', 'data-deletion', 'other'];
-    if (!validCategories.includes(category as ApprovalCategory)) {
-      console.error(`Invalid category '${category}'. Must be one of: ${validCategories.join(', ')}`);
+    if (!VALID_APPROVAL_CATEGORIES.includes(category as ApprovalCategory)) {
+      console.error(`Invalid category '${category}'. Must be one of: ${VALID_APPROVAL_CATEGORIES.join(', ')}`);
       process.exit(1);
     }
     const env = resolveEnv();
@@ -1189,12 +1283,18 @@ busCommand
   .argument('<id>', 'Approval ID')
   .argument('<status>', 'Resolution: approved or denied')
   .argument('[note]', 'Resolution note')
-  .action((id: string, status: string, note?: string) => {
+  .action(async (id: string, status: string, note?: string) => {
     const validStatuses: ApprovalStatus[] = ['approved', 'rejected'];
     if (!validStatuses.includes(status as ApprovalStatus)) {
       console.error(`Invalid status '${status}'. Must be one of: approved, rejected`);
       process.exit(1);
     }
+    // Surface A gate (the #1 self-protection interlock): an AGENT resolving an
+    // approval via the CLI is the manufacture vector — resolving is the human's
+    // act (dashboard PATCH / orchestrator callback, which call updateApproval
+    // directly, NOT this CLI). Classified config-change; shadow logs, enforce
+    // blocks. create-approval (requesting) stays ungated.
+    await gateBusAction({ kind: 'bus-command', subcommand: 'update-approval', detail: `${id}:${status}` });
     const env = resolveEnv();
     const paths = resolvePaths(env.agentName, env.instanceId, env.org, env.ctxRoot);
     updateApproval(paths, id, status as ApprovalStatus, note);
@@ -2928,7 +3028,8 @@ crmContacts.command('update').argument('<id>')
     console.log(`Updated ${id}`);
   });
 
-crmContacts.command('delete').argument('<id>').action((id: string) => {
+crmContacts.command('delete').argument('<id>').action(async (id: string) => {
+  await gateBusAction({ kind: 'bus-command', subcommand: 'delete-contact', detail: id });
   const db = getCrmDb();
   crm.deleteContact(db, id);
   console.log(`Deleted contact ${id}`);
@@ -2987,7 +3088,8 @@ crmCompanies.command('update').argument('<id>')
     console.log(`Updated ${id}`);
   });
 
-crmCompanies.command('delete').argument('<id>').action((id: string) => {
+crmCompanies.command('delete').argument('<id>').action(async (id: string) => {
+  await gateBusAction({ kind: 'bus-command', subcommand: 'delete-company', detail: id });
   const db = getCrmDb();
   crm.deleteCompany(db, id);
   console.log(`Deleted company ${id}`);
@@ -3060,7 +3162,8 @@ crmDeals.command('update').argument('<id>')
     console.log(`Updated ${id}`);
   });
 
-crmDeals.command('delete').argument('<id>').action((id: string) => {
+crmDeals.command('delete').argument('<id>').action(async (id: string) => {
+  await gateBusAction({ kind: 'bus-command', subcommand: 'delete-deal', detail: id });
   const db = getCrmDb();
   crm.deleteDeal(db, id);
   console.log(`Deleted deal ${id}`);
@@ -3237,7 +3340,8 @@ crmDocs.command('add')
     console.log(doc.id);
   });
 
-crmDocs.command('delete').argument('<id>').action((id: string) => {
+crmDocs.command('delete').argument('<id>').action(async (id: string) => {
+  await gateBusAction({ kind: 'bus-command', subcommand: 'delete-document', detail: id });
   const db = getCrmDb();
   crm.deleteDocument(db, id);
   console.log(`Deleted document ${id}`);

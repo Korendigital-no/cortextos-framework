@@ -276,7 +276,7 @@ export const addAgentCommand = new Command('add-agent')
             agentCfg.approval_rules = {
               always_ask: Array.isArray(ctx.default_approval_categories)
                 ? ctx.default_approval_categories
-                : ['external-comms', 'financial', 'deployment', 'data-deletion'],
+                : ['external-comms', 'financial', 'deployment', 'data-deletion', 'config-change'],
               never_ask: [],
             };
             writeFileSync(agentConfigPath, JSON.stringify(agentCfg, null, 2) + '\n', 'utf-8');

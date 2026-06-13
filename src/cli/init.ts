@@ -82,7 +82,7 @@ export const initCommand = new Command('init')
         orchestrator: '',
         day_mode_start: '08:00',
         day_mode_end: '00:00',
-        default_approval_categories: ['external-comms', 'financial', 'deployment', 'data-deletion'],
+        default_approval_categories: ['external-comms', 'financial', 'deployment', 'data-deletion', 'config-change'],
         communication_style: 'direct and casual',
       }, null, 2) + '\n', 'utf-8');
       console.log('  Created org context.json');
@@ -97,7 +97,7 @@ export const initCommand = new Command('init')
         if (!ctx.name) ctx.name = orgName;
         if (!ctx.day_mode_start) ctx.day_mode_start = '08:00';
         if (!ctx.day_mode_end) ctx.day_mode_end = '00:00';
-        if (!ctx.default_approval_categories) ctx.default_approval_categories = ['external-comms', 'financial', 'deployment', 'data-deletion'];
+        if (!ctx.default_approval_categories) ctx.default_approval_categories = ['external-comms', 'financial', 'deployment', 'data-deletion', 'config-change'];
         if (!ctx.communication_style) ctx.communication_style = 'direct and casual';
         writeFileSync(contextPath, JSON.stringify(ctx, null, 2) + '\n', 'utf-8');
       } catch { /* ignore */ }

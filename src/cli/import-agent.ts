@@ -132,7 +132,7 @@ export const importAgentCommand = new Command('import-agent')
       day_mode_end: '00:00',
       communication_style: importedConfig?.communication_style || 'casual',
       approval_rules: {
-        always_ask: ['external-comms', 'financial', 'deployment', 'data-deletion'],
+        always_ask: ['external-comms', 'financial', 'deployment', 'data-deletion', 'config-change'],
         never_ask: [],
       },
     };
