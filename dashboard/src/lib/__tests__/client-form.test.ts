@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateNewClient } from '../client-form';
+import { validateNewClient, validateClientEdit } from '../client-form';
 
 describe('validateNewClient', () => {
   it('requires a company name', () => {
@@ -54,5 +54,56 @@ describe('validateNewClient', () => {
       expect(r.payload.hours_commitment).toBe('10/mnd');
       expect(r.payload.notes).toBeUndefined();
     }
+  });
+});
+
+describe('validateClientEdit', () => {
+  it('inherits the add rules (company required, email, non-negative rate)', () => {
+    expect(validateClientEdit({ company_name: '' }).ok).toBe(false);
+    expect(validateClientEdit({ company_name: 'A', contact_email: 'nope' }).ok).toBe(false);
+    expect(validateClientEdit({ company_name: 'A', rate_nok: '-5' }).ok).toBe(false);
+  });
+
+  it('clears emptied text fields to null (not undefined) so the column blanks', () => {
+    const r = validateClientEdit({
+      company_name: 'Acme AS',
+      contact_name: '',
+      deal_type: '   ',
+      rate_description: '',
+      hours_commitment: '',
+      notes: '',
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      // null = "clear this column" (undefined would skip it in the PATCH)
+      expect(r.payload.contact_name).toBeNull();
+      expect(r.payload.deal_type).toBeNull();
+      expect(r.payload.rate_description).toBeNull();
+      expect(r.payload.hours_commitment).toBeNull();
+      expect(r.payload.notes).toBeNull();
+    }
+  });
+
+  it('carries edit-only fields (rate_description, status) through', () => {
+    const r = validateClientEdit({
+      company_name: 'Acme AS',
+      contact_name: 'Bob',
+      rate_nok: '1500',
+      rate_description: 'eks MVA',
+      status: 'paused',
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.payload.contact_name).toBe('Bob');
+      expect(r.payload.rate_nok).toBe(1500);
+      expect(r.payload.rate_description).toBe('eks MVA');
+      expect(r.payload.status).toBe('paused');
+    }
+  });
+
+  it('omits status when not provided (no accidental status change on edit)', () => {
+    const r = validateClientEdit({ company_name: 'Acme AS' });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.payload.status).toBeUndefined();
   });
 });

@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { db } from '@/lib/db';
-import { clientExists, projectBelongsToClient } from '@/lib/crm-client-auth';
+import { clientExists, clientIsActive, projectBelongsToClient } from '@/lib/crm-client-auth';
 
 export const dynamic = 'force-dynamic';
 
@@ -22,7 +22,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id: clientId } = await params;
-  if (!clientExists(clientId)) return Response.json({ error: 'Client not found' }, { status: 404 });
+  // Write gate: archived (soft-deleted) clients are frozen — restore first.
+  if (!clientIsActive(clientId)) return Response.json({ error: 'Client not found or archived' }, { status: 404 });
 
   const body = await request.json();
   const { body: noteBody, project_id } = body;

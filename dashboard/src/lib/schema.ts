@@ -368,11 +368,16 @@ export function initializeSchema(db: Database.Database): void {
   safeAddColumn(db, 'crm_documents', 'project_id', 'TEXT REFERENCES crm_client_projects(id)');
   safeAddColumn(db, 'crm_meetings', 'ai_parsed', 'TEXT');
   safeAddColumn(db, 'crm_meetings', 'email_draft', 'TEXT');
+  // Soft-delete for clients with billing history (accounting integrity: a client
+  // that ever logged time is archived, not destroyed). Dashboard-only column —
+  // the active client list filters `deleted_at IS NULL`; restore clears it.
+  safeAddColumn(db, 'crm_clients', 'deleted_at', 'TEXT');
 
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_crm_time_entries_project ON crm_time_entries(project_id);
     CREATE INDEX IF NOT EXISTS idx_crm_documents_client ON crm_documents(client_id);
     CREATE INDEX IF NOT EXISTS idx_crm_documents_project ON crm_documents(project_id);
+    CREATE INDEX IF NOT EXISTS idx_crm_clients_deleted_at ON crm_clients(deleted_at);
     CREATE INDEX IF NOT EXISTS idx_crm_deals_company ON crm_deals(company_id);
     CREATE INDEX IF NOT EXISTS idx_crm_activities_due ON crm_activities(due_at);
     CREATE INDEX IF NOT EXISTS idx_crm_meetings_fathom ON crm_meetings(fathom_recording_id);
