@@ -56,6 +56,25 @@ export function resolveEnv(overrides?: Partial<CtxEnv>): CtxEnv {
     envFile.CTX_PROJECT_ROOT ||
     '';
 
+  // Sandbox/live isolation — correct projectRoot BEFORE it is used to derive
+  // agentDir or to read org context.json (codex #79): an inherited LIVE
+  // projectRoot would otherwise load timezone/orchestrator from the live
+  // context.json and return them alongside sandbox paths. frameworkRoot is
+  // authoritative; the detailed policy (throw on an explicit-override
+  // contradiction, re-derive on an inherited leak) is documented at the
+  // agentDir guard further down — this is the same rule applied one step
+  // earlier so nothing downstream reads through the stale root.
+  if (projectRoot && frameworkRoot && resolvePath(projectRoot) !== resolvePath(frameworkRoot)) {
+    if (overrides?.projectRoot) {
+      throw new Error(
+        `CTX_PROJECT_ROOT '${projectRoot}' must equal CTX_FRAMEWORK_ROOT '${frameworkRoot}'. ` +
+        `A divergence indicates a sandbox/live environment leak — likely one of the two was ` +
+        `inherited from the parent shell while the other was overridden. Refusing to proceed.`,
+      );
+    }
+    projectRoot = frameworkRoot;
+  }
+
   // Resolve agent directory
   let agentDir =
     overrides?.agentDir ||
@@ -103,17 +122,8 @@ export function resolveEnv(overrides?: Partial<CtxEnv>): CtxEnv {
   //    Re-derive the stale path under the root instead — fail-safe in the
   //    same direction the guard protects (nothing can point at the live
   //    install; worst case is a missing path INSIDE the sandbox).
-  // projectRoot first, so a re-derived agentDir builds on the corrected root.
-  if (projectRoot && frameworkRoot && resolvePath(projectRoot) !== resolvePath(frameworkRoot)) {
-    if (overrides?.projectRoot) {
-      throw new Error(
-        `CTX_PROJECT_ROOT '${projectRoot}' must equal CTX_FRAMEWORK_ROOT '${frameworkRoot}'. ` +
-        `A divergence indicates a sandbox/live environment leak — likely one of the two was ` +
-        `inherited from the parent shell while the other was overridden. Refusing to proceed.`,
-      );
-    }
-    projectRoot = frameworkRoot;
-  }
+  // projectRoot was already corrected above (before agentDir/context.json use,
+  // codex #79). agentDir is corrected here, after its derivation.
   if (agentDir && frameworkRoot) {
     const fwRootResolved = resolvePath(frameworkRoot);
     const agentDirResolved = resolvePath(agentDir);

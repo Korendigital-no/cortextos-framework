@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync, readFileSync, rmSync, statSync } from 'fs';
+import { mkdirSync, writeFileSync, readFileSync, rmSync, statSync, renameSync } from 'fs';
 import { join } from 'path';
 
 /**
@@ -75,6 +75,24 @@ function lockState(lockDir: string, pidFile: string): 'free' | 'held' | 'stale' 
 }
 
 /**
+ * Bounded retries when releasing the steal-mutex in the finally (#76 P2): a
+ * transient EPERM/EBUSY on the first rmSync would otherwise orphan the mutex
+ * with this process's LIVE pid. We do NOT reap a live-pid mutex (see
+ * stealStaleLock — age alone cannot prove a live holder is orphaned; a
+ * suspended process can exceed any TTL and resume into a double-acquire), so a
+ * persistent failure leaves a residual orphan that only clears when THIS
+ * process dies (its pid goes dead → reapable). Retrying makes that residual
+ * rare; the residual itself is an accepted, restart-recoverable deadlock —
+ * strictly preferable to the double-acquire an age-based reap would reintroduce.
+ */
+const STEAL_RELEASE_RETRIES = 3;
+
+/** Monotonic per-process counter giving each reap a UNIQUE rename destination
+ *  (codex r7 P2): a leftover dir from a failed cleanup can never block a later
+ *  reap onto a fixed name. */
+let reapSeq = 0;
+
+/**
  * Recover a stale .lock.d, serialized through an exclusive steal-mutex.
  *
  * THE RACE THIS CLOSES (double-acquire): two processes both pass the staleness
@@ -91,13 +109,17 @@ function lockState(lockDir: string, pidFile: string): 'free' | 'held' | 'stale' 
  * anyone's live lock. If re-verify says 'free' instead, the rm is SKIPPED and
  * we fall through to a plain mkdir, which races fresh acquirers atomically.
  *
- * A stealer that crashes mid-steal orphans the mutex; that is recovered with
- * the same dead-pid / old-empty classification (reap, then back off so the
- * retry path re-evaluates everything from scratch). Residual exposure: reaping
- * a crashed mutex is itself a check-then-rm and could in theory hit a mutex
- * recreated in that microsecond window — but that requires a crashed stealer
- * AND two new stealers AND a reaper interleaving within microseconds, versus
- * the closed race's window of an entire critical section.
+ * A stealer that crashes mid-steal orphans the mutex. An orphan is reaped ONLY
+ * when its holder is provably DEAD (lockState 'stale'), and the reap is ATOMIC
+ * via renameSync to a UNIQUE destination (#76 P1 + codex r7 P2): only one
+ * contender can rename a given source path, so the rm can never hit a freshly
+ * recreated mutex, and a leftover dir from a failed cleanup can never block a
+ * later reap. We deliberately do NOT reap a LIVE-pid mutex by age (codex r7 P1):
+ * a process suspended mid-steal (scheduler stall / wall-clock jump) can exceed
+ * any TTL and then resume into a double-acquire — age alone cannot prove a live
+ * holder is orphaned. The residual (a live-pid orphan from a failed cleanup)
+ * self-heals when that process dies (pid → dead → reapable) and is an accepted
+ * rare restart-recoverable deadlock — never a correctness (double-acquire) bug.
  *
  * Returns true if the lock was acquired; false to let the caller back off and
  * retry (mutex contention, reaped-crashed-mutex, or lock no longer stale).
@@ -112,10 +134,27 @@ export function stealStaleLock(lockDir: string, pidFile: string): boolean {
     mkdirSync(stealDir);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
-    // Another stealer holds the mutex — or one crashed mid-steal and left it
-    // orphaned. Reap only a provably-dead mutex; back off either way.
+    // Another stealer holds the mutex, or one orphaned it. We do NOT do a racy
+    // check-then-rmSync here (#76 P1): two contenders could both classify the
+    // mutex stale, and one rmSync could then delete a mutex a third contender
+    // freshly recreated in the gap, reopening the double-acquire race.
+    //
+    // Reap ONLY a mutex whose holder is provably DEAD (codex r7 P1: age cannot
+    // prove a live holder is orphaned — a suspended process can exceed any TTL
+    // then resume into a double-acquire). Reap ATOMICALLY: rename the orphan to
+    // a UNIQUE destination (codex r7 P2: a leftover from a failed cleanup can't
+    // block a later reap), so only one contender claims the specific instance;
+    // the rest get ENOENT and back off, and the rm can never hit a fresh mutex.
     if (lockState(stealDir, stealPidFile) === 'stale') {
-      rmSync(stealDir, { recursive: true, force: true });
+      const reapDir = `${stealDir}.reap.${process.pid}.${reapSeq++}`;
+      try {
+        rmSync(reapDir, { recursive: true, force: true }); // clear any leftover (failed prior cleanup / pid reuse)
+        renameSync(stealDir, reapDir);                      // atomic claim of THIS instance
+        rmSync(reapDir, { recursive: true, force: true });  // remove the claimed dead orphan
+      } catch {
+        // Lost the claim (ENOENT — another contender already renamed/reaped it)
+        // or a transient FS error: back off and let the retry path re-evaluate.
+      }
     }
     return false;
   }
@@ -143,14 +182,22 @@ export function stealStaleLock(lockDir: string, pidFile: string): boolean {
     if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
     return false;
   } finally {
-    // Best-effort release of the steal-mutex. Must NOT throw: an exception
-    // out of a finally would replace the function's result and crash the
-    // caller's retry loop. If cleanup fails (EPERM/EBUSY), the orphaned
-    // mutex is reaped by the next contender once our pid is dead.
-    try {
-      rmSync(stealDir, { recursive: true, force: true });
-    } catch {
-      // see above
+    // Release the steal-mutex with BOUNDED RETRIES (#76 P2). Must NOT throw: an
+    // exception out of a finally would replace the function's result and crash
+    // the caller's retry loop. If every retry fails (persistent EPERM/EBUSY) the
+    // mutex is orphaned with our LIVE pid; we deliberately do NOT age-reap a
+    // live-pid mutex (that reopens the double-acquire — codex r7 P1), so this
+    // residual clears only when this process dies (pid → dead → reapable). That
+    // is an accepted, rare, restart-recoverable deadlock — strictly preferable
+    // to corruption; retrying here makes it rare. Do NOT "fix" the residual by
+    // reintroducing an age-based or check-then-rm reap of a live-pid mutex.
+    for (let i = 0; i < STEAL_RELEASE_RETRIES; i++) {
+      try {
+        rmSync(stealDir, { recursive: true, force: true });
+        break;
+      } catch {
+        // transient (EPERM/EBUSY) — retry; never throw out of finally
+      }
     }
   }
 }
