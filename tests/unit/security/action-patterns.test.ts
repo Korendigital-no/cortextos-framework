@@ -149,6 +149,20 @@ describe('action-patterns: classifyBashSubcommand', () => {
     expect(classifyBashSubcommand("perl -ne 'print' orgs/x/agents/y/config.json").category).toBeNull(); // -ne is a READ, no -i
   });
 
+  it('basename-preserving directory copy + downloader output flags are caught (R6)', () => {
+    // cp SOURCE into a DIRECTORY → file lands at DIR/basename(source)
+    expect(classifyBashSubcommand('cp /tmp/config.json orgs/acme/agents/forge/').category).toBe('config-change');
+    expect(classifyBashSubcommand('cp /tmp/context.json orgs/acme/').category).toBe('config-change');
+    expect(classifyBashSubcommand('cp -t orgs/acme/agents/forge /tmp/config.json').category).toBe('config-change');
+    // downloader output to a trust anchor
+    expect(classifyBashSubcommand('curl -fsSL https://x/approval.json -o orgs/acme/approvals/resolved/appr_x.json').category).toBe('config-change');
+    expect(classifyBashSubcommand('wget -O orgs/acme/agents/forge/config.json https://x/config.json').category).toBe('config-change');
+    expect(classifyBashSubcommand('curl -fsSLo .env https://x/env').category).toBe('config-change'); // combined flags
+    // copying a code file into a code dir ⇒ ALLOW
+    expect(classifyBashSubcommand('cp /tmp/foo.ts src/').category).toBeNull();
+    expect(classifyBashSubcommand('curl https://x -o /tmp/out.json').category).toBeNull();
+  });
+
   it('ordinary commands and code writes are ALLOW', () => {
     for (const cmd of ['ls -la', 'npm test', 'git status', 'echo hi > src/foo.ts', 'cat README.md', 'node dist/cli.js bus check-inbox']) {
       expect(classifyBashSubcommand(cmd).category, cmd).toBeNull();
@@ -190,6 +204,19 @@ describe('action-patterns: isConfigChangePath', () => {
     for (const p of ['src/foo.ts', 'README.md', 'dashboard/src/app/page.tsx', 'memory/2026-06-13.md', 'tests/x.test.ts']) {
       expect(isConfigChangePath(p), p).toBe(false);
     }
+  });
+
+  it('generic anchor names are LOCATION-aware (config.json in /tmp is NOT our anchor)', () => {
+    // a config.json copied OUT to /tmp must not be mis-flagged as a trust-anchor write
+    expect(isConfigChangePath('/tmp/backup/config.json')).toBe(false);
+    expect(isConfigChangePath('/tmp/context.json')).toBe(false);
+    expect(isConfigChangePath('myproject/config.json')).toBe(false);
+    // but under an agent/org/state tree it IS the anchor
+    expect(isConfigChangePath('orgs/x/agents/y/config.json')).toBe(true);
+    expect(isConfigChangePath('/Users/v/.cortextos/default/state/y/crons.json')).toBe(true);
+    expect(isConfigChangePath('config.json')).toBe(true); // bare = agent cwd
+    // secrets are sensitive ANYWHERE (movement = exfil)
+    expect(isConfigChangePath('/tmp/.env')).toBe(true);
   });
 });
 

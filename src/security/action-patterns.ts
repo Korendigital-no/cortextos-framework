@@ -48,22 +48,35 @@ export const DEFAULT_SCRATCH_PREFIXES = ['/tmp/', '/private/tmp/', '/var/folders
  * this gate — the #1↔#8 interlock). Ordinary code writes on a feature branch are
  * NOT here → they classify null (allow).
  */
+/**
+ * A cortextOS-sensitive location for the GENERIC-named anchors (config.json etc.,
+ * which also appear in unrelated projects). A config.json in /tmp is NOT our trust
+ * anchor; one under an agent/org/state tree IS. A bare basename (no dir) is treated
+ * as sensitive because an agent's cwd is its own dir.
+ */
+function isSensitiveLocation(p: string): boolean {
+  if (!p.includes('/')) return true;
+  return /(^|\/)(agents|orgs|state|config|\.cortextos)(\/|$)/.test(p);
+}
+
 export function isConfigChangePath(targetPath: string): boolean {
   const p = targetPath.replace(/\\/g, '/');
   const base = p.split('/').pop() || '';
-  // Secrets / env
+  // --- ALWAYS sensitive (secrets / settings / bootstrap / approval rows) anywhere ---
   if (base === '.env' || base.startsWith('.env.') || base === 'secrets.env') return true;
   // Claude Code settings (auto-approved within an agent's own .claude/ by
   // hook-permission-telegram — exactly why settings writes must be gated here).
   if (/\.claude\/settings[^/]*\.json$/.test(p)) return true;
-  // Agent runtime config / crons / bootstrap identity & policy files
-  if (base === 'config.json' || base === 'crons.json' || base === 'context.json') return true;
-  if (base === 'enabled-agents.json') return true;
-  // Bootstrap / identity / policy markdown an injection would target to escalate
+  // Bootstrap / identity / policy markdown an injection would target to escalate.
   if (/(^|\/)(GUARDRAILS|IDENTITY|SOUL|GOALS|SYSTEM|USER|AGENTS)\.md$/.test(p)) return true;
   // The gate's own approval rows (forging a resolved/approved row = manufacture).
   // `(^|/)` so a bare RELATIVE path (cwd already in the org/root) is caught too.
   if (/(^|\/)approvals\/(pending|resolved)\//.test(p)) return true;
+  // --- generic config names — only under a cortextOS-sensitive location, so a
+  // config.json copied OUT to /tmp is not mis-flagged as a trust-anchor write ---
+  if (['config.json', 'context.json', 'crons.json', 'enabled-agents.json'].includes(base)) {
+    return isSensitiveLocation(p);
+  }
   return false;
 }
 
@@ -109,17 +122,27 @@ export function bashWriteTargets(sub: string): string[] {
   if (tee) {
     for (const t of tee[1].split(/[\s|;&]+/)) if (t && !t.startsWith('-')) targets.push(stripQuotes(t));
   }
-  // cp/mv/install/rsync/ln — the DESTINATION only (sources are reads, not writes):
-  // `-t <dir>` / `--target-directory[=dir]` form, else the last non-flag operand.
+  // cp/mv/install/rsync/ln — the DESTINATION only (sources are reads, not writes).
+  // A directory destination preserves the SOURCE basename, so the effective write is
+  // DEST/basename(SRC) — `cp /tmp/config.json orgs/x/agents/y/` writes config.json.
+  // We add BOTH dest-as-file and dest/basename(src) (covering the ambiguous
+  // no-trailing-slash case without a stat), plus the `-t <dir>` form.
   const cpm = sub.match(/\b(cp|mv|install|rsync|ln)\b\s+(.*)$/i);
   if (cpm) {
     const toks = cpm[2].split(/\s+/).filter(Boolean);
-    let dest: string | undefined;
     const tIdx = toks.findIndex(t => t === '-t' || t === '--target-directory');
-    if (tIdx >= 0 && toks[tIdx + 1]) dest = toks[tIdx + 1];
-    if (!dest) { const eq = toks.find(t => t.startsWith('--target-directory=')); if (eq) dest = eq.split('=').slice(1).join('='); }
-    if (!dest) { const nonFlag = toks.filter(t => !t.startsWith('-')); dest = nonFlag[nonFlag.length - 1]; }
-    if (dest) targets.push(stripQuotes(dest));
+    let targetDir: string | undefined;
+    if (tIdx >= 0 && toks[tIdx + 1]) targetDir = stripQuotes(toks[tIdx + 1]);
+    if (!targetDir) { const eq = toks.find(t => t.startsWith('--target-directory=')); if (eq) targetDir = stripQuotes(eq.split('=').slice(1).join('=')); }
+    const nonFlag = toks.filter((t, i) => !t.startsWith('-') && !(tIdx >= 0 && i === tIdx + 1)).map(stripQuotes);
+    if (targetDir) {
+      targets.push(targetDir);
+      for (const src of nonFlag) targets.push(joinUnder(targetDir, pathBasename(src)));
+    } else if (nonFlag.length >= 1) {
+      const dest = nonFlag[nonFlag.length - 1];
+      targets.push(dest); // rename form (dest is a file)
+      for (const src of nonFlag.slice(0, -1)) targets.push(joinUnder(dest, pathBasename(src))); // dir form
+    }
   }
   // In-place editors (sed -i, perl -i/-pi, awk -i inplace) modify a file directly
   // without a redirect. Every non-flag operand is a candidate file — a sed/awk
@@ -131,6 +154,11 @@ export function bashWriteTargets(sub: string): string[] {
     for (const t of sub.split(/\s+/)) if (t && !t.startsWith('-')) targets.push(stripQuotes(t));
   }
   for (const m of sub.matchAll(/\bof=([^\s|;&]+)/g)) targets.push(stripQuotes(m[1]));
+  // downloader / output-file flags: curl -o FILE, wget -O FILE (incl. combined
+  // flag clusters like -fsSLo), --output[-document][=| ]FILE. Over-matching -o/-O
+  // is harmless — only a trust-anchor target actually flags.
+  for (const m of sub.matchAll(/(?:^|\s)-[a-zA-Z]*[oO](?:\s+|=)([^\s|;&]+)/g)) targets.push(stripQuotes(m[1]));
+  for (const m of sub.matchAll(/--output(?:-document)?[= ]([^\s|;&]+)/g)) targets.push(stripQuotes(m[1]));
   return targets;
 }
 
@@ -191,6 +219,17 @@ export interface BashClassifyOptions {
 /** Strip one surrounding layer of single/double quotes from a shell token. */
 function stripQuotes(token: string): string {
   return token.replace(/^["']/, '').replace(/["']$/, '');
+}
+
+/** Last path segment of a token (the file the OS would name a copied file). */
+function pathBasename(p: string): string {
+  const parts = p.replace(/\/+$/, '').split('/');
+  return parts[parts.length - 1] || p;
+}
+
+/** Join a (possibly trailing-slashed) dir with a basename. */
+function joinUnder(dir: string, base: string): string {
+  return dir.replace(/\/+$/, '') + '/' + base;
 }
 
 /**
