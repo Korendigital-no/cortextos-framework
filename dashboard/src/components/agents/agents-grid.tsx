@@ -50,6 +50,10 @@ export function AgentsGrid({ initialAgents }: AgentsGridProps) {
           {agents.filter((a) => a.health === 'healthy').length} healthy
         </span>
         <span className="flex items-center gap-1.5">
+          <HealthDot status="idle" />
+          {agents.filter((a) => a.health === 'idle').length} idle
+        </span>
+        <span className="flex items-center gap-1.5">
           <HealthDot status="stale" />
           {agents.filter((a) => a.health === 'stale').length} stale
         </span>

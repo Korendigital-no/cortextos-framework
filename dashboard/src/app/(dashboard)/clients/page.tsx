@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { IconBriefcase, IconPlus, IconClock } from '@tabler/icons-react';
+import AddClientDialog from '@/components/clients/add-client-dialog';
 
 interface Client {
   id: string;
@@ -28,6 +29,7 @@ export default function ClientsPage() {
   const router = useRouter();
   const [clients, setClients] = useState<Client[]>([]);
   const [loading, setLoading] = useState(true);
+  const [showAdd, setShowAdd] = useState(false);
 
   const fetchClients = useCallback(async () => {
     try {
@@ -57,6 +59,7 @@ export default function ClientsPage() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Clients</h1>
+        <Button size="sm" onClick={() => setShowAdd(true)}><IconPlus className="size-4 mr-1" />Add client</Button>
       </div>
 
       {clients.length === 0 ? (
@@ -106,6 +109,11 @@ export default function ClientsPage() {
           ))}
         </div>
       )}
+      <AddClientDialog
+        open={showAdd}
+        onCreated={() => { setShowAdd(false); fetchClients(); }}
+        onCancel={() => setShowAdd(false)}
+      />
     </div>
   );
 }

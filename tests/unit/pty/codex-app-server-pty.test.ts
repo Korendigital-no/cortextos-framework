@@ -603,6 +603,43 @@ Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
     expect(out).toBe('just a chat message');
   });
 
+  it('plain-text TELEGRAM: extracts a body wrapped in a dynamically-sized (4-backtick) fence', () => {
+    // The upstream-sync gave formatTelegramTextMessage a wrapFenceSafe body: when
+    // the text itself contains a ``` code block, the sender grows the wrapper to 4
+    // backticks. The general text parser must match the same fence length (back-
+    // reference), not a hard-coded ```, or the inner fence / closing line leaks
+    // and the real body is lost. (Mirrors the media-caption dynamic-fence test.)
+    const inject = `=== TELEGRAM from James (chat_id:7940429114) ===
+\`\`\`\`
+here is code:
+\`\`\`js
+const x = 1;
+\`\`\`
+done
+\`\`\`\`
+Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
+`;
+    const out = extract(inject);
+    expect(out).toContain('here is code:');
+    expect(out).toContain('const x = 1;');
+    expect(out).toContain('done');
+    expect(out).toContain('```js'); // inner code block survives byte-exact
+  });
+
+  it('codex callback: surfaces callback_data (+message_id), not just the trailing line', () => {
+    // Unhandled custom inline-button callback (upstream #604). The generic
+    // last-line fallback would return only "message_id: ..." and silently drop
+    // the action — both must reach the codex agent so it can act on the press.
+    const inject = `=== TELEGRAM from [USER: James] (chat_id:7940429114) ===
+callback_data: approve_invoice_42
+message_id: 8123
+Reply using: cortextos bus send-telegram 7940429114 '<your reply>'
+`;
+    const out = extract(inject);
+    expect(out).toContain('callback_data: approve_invoice_42');
+    expect(out).toContain('message_id: 8123');
+  });
+
   it('reply_to with no outbound log: appends bare in-reply-to marker', () => {
     fsMocks.existsSync.mockImplementation((p: string) => !String(p).endsWith('outbound-messages.jsonl'));
     const inject = `=== TELEGRAM from James (chat_id:7940429114) ===
@@ -1176,5 +1213,32 @@ describe('CodexAppServerPTY thread/tokenUsage/updated → codex-tokens.jsonl', (
       total: { cachedInputTokens: 0, inputTokens: 100, outputTokens: 50, reasoningOutputTokens: 0, totalTokens: 150 },
       modelContextWindow: 200000,
     })).not.toThrow();
+  });
+});
+
+describe('CodexAppServerPTY buildMediaPayload — dynamic fence parsing', () => {
+  it('extracts a caption wrapped in a dynamically-sized (4-backtick) fence', () => {
+    const pty = new CodexAppServerPTY(mockEnv, {});
+    // wrapFenceSafe grows the fence to 4 backticks when the caption contains ```;
+    // the consumer must match the same fence length, not a hard-coded ```.
+    const beforeReply = [
+      '=== TELEGRAM PHOTO from Alice (chat_id:1) ===',
+      'caption:',
+      '````',
+      'look at this ``` code',
+      '````',
+      'local_file: /tmp/p.jpg',
+    ].join('\n');
+    const payload = (pty as unknown as { buildMediaPayload(t: string, b: string): string | null })
+      .buildMediaPayload('PHOTO', beforeReply);
+    expect(payload).toContain('caption: look at this ``` code');
+  });
+
+  it('still extracts a caption in a plain 3-backtick fence', () => {
+    const pty = new CodexAppServerPTY(mockEnv, {});
+    const beforeReply = '=== TELEGRAM PHOTO from Bob (chat_id:2) ===\ncaption:\n```\nhello\n```\nlocal_file: /tmp/x.jpg';
+    const payload = (pty as unknown as { buildMediaPayload(t: string, b: string): string | null })
+      .buildMediaPayload('PHOTO', beforeReply);
+    expect(payload).toContain('caption: hello');
   });
 });

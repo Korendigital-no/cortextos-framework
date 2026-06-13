@@ -1,6 +1,8 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+// Pure classifier (no @/lib/config dependency — safe here per the CTX_ROOT note below).
+import { agentLiveness } from '@/lib/agent-liveness';
 
 // Resolve CTX_ROOT without importing from config (avoids turbopack chunk issues)
 const CTX_INSTANCE_ID = process.env.CTX_INSTANCE_ID ?? 'default';
@@ -120,12 +122,16 @@ export function getFleetHealth(org: string): FleetHealth | null {
       const hb = data.heartbeats || 1;
       // Stability based on real errors, not total restarts (which include planned restarts)
       const stability = Math.round(((hb - data.real_errors) / hb) * 100);
-      if (data.is_stale) staleCount++;
       errorCount += data.real_errors;
       totalStability += stability;
 
-      // Read live heartbeat for real-time Last Seen
+      // Read the live heartbeat (last_heartbeat + status) and classify through
+      // the unified agentLiveness — NOT the daemon-reported data.is_stale, whose
+      // short threshold false-flagged idle standby agents. An 'idle' agent (alive
+      // via a recent [watchdog] beat) is NOT counted stale; only genuinely
+      // stale/down (even the watchdog stopped) is.
       let liveAgeMin = data.heartbeat_age_min;
+      let isStale = false;
       const hbFile = path.join(CTX_ROOT, 'state', name, 'heartbeat.json');
       try {
         if (fs.existsSync(hbFile)) {
@@ -134,13 +140,19 @@ export function getFleetHealth(org: string): FleetHealth | null {
             const ageMs = Date.now() - new Date(hbData.last_heartbeat).getTime();
             liveAgeMin = Math.round(ageMs / 60000);
           }
+          const liveness = agentLiveness({ last_heartbeat: hbData.last_heartbeat, status: hbData.status });
+          isStale = liveness === 'stale' || liveness === 'down';
+        } else {
+          isStale = true; // no heartbeat file at all = down
         }
-      } catch { /* use report data as fallback */ }
+      } catch { isStale = !!data.is_stale; /* unreadable file: fall back to report */ }
+
+      if (isStale) staleCount++;
 
       agents.push({
         name,
         heartbeatAgeMin: liveAgeMin,
-        isStale: liveAgeMin > 300, // 5 hours = stale
+        isStale,
         events: data.events,
         realErrors: data.real_errors,
         crashes: data.crashes,
@@ -226,19 +238,22 @@ function getFleetHealthFromHeartbeats(org: string): FleetHealth | null {
     const name = entry.name;
     const hbFile = path.join(CTX_ROOT, 'state', name, 'heartbeat.json');
     let ageMin = 9999;
+    let isStale = true; // no readable heartbeat = down until proven alive
     try {
       if (fs.existsSync(hbFile)) {
         const hb = JSON.parse(fs.readFileSync(hbFile, 'utf-8'));
         if (hb.last_heartbeat) {
           ageMin = Math.round((Date.now() - new Date(hb.last_heartbeat).getTime()) / 60000);
         }
+        const liveness = agentLiveness({ last_heartbeat: hb.last_heartbeat, status: hb.status });
+        isStale = liveness === 'stale' || liveness === 'down';
       }
-    } catch { /* skip */ }
+    } catch { /* skip — isStale stays true */ }
 
     agents.push({
       name,
       heartbeatAgeMin: ageMin,
-      isStale: ageMin > 300,
+      isStale,
       events: 0,
       realErrors: 0,
       crashes: 0,

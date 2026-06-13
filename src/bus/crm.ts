@@ -45,6 +45,8 @@ export interface CrmDeal {
   created_at: string;
   updated_at: string;
   closed_at: string | null;
+  /** Intentional-hold timestamp — deal is suppressed from the stale sweep until this passes. See dealHoldUntil(). */
+  snoozed_until: string | null;
 }
 
 export interface CrmActivity {
@@ -296,9 +298,15 @@ export function updateDeal(
   }
   if (sets.length === 0) return;
 
-  if (fields.stage === 'closed_won' || fields.stage === 'closed_lost') {
+  // Auto-manage closed_at from stage transitions, unless the caller set it
+  // explicitly. A closing stage stamps it; any move to a non-closed stage (a
+  // reopen) CLEARS it — otherwise closed_at lingers after a reopen and the
+  // `closed_at IS NULL` guard in getStaleDeals (and the sibling-count subquery)
+  // excludes the now-open deal from the stale sweep forever. Codex #95 P2.
+  if (fields.stage !== undefined && fields.closed_at === undefined) {
+    const closing = fields.stage === 'closed_won' || fields.stage === 'closed_lost';
     sets.push('closed_at = ?');
-    params.push(now());
+    params.push(closing ? now() : null);
   }
 
   sets.push('updated_at = ?');
@@ -332,6 +340,106 @@ export interface StaleDeal extends CrmDeal {
   days_stale: number;
 }
 
+/** Quarter (1-4) → UTC ISO timestamp of that quarter's first day in `year`. Q1→Jan, Q2→Apr, Q3→Jul, Q4→Oct. */
+function quarterStartIso(quarter: number, year: number): string {
+  return new Date(Date.UTC(year, (quarter - 1) * 3, 1)).toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+/**
+ * Parse a hold-date token to a UTC ISO timestamp, or null if unparseable.
+ * Accepts ISO `YYYY-MM-DD` and Norwegian/EU `DD.MM.YYYY` / `DD/MM/YYYY`.
+ * Rejects calendar overflow (e.g. 31.02.2026) by round-tripping the components.
+ * Exported so the CLI can validate `--snooze-until` against the same parser.
+ */
+export function parseHoldDate(token: string): string | null {
+  let y: number, mo: number, d: number;
+  const isoM = token.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (isoM) {
+    y = +isoM[1]; mo = +isoM[2]; d = +isoM[3];
+  } else {
+    const euM = token.match(/^(\d{1,2})[./](\d{1,2})[./](\d{4})$/);
+    if (!euM) return null;
+    d = +euM[1]; mo = +euM[2]; y = +euM[3];
+  }
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+  const dt = new Date(Date.UTC(y, mo - 1, d));
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d) return null;
+  return dt.toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+/**
+ * Intentional-hold detection for the stale-deal sweep.
+ *
+ * A deal can be deliberately parked ("send in Q3", "on hold until 2026-08-01")
+ * without an open follow-up task. Surfacing such a deal as "neglected" is a
+ * false-positive — sales flagged the Åreknute/NHG deal, titled "Q3 send", as
+ * exactly this. This resolves an intentional-hold signal to the timestamp the
+ * hold EXPIRES, so the deal is suppressed only until that moment and then
+ * correctly resurfaces if still untouched. A hold must never blind the sweep
+ * forever: a permanent false-negative (a genuinely neglected deal hidden) is
+ * worse than a dismissable false-positive — the same doctrine the contact-join
+ * guards in getStaleDeals follow.
+ *
+ * Signals (the latest future expiry across all wins):
+ *   1. structured `snoozed_until` column — explicit machine-set snooze
+ *   2. "hold/snooze/park until <date>" in title or notes (ISO or DD.MM.YYYY)
+ *   3. quarter-send tag ("Q3 send" / "send in Q3") → start of that quarter THIS
+ *      year. Before the quarter starts → held; once we are in or past it the
+ *      send window is open, so the deal resurfaces (no suppression).
+ *
+ * Cross-year note (intentional): a bare quarter tag is year-ambiguous — "Q1
+ * send" entered in December could mean "next year's Q1" OR "neglected since
+ * last Q1". We never roll a past quarter forward to next year: that would hide
+ * a possibly-neglected deal for up to a year (the false-negative the doctrine
+ * forbids). For a precise cross-year park, use an explicit `snoozed_until` or a
+ * "hold until <date>" note — both carry an unambiguous year.
+ *
+ * A future-dated follow-up TASK is a separate, already-handled park path
+ * (the NOT EXISTS pending-follow-up guard in getStaleDeals).
+ *
+ * @returns the latest future hold-expiry ISO timestamp, or null if not on hold.
+ */
+export function dealHoldUntil(
+  deal: { snoozed_until?: string | null; title?: string | null; notes?: string | null },
+  nowMs: number = Date.now(),
+): string | null {
+  // Function-local regexes: matchAll does not mutate a regex's lastIndex (it
+  // clones internally), but keeping them local removes any doubt and any risk a
+  // future .exec/.test on a shared global would leak state across calls.
+  // "hold until 2026-08-01", "snooze til 01.08.2026", "parkert til ...", "på vent til ..."
+  const holdUntilRe = /\b(?:hold|holdt|snoozed?|park(?:ed|ert)?|på vent|vent)\s+(?:until|til)\s+(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[./]\d{1,2}[./]\d{4})/gi;
+  // Q-first, the intentional park form: "Q3 send", "Q3-send", "Q3 SEND", "Q3 hold", "Q3 sende", "Q3 utsendelse"
+  const quarterSendRe = /\bQ([1-4])[\s_-]*(?:send|sending|sende|utsend\w*|hold)\b/gi;
+  // Reverse, send-verbs only (NOT bare "hold" — "hold Q3 review call" is a
+  // meeting note, not a park signal; "Q3 hold" is covered above): "send Q3", "send in Q3", "send i Q3"
+  const sendQuarterRe = /\b(?:send|sending|sende|utsend\w*)(?:\s+(?:in|i))?\s+Q([1-4])\b/gi;
+
+  const candidates: string[] = [];
+
+  if (deal.snoozed_until) candidates.push(deal.snoozed_until);
+
+  const text = `${deal.title ?? ''}\n${deal.notes ?? ''}`;
+  const nowYear = new Date(nowMs).getUTCFullYear();
+
+  for (const m of text.matchAll(holdUntilRe)) {
+    const iso = parseHoldDate(m[1]);
+    if (iso) candidates.push(iso);
+  }
+  for (const re of [quarterSendRe, sendQuarterRe]) {
+    for (const m of text.matchAll(re)) {
+      candidates.push(quarterStartIso(+m[1], nowYear));
+    }
+  }
+
+  // Hold only while a signal resolves to the FUTURE; keep the latest expiry.
+  const future = candidates.filter((c) => {
+    const t = Date.parse(c);
+    return !Number.isNaN(t) && t > nowMs;
+  });
+  if (future.length === 0) return null;
+  return future.reduce((a, b) => (Date.parse(a) >= Date.parse(b) ? a : b));
+}
+
 /**
  * Open deals that have gone untouched for `days` (default 7) — the "neglected
  * pipeline" signal, distinct from overdue follow-ups (getFollowUps).
@@ -340,10 +448,17 @@ export interface StaleDeal extends CrmDeal {
  * activity's created_at, so a deal whose follow-up was *resolved* (completed)
  * after a quiet stretch kept re-flagging as stale every run even though sales
  * had triaged it. Here last_touch is the greatest of:
- *   - MAX(activity.created_at)   — last logged interaction
+ *   - MAX(activity.created_at)   — last logged interaction (deal- OR contact-linked)
  *   - MAX(activity.completed_at) — resolving a follow-up IS a touch
  *   - deal.updated_at            — stage/notes change is a touch
  * so a triaged/void cohort with closed follow-ups drops out instead of looping.
+ *
+ * Contact-linked join (Codex #95 follow-up): Cal.com bookings and Fathom
+ * meetings write an activity carrying contact_id but no deal_id, so without the
+ * contact_id = deal.contact_id branch a deal whose contact was just met would
+ * be false-flagged stale despite a real touch. The IS NOT NULL guard keeps
+ * contactless deals on the deal_id path only (NULL never matches NULL in SQL,
+ * but the guard makes that explicit and avoids a full-table contactless scan).
  *
  * Excluded entirely:
  *   - closed deals (stage closed_won/closed_lost, or closed_at set)
@@ -351,12 +466,20 @@ export interface StaleDeal extends CrmDeal {
  *     already tracked by the follow-up sweep, so they aren't "neglected".
  *     Parking a quiet lead is therefore as simple as giving it a future-dated
  *     follow-up.
+ *   - deals on an *intentional hold* (dealHoldUntil) — an explicit snoozed_until,
+ *     a "hold/snooze until <date>" note, or a quarter-send tag ("Q3 send"). The
+ *     hold suppresses only until it expires, then the deal resurfaces if still
+ *     untouched, so a deliberate park never permanently blinds the sweep.
  */
-export function getStaleDeals(
+/**
+ * Shared engine for getStaleDeals / getHeldDeals: open, non-closed, no-pending-
+ * follow-up deals whose last_touch is older than the window. The intentional-
+ * hold split is applied by the callers, so both see the identical candidate set.
+ */
+function staleCandidates(
   db: Database.Database,
-  opts?: { days?: number },
-): StaleDeal[] {
-  const days = opts?.days ?? 7;
+  days: number,
+): { nowMs: number; rows: Array<CrmDeal & { last_touch: string }> } {
   const nowMs = Date.now();
   const cutoff = new Date(nowMs - days * 86400000).toISOString().replace(/\.\d{3}Z$/, 'Z');
 
@@ -367,6 +490,28 @@ export function getStaleDeals(
           SELECT MAX(a.created_at)   AS t FROM crm_activities a WHERE a.deal_id = d.id
           UNION ALL
           SELECT MAX(a.completed_at) AS t FROM crm_activities a WHERE a.deal_id = d.id
+          UNION ALL
+          -- Contact-linked touches: Cal.com bookings + Fathom meetings write an
+          -- activity with contact_id but NO deal_id (a.deal_id IS NULL), so a
+          -- quiet deal whose contact was just met would otherwise re-flag stale.
+          -- Two guards, both essential (Codex P2 ×2):
+          --   * a.deal_id IS NULL — a deal-A-linked activity must NOT touch a
+          --     sibling deal B sharing the contact.
+          --   * sole-open-deal — a CONTACT-only touch is ambiguous when the
+          --     contact has multiple open deals (which deal was the meeting
+          --     about?). Attribute it only when it is the contact's ONLY open
+          --     deal; otherwise fall back to deal_id-only, accepting a possible
+          --     false-positive rather than hiding a genuinely neglected sibling
+          --     (a false-negative defeats the whole stale-sweep).
+          SELECT MAX(a.created_at)   AS t FROM crm_activities a
+            WHERE d.contact_id IS NOT NULL AND a.contact_id = d.contact_id AND a.deal_id IS NULL
+              AND (SELECT COUNT(*) FROM crm_deals sib
+                   WHERE sib.contact_id = d.contact_id AND sib.stage NOT IN ('closed_won', 'closed_lost') AND sib.closed_at IS NULL) = 1
+          UNION ALL
+          SELECT MAX(a.completed_at) AS t FROM crm_activities a
+            WHERE d.contact_id IS NOT NULL AND a.contact_id = d.contact_id AND a.deal_id IS NULL
+              AND (SELECT COUNT(*) FROM crm_deals sib
+                   WHERE sib.contact_id = d.contact_id AND sib.stage NOT IN ('closed_won', 'closed_lost') AND sib.closed_at IS NULL) = 1
           UNION ALL
           SELECT d.updated_at        AS t
         )
@@ -384,13 +529,54 @@ export function getStaleDeals(
     ORDER BY last_touch ASC
   `).all() as Array<CrmDeal & { last_touch: string | null }>;
 
+  return {
+    nowMs,
+    rows: rows
+      .map((r) => ({ ...r, last_touch: r.last_touch ?? r.updated_at }))
+      .filter((r) => r.last_touch < cutoff),
+  };
+}
+
+export function getStaleDeals(
+  db: Database.Database,
+  opts?: { days?: number },
+): StaleDeal[] {
+  const { nowMs, rows } = staleCandidates(db, opts?.days ?? 7);
   return rows
-    .map((r) => ({ ...r, last_touch: r.last_touch ?? r.updated_at }))
-    .filter((r) => r.last_touch < cutoff)
+    // Intentional hold (Q3-send tag / snoozed_until / "hold until <date>"): a
+    // deliberately parked deal is not "neglected". Suppressed only until the
+    // hold expires — then it resurfaces if still quiet.
+    .filter((r) => dealHoldUntil(r, nowMs) === null)
     .map((r) => ({
       ...r,
       days_stale: Math.floor((nowMs - Date.parse(r.last_touch)) / 86400000),
     }));
+}
+
+export interface HeldDeal extends StaleDeal {
+  /** ISO timestamp the intentional hold expires — after this the deal re-enters the stale sweep. */
+  held_until: string;
+}
+
+/**
+ * The inverse of getStaleDeals: deals that WOULD be flagged stale but are on an
+ * intentional hold (dealHoldUntil). Lets sales see what is deliberately parked
+ * and when each item resurfaces, instead of the hold being a silent drop.
+ */
+export function getHeldDeals(
+  db: Database.Database,
+  opts?: { days?: number },
+): HeldDeal[] {
+  const { nowMs, rows } = staleCandidates(db, opts?.days ?? 7);
+  return rows
+    .map((r) => ({ r, held_until: dealHoldUntil(r, nowMs) }))
+    .filter((x): x is { r: CrmDeal & { last_touch: string }; held_until: string } => x.held_until !== null)
+    .map(({ r, held_until }) => ({
+      ...r,
+      held_until,
+      days_stale: Math.floor((nowMs - Date.parse(r.last_touch)) / 86400000),
+    }))
+    .sort((a, b) => Date.parse(a.held_until) - Date.parse(b.held_until));
 }
 
 // --- Activities ---

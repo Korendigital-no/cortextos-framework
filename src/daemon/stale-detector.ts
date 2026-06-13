@@ -47,6 +47,31 @@ export function isWatchdogHeartbeat(status: string): boolean {
   return status.startsWith('[watchdog]');
 }
 
+/**
+ * Whether the idle-session watchdog should write its `[watchdog]` heartbeat.
+ *
+ * Skip it when the agent has posted its OWN heartbeat within the watchdog window:
+ * firing unconditionally overwrites a fresh agent beat with a "[watchdog] … idle"
+ * status, so an actively-working but quiet agent shows idle until its next beat
+ * (PR #100 codex P2). Fire (the liveness proof for genuine idle) when there is no
+ * readable heartbeat, when the latest beat is the daemon's own `[watchdog]`
+ * writer, or when the latest agent beat is older than the watchdog interval.
+ */
+export function shouldFireIdleWatchdog(
+  hb: { status?: string; last_heartbeat?: string; timestamp?: string } | null | undefined,
+  nowMs: number,
+  intervalMs: number,
+): boolean {
+  if (!hb) return true;
+  // `timestamp` is the legacy field name (Heartbeat type) — fall back to it as
+  // other heartbeat readers do (e.g. bus/agents.ts), or a legacy record with only
+  // `timestamp` would parse empty and fire over a fresh agent beat.
+  const lastBeatMs = Date.parse(hb.last_heartbeat ?? hb.timestamp ?? '');
+  if (!Number.isFinite(lastBeatMs)) return true;
+  if (isWatchdogHeartbeat(hb.status ?? '')) return true;
+  return nowMs - lastBeatMs >= intervalMs;
+}
+
 export interface StaleInput {
   /** Successful injections since the last agent-originated heartbeat. */
   injectionsSinceAgentBeat: number;
@@ -88,4 +113,18 @@ export function circuitAllowsRestart(circuit: StaleCircuit, nowMs: number): bool
 
 export function recordCircuitRestart(circuit: StaleCircuit, nowMs: number): StaleCircuit {
   return { restarts: [...circuit.restarts.filter(ts => nowMs - ts < STALE_CIRCUIT_WINDOW_MS), nowMs] };
+}
+
+/**
+ * One-line, greppable arming summary the fast-checker logs when it activates the
+ * detector. The detector deliberately did nothing observable at init, so proving
+ * "is the self-inflicted-stale guard live on this build?" took a commit → dist
+ * marker → process-start chain. This line makes it a single
+ * `grep 'stale-detector armed'` of the fast-checker log. Verifiability is a
+ * feature (task_1780797704445). Pure, so the exact format is unit-tested.
+ */
+export function formatStaleDetectorArmed(t: StaleThresholds = DEFAULT_STALE_THRESHOLDS): string {
+  const windowMin = Math.round(t.windowMs / 60_000);
+  const circuitWindowH = Math.round(STALE_CIRCUIT_WINDOW_MS / 3_600_000);
+  return `stale-detector armed: minInjections=${t.minInjections}, window=${windowMin}min, circuit=${STALE_CIRCUIT_MAX} restarts/${circuitWindowH}h`;
 }

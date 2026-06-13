@@ -200,6 +200,27 @@ export function initializeSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_crm_time_entries_client ON crm_time_entries(client_id);
     CREATE INDEX IF NOT EXISTS idx_crm_time_entries_date ON crm_time_entries(date);
 
+    -- Soft-delete archive for time entries (dashboard-only self-serve delete).
+    -- Deleting a time entry MOVES the row here in a transaction instead of a hard
+    -- DELETE, so every crm_time_entries read + aggregation (10 sites, 4 totals)
+    -- stays correct BY-CONSTRUCTION — no deleted_at filter to forget. Restore
+    -- moves the row back. Columns mirror crm_time_entries (incl. the project_id +
+    -- billable extensions) plus deleted_at; guarded by the mirror test. No FK
+    -- constraints: an archive must survive deletion of a referenced client/project.
+    CREATE TABLE IF NOT EXISTS crm_time_entries_deleted (
+      id TEXT PRIMARY KEY,
+      client_id TEXT NOT NULL,
+      project_id TEXT,
+      description TEXT NOT NULL,
+      hours REAL NOT NULL,
+      date TEXT NOT NULL,
+      billable INTEGER,
+      agent TEXT,
+      created_at TEXT NOT NULL,
+      deleted_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_crm_time_entries_deleted_client ON crm_time_entries_deleted(client_id);
+
     CREATE TABLE IF NOT EXISTS crm_client_projects (
       id TEXT PRIMARY KEY, client_id TEXT NOT NULL REFERENCES crm_clients(id),
       name TEXT NOT NULL, description TEXT, status TEXT DEFAULT 'active',
@@ -347,11 +368,21 @@ export function initializeSchema(db: Database.Database): void {
   safeAddColumn(db, 'crm_documents', 'project_id', 'TEXT REFERENCES crm_client_projects(id)');
   safeAddColumn(db, 'crm_meetings', 'ai_parsed', 'TEXT');
   safeAddColumn(db, 'crm_meetings', 'email_draft', 'TEXT');
+  // Soft-delete for clients with billing history (accounting integrity: a client
+  // that ever logged time is archived, not destroyed). Dashboard-only column —
+  // the active client list filters `deleted_at IS NULL`; restore clears it.
+  safeAddColumn(db, 'crm_clients', 'deleted_at', 'TEXT');
+  // Intentional-hold/snooze for the stale-deal sweep: a deal with a future
+  // snoozed_until (or a "Q3 send" / "hold until <date>" marker in title/notes)
+  // is suppressed from the stale sweep until it expires. Mirror so dashboard
+  // deal queries resolve the column. See dealHoldUntil() in src/bus/crm.ts.
+  safeAddColumn(db, 'crm_deals', 'snoozed_until', 'TEXT');
 
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_crm_time_entries_project ON crm_time_entries(project_id);
     CREATE INDEX IF NOT EXISTS idx_crm_documents_client ON crm_documents(client_id);
     CREATE INDEX IF NOT EXISTS idx_crm_documents_project ON crm_documents(project_id);
+    CREATE INDEX IF NOT EXISTS idx_crm_clients_deleted_at ON crm_clients(deleted_at);
     CREATE INDEX IF NOT EXISTS idx_crm_deals_company ON crm_deals(company_id);
     CREATE INDEX IF NOT EXISTS idx_crm_activities_due ON crm_activities(due_at);
     CREATE INDEX IF NOT EXISTS idx_crm_meetings_fathom ON crm_meetings(fathom_recording_id);

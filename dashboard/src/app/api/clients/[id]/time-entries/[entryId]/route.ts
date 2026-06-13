@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import { db } from '@/lib/db';
 import { projectBelongsToClient } from '@/lib/crm-client-auth';
 import { normalizeBillable } from '@/lib/billable';
+import { archiveTimeEntry } from '@/lib/time-entry-archive';
 
 export const dynamic = 'force-dynamic';
 
@@ -77,11 +78,18 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   return Response.json({ ok: true });
 }
 
+/**
+ * Soft delete: MOVE the entry into the crm_time_entries_deleted archive instead
+ * of a hard DELETE. The row leaves crm_time_entries, so every live read +
+ * aggregation excludes it by-construction (no deleted_at filter to forget across
+ * the 10 read sites), and it stays recoverable via the restore endpoint / undo.
+ * The move is transactional so a row can never exist in both tables or neither.
+ */
 export async function DELETE(_request: NextRequest, { params }: { params: Promise<{ id: string; entryId: string }> }) {
   const { id: clientId, entryId } = await params;
   if (!entryBelongsToClient(entryId, clientId)) {
     return Response.json({ error: 'Time entry not found' }, { status: 404 });
   }
-  db.prepare('DELETE FROM crm_time_entries WHERE id = ?').run(entryId);
+  archiveTimeEntry(db, entryId, new Date().toISOString());
   return Response.json({ ok: true });
 }

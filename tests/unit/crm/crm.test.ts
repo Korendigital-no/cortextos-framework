@@ -9,6 +9,7 @@ import {
   createContact, getContact, listContacts, updateContact, upsertContactByEmail,
   createCompany, getCompany, listCompanies, updateCompany,
   createDeal, getDeal, listDeals, updateDeal, getPipeline, getStaleDeals,
+  getHeldDeals, dealHoldUntil, parseHoldDate,
   createActivity, listActivities, getFollowUps, completeActivity, deleteActivity,
   getActivity, isPendingFollowUp,
   createMeeting, getMeeting, listMeetings,
@@ -154,6 +155,20 @@ describe('Deals', () => {
     expect(updated.closed_at).toBeTruthy();
   });
 
+  it('clears closed_at when a deal is reopened to a non-closed stage (Codex #95 P2)', () => {
+    const deal = createDeal(db, { title: 'Reopened Deal', stage: 'qualified' });
+    updateDeal(db, deal.id, { stage: 'closed_lost' });
+    expect(getDeal(db, deal.id)!.closed_at).toBeTruthy();
+    updateDeal(db, deal.id, { stage: 'qualified' }); // reopen
+    expect(getDeal(db, deal.id)!.closed_at).toBeNull();
+  });
+
+  it('respects an explicit closed_at on update — does not auto-clobber when caller sets it', () => {
+    const deal = createDeal(db, { title: 'Explicit close', stage: 'qualified' });
+    updateDeal(db, deal.id, { stage: 'contacted', closed_at: '2026-01-01T00:00:00Z' });
+    expect(getDeal(db, deal.id)!.closed_at).toBe('2026-01-01T00:00:00Z');
+  });
+
   it('returns pipeline aggregation', () => {
     createDeal(db, { title: 'A', value_nok: 10000, stage: 'lead' });
     createDeal(db, { title: 'B', value_nok: 20000, stage: 'lead' });
@@ -232,6 +247,65 @@ describe('getStaleDeals (resolution-join staleness)', () => {
     expect(getStaleDeals(db).map(d => d.id)).not.toContain(deal.id);
   });
 
+  it('counts contact-linked activities — a quiet deal whose contact was just met is not false-flagged (Codex #95 follow-up)', () => {
+    // Cal.com bookings + Fathom meetings write an activity with contact_id but
+    // NO deal_id. A deal whose deal-linked activity is old but whose CONTACT
+    // was met 1d ago must NOT re-flag stale.
+    const contact = createContact(db, { name: 'Met Recently', email: 'met@test.com' });
+    const deal = createDeal(db, { title: 'Quiet but contact met', stage: 'contacted', contact_id: contact.id });
+    backdateDeal(deal.id, daysAgo(10));
+    insertActivity({ deal_id: deal.id, created_at: daysAgo(10) }); // old deal-linked touch
+    createActivity(db, { type: 'meeting', subject: 'Cal booking', contact_id: contact.id }); // recent, no deal_id
+
+    expect(getStaleDeals(db).map(d => d.id)).not.toContain(deal.id);
+  });
+
+  it('contactless deal stays on the deal_id path — an unrelated contact activity does not rescue it (IS NOT NULL guard)', () => {
+    const other = createContact(db, { name: 'Unrelated', email: 'unrelated@test.com' });
+    const deal = createDeal(db, { title: 'Contactless quiet', stage: 'contacted' }); // contact_id NULL
+    backdateDeal(deal.id, daysAgo(10));
+    insertActivity({ deal_id: deal.id, created_at: daysAgo(10) });
+    createActivity(db, { type: 'meeting', subject: 'someone else', contact_id: other.id }); // recent, unrelated
+
+    expect(getStaleDeals(db).map(d => d.id)).toContain(deal.id);
+  });
+
+  it('a sibling deal sharing the contact is NOT rescued by an activity linked to another deal (Codex P2)', () => {
+    // Contact has deal A (recent activity linked to A) and deal B (quiet). B
+    // must still flag stale — A's deal-linked activity is not a touch for B,
+    // because the contact branch only counts activities with deal_id IS NULL.
+    const contact = createContact(db, { name: 'Two Deals', email: 'two@test.com' });
+    const dealA = createDeal(db, { title: 'Active A', stage: 'contacted', contact_id: contact.id });
+    const dealB = createDeal(db, { title: 'Quiet B', stage: 'contacted', contact_id: contact.id });
+    backdateDeal(dealA.id, daysAgo(10));
+    backdateDeal(dealB.id, daysAgo(10));
+    insertActivity({ deal_id: dealA.id, created_at: daysAgo(1) });  // recent, linked to A only
+    insertActivity({ deal_id: dealB.id, created_at: daysAgo(10) }); // B's own touch is old
+
+    const ids = getStaleDeals(db).map(d => d.id);
+    expect(ids).not.toContain(dealA.id); // A is fresh
+    expect(ids).toContain(dealB.id);     // B still stale — A's activity must not rescue it
+  });
+
+  it('contact-only touch is ambiguous with multiple open deals — falls back to deal_id-only (Codex P2 round 2)', () => {
+    // Contact has TWO open deals. A Cal/Fathom meeting logged contact-only (no
+    // deal_id) cannot be attributed to one deal, so neither is rescued — a
+    // genuinely neglected sibling must still surface (a false-negative that
+    // hides a stale deal is worse than a false-positive sales can dismiss).
+    const contact = createContact(db, { name: 'Ambiguous', email: 'amb@test.com' });
+    const dealA = createDeal(db, { title: 'Open A', stage: 'contacted', contact_id: contact.id });
+    const dealB = createDeal(db, { title: 'Open B', stage: 'contacted', contact_id: contact.id });
+    backdateDeal(dealA.id, daysAgo(10));
+    backdateDeal(dealB.id, daysAgo(10));
+    insertActivity({ deal_id: dealA.id, created_at: daysAgo(10) });
+    insertActivity({ deal_id: dealB.id, created_at: daysAgo(10) });
+    createActivity(db, { type: 'meeting', subject: 'contact-only', contact_id: contact.id }); // recent, no deal_id
+
+    const ids = getStaleDeals(db).map(d => d.id);
+    expect(ids).toContain(dealA.id); // ambiguous touch does not rescue either
+    expect(ids).toContain(dealB.id);
+  });
+
   it('excludes deals that already have a pending follow-up (tracked elsewhere)', () => {
     const deal = createDeal(db, { title: 'Has Open Follow-up', stage: 'contacted' });
     backdateDeal(deal.id, daysAgo(20));
@@ -257,6 +331,20 @@ describe('getStaleDeals (resolution-join staleness)', () => {
     const ids = getStaleDeals(db).map(d => d.id);
     expect(ids).not.toContain(won.id);
     expect(ids).not.toContain(lost.id);
+  });
+
+  it('a reopened deal can become stale again — closed_at is cleared on reopen (Codex #95 P2)', () => {
+    // A deal closed then reopened (stage moved back to an open stage) must
+    // re-enter the stale sweep. Before the fix, closed_at lingered after the
+    // close, so the `closed_at IS NULL` guard excluded the deal permanently even
+    // though it is open and has gone quiet.
+    const deal = createDeal(db, { title: 'Reopened & quiet', stage: 'contacted' });
+    updateDeal(db, deal.id, { stage: 'closed_lost' }); // closed (stamps closed_at)
+    updateDeal(db, deal.id, { stage: 'contacted' });   // reopened (must clear closed_at)
+    backdateDeal(deal.id, daysAgo(10));                // went quiet after reopen
+    insertActivity({ deal_id: deal.id, created_at: daysAgo(10) });
+
+    expect(getStaleDeals(db).map(d => d.id)).toContain(deal.id);
   });
 
   it('treats a recent activity as a touch (not stale)', () => {
@@ -307,6 +395,147 @@ describe('getStaleDeals (resolution-join staleness)', () => {
   it('returns an empty list when there is nothing stale', () => {
     createDeal(db, { title: 'Fresh', stage: 'lead' });
     expect(getStaleDeals(db)).toEqual([]);
+  });
+
+  // --- Intentional-hold / snooze suppression (sales caught Åreknute/"Q3 send"
+  // being false-flagged stale; a deliberately parked deal is not neglected) ---
+
+  it('does NOT flag a deal with a future snoozed_until (explicit park)', () => {
+    const deal = createDeal(db, { title: 'Parked deal', stage: 'contacted' });
+    backdateDeal(deal.id, daysAgo(30));
+    db.prepare('UPDATE crm_deals SET snoozed_until = ? WHERE id = ?').run('2999-01-01T00:00:00Z', deal.id);
+    expect(getStaleDeals(db).map(d => d.id)).not.toContain(deal.id);
+  });
+
+  it('DOES flag a deal whose snoozed_until is in the past (hold expired → resurfaces)', () => {
+    const deal = createDeal(db, { title: 'Expired snooze', stage: 'contacted' });
+    backdateDeal(deal.id, daysAgo(30));
+    db.prepare('UPDATE crm_deals SET snoozed_until = ? WHERE id = ?').run('2000-01-01T00:00:00Z', deal.id);
+    expect(getStaleDeals(db).map(d => d.id)).toContain(deal.id);
+  });
+
+  it('does NOT flag a deal with a "hold until <future date>" note', () => {
+    const deal = createDeal(db, { title: 'Quiet', stage: 'contacted', notes: 'on hold until 2999-01-01' });
+    backdateDeal(deal.id, daysAgo(30));
+    expect(getStaleDeals(db).map(d => d.id)).not.toContain(deal.id);
+  });
+
+  it('DOES flag a deal whose "hold until <date>" is in the past', () => {
+    const deal = createDeal(db, { title: 'Quiet', stage: 'contacted', notes: 'hold until 2000-01-01' });
+    backdateDeal(deal.id, daysAgo(30));
+    expect(getStaleDeals(db).map(d => d.id)).toContain(deal.id);
+  });
+
+  it('getHeldDeals surfaces a suppressed deal with its resurface date; getStaleDeals omits it', () => {
+    const held = createDeal(db, { title: 'Åreknute — Pabau (Q3 send)', stage: 'lead' });
+    const stale = createDeal(db, { title: 'Genuinely neglected', stage: 'contacted' });
+    backdateDeal(held.id, daysAgo(15));
+    backdateDeal(stale.id, daysAgo(15));
+    db.prepare('UPDATE crm_deals SET snoozed_until = ? WHERE id = ?').run('2999-01-01T00:00:00Z', held.id);
+
+    expect(getStaleDeals(db).map(d => d.id)).toEqual([stale.id]);
+    const heldList = getHeldDeals(db);
+    expect(heldList.map(d => d.id)).toContain(held.id);
+    expect(heldList.map(d => d.id)).not.toContain(stale.id);
+    expect(heldList.find(d => d.id === held.id)!.held_until).toBe('2999-01-01T00:00:00Z');
+    expect(heldList.find(d => d.id === held.id)!.days_stale).toBeGreaterThanOrEqual(7);
+  });
+
+  it('getHeldDeals only considers candidates past the window — a fresh held deal is not listed', () => {
+    const deal = createDeal(db, { title: 'Recently touched + snoozed', stage: 'contacted' });
+    backdateDeal(deal.id, daysAgo(2)); // within window → not a stale candidate
+    db.prepare('UPDATE crm_deals SET snoozed_until = ? WHERE id = ?').run('2999-01-01T00:00:00Z', deal.id);
+    expect(getHeldDeals(db).map(d => d.id)).not.toContain(deal.id);
+  });
+});
+
+describe('dealHoldUntil (intentional-hold parsing)', () => {
+  const MID_Q2 = Date.parse('2026-05-15T00:00:00Z'); // mid Q2 2026
+
+  it('returns null when there is no hold signal', () => {
+    expect(dealHoldUntil({ title: 'Normal deal', notes: 'some notes' }, MID_Q2)).toBeNull();
+    expect(dealHoldUntil({ title: null, notes: null }, MID_Q2)).toBeNull();
+  });
+
+  it('resolves a "Q3 send" tag to the start of Q3 (future → held)', () => {
+    expect(dealHoldUntil({ title: 'Åreknute (Q3 send)' }, MID_Q2)).toBe('2026-07-01T00:00:00Z');
+    expect(dealHoldUntil({ title: 'Deal — Q4 hold' }, MID_Q2)).toBe('2026-10-01T00:00:00Z');
+  });
+
+  it('does NOT hold for a quarter we are already in or past (window open → resurfaces)', () => {
+    expect(dealHoldUntil({ title: 'Q2 send' }, MID_Q2)).toBeNull();      // in Q2 now
+    expect(dealHoldUntil({ title: 'Q1 send' }, MID_Q2)).toBeNull();      // Q1 passed
+    const midQ3 = Date.parse('2026-08-15T00:00:00Z');
+    expect(dealHoldUntil({ title: 'Q3 send' }, midQ3)).toBeNull();       // now in Q3
+  });
+
+  it('matches reversed and Norwegian quarter phrasing', () => {
+    expect(dealHoldUntil({ title: 'send in Q3' }, MID_Q2)).toBe('2026-07-01T00:00:00Z');
+    expect(dealHoldUntil({ notes: 'send i Q4' }, MID_Q2)).toBe('2026-10-01T00:00:00Z');
+    expect(dealHoldUntil({ title: 'Q3-sende kampanje' }, MID_Q2)).toBe('2026-07-01T00:00:00Z');
+  });
+
+  it('parses "hold/snooze until <date>" in ISO and DD.MM.YYYY', () => {
+    expect(dealHoldUntil({ notes: 'on hold until 2026-08-01' }, MID_Q2)).toBe('2026-08-01T00:00:00Z');
+    expect(dealHoldUntil({ notes: 'snooze til 01.08.2026' }, MID_Q2)).toBe('2026-08-01T00:00:00Z');
+    expect(dealHoldUntil({ notes: 'parkert til 01/08/2026' }, MID_Q2)).toBe('2026-08-01T00:00:00Z');
+    expect(dealHoldUntil({ notes: 'på vent til 2026-08-01' }, MID_Q2)).toBe('2026-08-01T00:00:00Z');
+  });
+
+  it('ignores a past or malformed hold date', () => {
+    expect(dealHoldUntil({ notes: 'hold until 2000-01-01' }, MID_Q2)).toBeNull();
+    expect(dealHoldUntil({ notes: 'hold until 2026-13-40' }, MID_Q2)).toBeNull(); // invalid month/day
+    expect(dealHoldUntil({ notes: 'hold until 31.02.2026' }, MID_Q2)).toBeNull(); // Feb 31 overflow
+  });
+
+  it('does NOT park on "hold <Q>" meeting-language (only the Q-first "Q3 hold" is a park signal)', () => {
+    // "hold Q3 review call" is a note about a meeting to hold, not a park. The
+    // reverse pattern is send-verbs only — a false-park here would be exactly the
+    // silent false-negative the doctrine forbids.
+    expect(dealHoldUntil({ notes: 'hold Q3 review call' }, MID_Q2)).toBeNull();
+    expect(dealHoldUntil({ title: 'hold a Q4 pricing discussion' }, MID_Q2)).toBeNull();
+    // But the intentional Q-first park form still holds:
+    expect(dealHoldUntil({ title: 'Q3 hold' }, MID_Q2)).toBe('2026-07-01T00:00:00Z');
+  });
+
+  it('does NOT roll a past quarter forward to next year (cross-year ambiguity → resurfaces, per doctrine)', () => {
+    // "Q1 send" entered in December is year-ambiguous (next year's Q1, or
+    // neglected since last Q1?). We never hide it for up to a year — it
+    // resurfaces. Precise cross-year parks use snoozed_until / "hold until".
+    const december = Date.parse('2026-12-15T00:00:00Z');
+    expect(dealHoldUntil({ title: 'Q1 send' }, december)).toBeNull();
+    // The explicit escape hatch carries an unambiguous year and DOES hold:
+    expect(dealHoldUntil({ notes: 'hold until 2027-01-01' }, december)).toBe('2027-01-01T00:00:00Z');
+  });
+
+  it('honours an explicit structured snoozed_until', () => {
+    expect(dealHoldUntil({ snoozed_until: '2999-01-01T00:00:00Z', title: 'x' }, MID_Q2)).toBe('2999-01-01T00:00:00Z');
+    expect(dealHoldUntil({ snoozed_until: '2000-01-01T00:00:00Z', title: 'x' }, MID_Q2)).toBeNull();
+  });
+
+  it('returns the latest expiry when multiple hold signals are present', () => {
+    const r = dealHoldUntil({ snoozed_until: '2026-08-01T00:00:00Z', title: 'Q4 send' }, MID_Q2);
+    expect(r).toBe('2026-10-01T00:00:00Z'); // Q4 start (Oct) is later than the Aug snooze
+  });
+
+  it('reads the signal from notes as well as title', () => {
+    expect(dealHoldUntil({ title: 'Plain title', notes: 'Q3 send when budget lands' }, MID_Q2)).toBe('2026-07-01T00:00:00Z');
+  });
+});
+
+describe('parseHoldDate (CLI --snooze-until validation)', () => {
+  it('normalises valid ISO and EU dates to UTC midnight ISO', () => {
+    expect(parseHoldDate('2026-08-01')).toBe('2026-08-01T00:00:00Z');
+    expect(parseHoldDate('01.08.2026')).toBe('2026-08-01T00:00:00Z');
+    expect(parseHoldDate('01/08/2026')).toBe('2026-08-01T00:00:00Z');
+  });
+
+  it('rejects unparseable, overflowing, or non-date input (CLI must error, not silently no-op)', () => {
+    expect(parseHoldDate('next tuesday')).toBeNull();
+    expect(parseHoldDate('2026-13-01')).toBeNull(); // month 13
+    expect(parseHoldDate('31.02.2026')).toBeNull(); // Feb 31
+    expect(parseHoldDate('')).toBeNull();
+    expect(parseHoldDate('2026/08/01')).toBeNull(); // ISO must use hyphens
   });
 });
 
