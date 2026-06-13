@@ -210,22 +210,37 @@ export async function createApproval(
   ensureDir(pendingDir);
   atomicWriteSync(join(pendingDir, `${approvalId}.json`), JSON.stringify(approval));
 
-  // Fan-out to the activity channel so the operator can approve/deny from
-  // Telegram without opening the dashboard. AWAITED so short-lived CLI callers do
-  // not exit before the Telegram post fetch completes. Errors are
-  // suppressed inside postApprovalToActivityChannel — activity-channel
-  // unreachable must not block approval creation. Callbacks route back
-  // via the orchestrator's activity-channel poller (see
-  // daemon/agent-manager.ts).
-  await postApprovalToActivityChannel(paths, org, approvalId, title, category, agentName, context, frameworkRoot);
-
-  // Best-effort ping to the requesting agent's own Telegram bot (the
-  // operator's 1:1 conversation with the agent). Closes the gap where
-  // operators not in the activity channel would miss approvals entirely
-  // (the 50h+ Repo-B-style stall). Errors suppressed — see helper.
-  await pingAgentChatId(agentDir, approvalId, title, category, agentName, context);
+  await notifyApprovalCreated(paths, org, approvalId, title, category, agentName, context, frameworkRoot, agentDir);
 
   return approvalId;
+}
+
+/**
+ * Best-effort human notification for a newly-created pending approval: activity
+ * channel (Approve/Deny buttons) + the requesting agent's own Telegram bot.
+ * Both are AWAITED — short-lived CLI callers must not exit before the Telegram
+ * posts complete (the action-gate's bus/CLI surface awaits this too; the
+ * PreToolUse hook surface, with its tight budget, does NOT await — it relies on
+ * the dashboard as the durable approval surface). Errors are suppressed inside
+ * the helpers — an unreachable Telegram/activity channel must not block the gate.
+ * The pending FILE is written by the caller BEFORE this runs, so a notify failure
+ * never loses the approval (the dashboard lists the pending dir regardless).
+ */
+export function notifyApprovalCreated(
+  paths: BusPaths,
+  org: string,
+  approvalId: string,
+  title: string,
+  category: ApprovalCategory,
+  agentName: string,
+  context: string | undefined,
+  frameworkRoot: string | undefined,
+  agentDir: string | undefined,
+): Promise<void> {
+  return Promise.all([
+    postApprovalToActivityChannel(paths, org, approvalId, title, category, agentName, context, frameworkRoot),
+    pingAgentChatId(agentDir, approvalId, title, category, agentName, context),
+  ]).then(() => undefined);
 }
 
 /**

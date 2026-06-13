@@ -133,6 +133,13 @@ export type ApprovalCategory =
   | 'financial'
   | 'deployment'
   | 'data-deletion'
+  // 6th enum value / 5th high-risk gated category (SEC-INJECTION-v1 §3).
+  // Writes to secrets / settings / bootstrap / crons / the approval gate's own
+  // trust anchors (config.json approval_rules, approvals dir, owner-chat source).
+  // MUST be a valid category before any surface references it, or createApproval
+  // throws (validate.ts) — it is part of the action-gate's self-protection
+  // interlock: an agent cannot degrade its own policy without tripping this gate.
+  | 'config-change'
   | 'other';
 
 export type ApprovalStatus = 'pending' | 'approved' | 'rejected';
@@ -149,6 +156,20 @@ export interface Approval {
   updated_at: string;
   resolved_at: string | null;
   resolved_by: string | null;
+  /**
+   * Stable hash of the normalized action this approval authorizes (action-gate).
+   * Present on gate-created approvals; absent on legacy / manually-created ones.
+   * Binds an approval to a specific action so a blanket "category approved" can
+   * never authorize every future action in that category.
+   */
+  action_fingerprint?: string;
+  /**
+   * Set (ISO timestamp) when the action-gate spends an approved row — single-use
+   * for irreversible categories. Once consumed, a re-attempt of the same action
+   * is blocked and creates a fresh approval. Consumption is atomic (rename-claim),
+   * so two concurrent attempts cannot both spend the same approval.
+   */
+  consumed_at?: string | null;
 }
 
 // Agent Config Types (config.json)
@@ -471,6 +492,31 @@ export interface OrgContext {
   default_approval_categories?: string[];
   communication_style?: string;
   dashboard_url?: string;
+  /**
+   * Trusted owner Telegram chat id(s) — the action-gate's control-channel
+   * exemption anchor (SEC-INJECTION-v1 §3 / approval-gate Doc 2 §3, P2-F).
+   * `send-telegram` to one of these is the owner control channel → never gated
+   * and ALWAYS fail-open (the only operator-alert + approval-request path; a
+   * gate bug must never freeze it). Resolved from THIS trusted org-context
+   * source — NOT the agent's own mutable .env, which an injected Write could
+   * repoint to an attacker's chat. Writes to context.json are `config-change`.
+   */
+  owner_telegram_chat_ids?: string[];
+  /**
+   * Action-gate enforcement mode (SEC-INJECTION-v1 §3). Global default for the
+   * org: 'off' (gate disabled — break-glass), 'shadow' (classify + log
+   * would-block, but ALLOW — the safe rollout default), 'enforce' (block gated
+   * categories listed in action_gate_enforce). Lives in the trusted org context,
+   * not agent config, so the mode itself is not self-disablable via a config.json
+   * edit (the #1↔#8 interlock). Absent ⇒ 'shadow'.
+   */
+  action_gate_mode?: 'off' | 'shadow' | 'enforce';
+  /**
+   * Per-category enforce opt-in list. In 'enforce' mode, only categories in this
+   * list actually block; the rest stay shadow (log would-block, allow). Grown as
+   * each category's pattern table proves out in shadow telemetry. Absent ⇒ [].
+   */
+  action_gate_enforce?: ApprovalCategory[];
   /** When true, agents are instructed at startup that every task submitted
    *  for review must have at least one file deliverable attached via
    *  save-output. The instruction is injected into the boot prompt

@@ -54,7 +54,7 @@ export const getConfigCommand = new Command('get-config')
     // Validate default_approval_categories — fall back to hardcoded default if not an array
     const defaultApprovalCategories = Array.isArray(orgCtx.default_approval_categories)
       ? orgCtx.default_approval_categories
-      : ['external-comms', 'financial', 'deployment', 'data-deletion'];
+      : ['external-comms', 'financial', 'deployment', 'data-deletion', 'config-change'];
 
     // Merge: agent wins over org defaults
     const resolved = {
