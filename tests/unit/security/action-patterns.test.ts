@@ -117,6 +117,21 @@ describe('action-patterns: classifyBashSubcommand', () => {
     expect(classifyBashSubcommand('rsync -a /tmp/x orgs/x/agents/y/.claude/settings.json').category).toBe('config-change');
     // moving a code file is NOT config-change
     expect(classifyBashSubcommand('mv src/a.ts src/b.ts').category).toBeNull();
+    // copying FROM a config (source is anchor, dest is /tmp) is NOT a config-change write
+    expect(classifyBashSubcommand('cp orgs/x/agents/y/config.json /tmp/backup').category).toBeNull();
+  });
+
+  it('multi-target / directory-destination writes to trust anchors are caught (R3)', () => {
+    // multiple redirects — second target is a trust anchor
+    expect(classifyBashSubcommand('echo ok > src/ok.ts > orgs/x/agents/y/config.json').category).toBe('config-change');
+    // tee multi-target
+    expect(classifyBashSubcommand('tee src/ok.ts orgs/x/agents/y/config.json').category).toBe('config-change');
+    // cp into the approvals DIRECTORY (bare dir, no trailing slash) — forge a resolved row
+    expect(classifyBashSubcommand('cp /tmp/approval_1.json orgs/x/approvals/resolved').category).toBe('config-change');
+    // cp -t target-directory form (dest is the -t arg, not the last operand)
+    expect(classifyBashSubcommand('cp -t orgs/x/approvals/resolved /tmp/approval_1.json').category).toBe('config-change');
+    // benign multi-target write to code paths only ⇒ ALLOW
+    expect(classifyBashSubcommand('tee src/a.ts src/b.ts').category).toBeNull();
   });
 
   it('ordinary commands and code writes are ALLOW', () => {

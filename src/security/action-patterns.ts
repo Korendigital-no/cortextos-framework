@@ -73,6 +73,45 @@ export function isScratchPath(targetPath: string, scratchPrefixes: string[] = DE
 }
 
 /**
+ * True if a path is a trust-anchor DIRECTORY (a copy/move INTO it lands a file
+ * under a trust anchor — e.g. `cp forged.json orgs/x/approvals/resolved`). The
+ * file-form `isConfigChangePath` requires a trailing segment, so the bare-dir form
+ * needs this companion check.
+ */
+export function isConfigChangeDir(targetPath: string): boolean {
+  const p = targetPath.replace(/\\/g, '/').replace(/\/+$/, '');
+  if (/\/approvals\/(pending|resolved)$/.test(p)) return true;
+  if (/(^|\/)\.claude$/.test(p)) return true;
+  return false;
+}
+
+/** Collect EVERY write-destination token in a single sub-command (redirects, tee
+ * targets, and cp/mv/install/rsync/ln destinations incl. the `-t <dir>` form). */
+export function bashWriteTargets(sub: string): string[] {
+  const targets: string[] = [];
+  // all `>` / `>>` redirect targets (not just the first)
+  for (const m of sub.matchAll(/(?:>>?)\s*([^\s|;&<>]+)/g)) targets.push(stripQuotes(m[1]));
+  // `tee [-a] target...` — every non-flag operand is a write destination
+  const tee = sub.match(/\btee\b\s+(.*)$/i);
+  if (tee) {
+    for (const t of tee[1].split(/[\s|;&]+/)) if (t && !t.startsWith('-')) targets.push(stripQuotes(t));
+  }
+  // cp/mv/install/rsync/ln — the DESTINATION only (sources are reads, not writes):
+  // `-t <dir>` / `--target-directory[=dir]` form, else the last non-flag operand.
+  const cpm = sub.match(/\b(cp|mv|install|rsync|ln)\b\s+(.*)$/i);
+  if (cpm) {
+    const toks = cpm[2].split(/\s+/).filter(Boolean);
+    let dest: string | undefined;
+    const tIdx = toks.findIndex(t => t === '-t' || t === '--target-directory');
+    if (tIdx >= 0 && toks[tIdx + 1]) dest = toks[tIdx + 1];
+    if (!dest) { const eq = toks.find(t => t.startsWith('--target-directory=')); if (eq) dest = eq.split('=').slice(1).join('='); }
+    if (!dest) { const nonFlag = toks.filter(t => !t.startsWith('-')); dest = nonFlag[nonFlag.length - 1]; }
+    if (dest) targets.push(stripQuotes(dest));
+  }
+  return targets;
+}
+
+/**
  * Known external *send* endpoints (exfiltration / external-comms vector). A POST
  * of data to one of these is external-comms. Telegram is handled specially by the
  * caller (owner chat-id → exempt); the others are unconditionally external.
@@ -221,20 +260,12 @@ export function classifyBashSubcommand(sub: string, opts: BashClassifyOptions = 
   // error so a corrupt config can't become a fail-open manufacture bypass, the
   // #1↔#8 interlock). Writing secrets/settings via shell redirection or tee; the
   // redirect target's quotes are stripped (`> "config.json"` must not evade). ---
-  const redirectMatch = s.match(/(?:>>?|\btee\b\s+(?:-a\s+)?)\s*([^\s|;&]+)/);
-  if (redirectMatch && isConfigChangePath(stripQuotes(redirectMatch[1]))) {
+  // Collect EVERY write destination (redirects incl. multi-target, tee multi-target,
+  // cp/mv/install/rsync/ln dest incl. -t dir form) and flag if ANY is a trust anchor
+  // (file OR directory). Covers `> a > b`, `tee a b`, `cp src approvals/resolved`,
+  // `cp -t dir src` — the multi-target/dir-dest evasions of the single-target form.
+  if (bashWriteTargets(s).some(t => isConfigChangePath(t) || isConfigChangeDir(t))) {
     return { category: 'config-change', catastrophic: true, label: 'shell-write-config' };
-  }
-  // copy/move/link/sync a file ONTO a trust-anchor path — same class as
-  // redirection (e.g. `mv /tmp/x .../approvals/resolved/y.json`, `cp evil
-  // .../config.json`). The destination is the last non-flag operand.
-  const copyMatch = s.match(/\b(cp|mv|install|rsync|ln)\b\s+(.*)$/i);
-  if (copyMatch) {
-    const operands = copyMatch[2].split(/\s+/).filter(t => t && !t.startsWith('-')).map(stripQuotes);
-    const dest = operands[operands.length - 1];
-    if (dest && isConfigChangePath(dest)) {
-      return { category: 'config-change', catastrophic: true, label: 'shell-copy-config' };
-    }
   }
 
   // --- self-CLI subversion: an agent shelling a GATED bus subcommand directly ---
