@@ -132,6 +132,10 @@ describe('action-patterns: classifyBashSubcommand', () => {
     expect(classifyBashSubcommand('cp -t orgs/x/approvals/resolved /tmp/approval_1.json').category).toBe('config-change');
     // benign multi-target write to code paths only ⇒ ALLOW
     expect(classifyBashSubcommand('tee src/a.ts src/b.ts').category).toBeNull();
+    // BARE RELATIVE trust-anchor paths (cwd already the org/root dir) — no leading slash
+    expect(classifyBashSubcommand("echo '{}' > approvals/resolved/forged.json").category).toBe('config-change');
+    expect(classifyBashSubcommand('cp forged.json approvals/resolved').category).toBe('config-change');
+    expect(classifyBashSubcommand('cp -t approvals/pending forged.json').category).toBe('config-change');
   });
 
   it('ordinary commands and code writes are ALLOW', () => {

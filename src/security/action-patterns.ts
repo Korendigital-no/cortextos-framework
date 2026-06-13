@@ -62,7 +62,8 @@ export function isConfigChangePath(targetPath: string): boolean {
   // Bootstrap / identity / policy markdown an injection would target to escalate
   if (/(^|\/)(GUARDRAILS|IDENTITY|SOUL|GOALS|SYSTEM|USER|AGENTS)\.md$/.test(p)) return true;
   // The gate's own approval rows (forging a resolved/approved row = manufacture).
-  if (/\/approvals\/(pending|resolved)\//.test(p)) return true;
+  // `(^|/)` so a bare RELATIVE path (cwd already in the org/root) is caught too.
+  if (/(^|\/)approvals\/(pending|resolved)\//.test(p)) return true;
   return false;
 }
 
@@ -80,7 +81,7 @@ export function isScratchPath(targetPath: string, scratchPrefixes: string[] = DE
  */
 export function isConfigChangeDir(targetPath: string): boolean {
   const p = targetPath.replace(/\\/g, '/').replace(/\/+$/, '');
-  if (/\/approvals\/(pending|resolved)$/.test(p)) return true;
+  if (/(^|\/)approvals\/(pending|resolved)$/.test(p)) return true;
   if (/(^|\/)\.claude$/.test(p)) return true;
   return false;
 }
