@@ -226,6 +226,24 @@ export function extractTelegramChatId(sub: string): string | null {
 }
 
 /**
+ * The URL target carried by a single shell token, or null. A target is either a BARE
+ * http(s) operand, or curl's explicit `--url=<URL>` flag value (the space form
+ * `--url <URL>` is already a separate bare token). We intentionally do NOT extract URLs
+ * from arbitrary `--flag=…` values (e.g. `--data=https://x` is request BODY, not a
+ * target — extracting it would false-positive). A URL inside another URL's query
+ * (`…?redirect=https://x`) is part of that single token and is parsed as ONE authority,
+ * never a second target. (Deeper target-injection — config files via `-K`, command
+ * substitution — is the documented out-of-scope interpreter limit, Phase-2.)
+ */
+function urlCandidate(token: string): string | null {
+  const lower = token.toLowerCase();
+  if (lower.startsWith('http://') || lower.startsWith('https://')) return token;
+  const m = token.match(/^--url=(.+)$/i);
+  if (m && /^https?:\/\//i.test(m[1])) return m[1];
+  return null;
+}
+
+/**
  * True if `command` contains a URL whose HOST is exactly `host`, matched at a proper
  * host boundary — NOT a bare substring (CodeQL js/incomplete-url-substring-sanitization).
  * The host must follow `scheme://` and terminate at a host/path/query boundary, so:
@@ -249,11 +267,11 @@ export function urlHasHost(command: string, host: string): boolean {
   // hostname so it can never equal `api.telegram.org`; a host appearing in a path/query
   // is never the parsed authority. A scheme is required (the authority is unambiguous).
   for (const token of command.split(/[\s'"`|;&<>()]+/)) {
-    const lower = token.toLowerCase();
-    if (!lower.startsWith('http://') && !lower.startsWith('https://')) continue;
+    const cand = urlCandidate(token);
+    if (!cand) continue;
     let parsed: URL;
     try {
-      parsed = new URL(token);
+      parsed = new URL(cand);
     } catch {
       continue; // not a valid URL token
     }
@@ -279,10 +297,10 @@ export function urlHasHost(command: string, host: string): boolean {
 export function urlHosts(command: string): string[] {
   const hosts: string[] = [];
   for (const token of command.split(/[\s'"`|;&<>()]+/)) {
-    const lower = token.toLowerCase();
-    if (!lower.startsWith('http://') && !lower.startsWith('https://')) continue;
+    const cand = urlCandidate(token);
+    if (!cand) continue;
     try {
-      hosts.push(new URL(token).hostname.toLowerCase());
+      hosts.push(new URL(cand).hostname.toLowerCase());
     } catch {
       // a token that looks like a URL but won't parse — treat as a NON-telegram
       // external target (conservative: it prevents a malformed-URL exemption bypass).
