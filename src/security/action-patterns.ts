@@ -218,13 +218,6 @@ export function splitBashSubcommands(command: string): string[] {
     .filter(Boolean);
 }
 
-/** Extract a Telegram chat_id from a curl/wget command, if present. */
-export function extractTelegramChatId(sub: string): string | null {
-  // chat_id=<id>  (query / form) or "chat_id":"<id>" / "chat_id": <id> (json)
-  const m = sub.match(/chat_id["']?\s*[:=]\s*["']?(-?\d+)/);
-  return m ? m[1] : null;
-}
-
 /**
  * The URL target carried by a single shell token, or null. A target is either a BARE
  * http(s) operand, or curl's explicit `--url=<URL>` flag value (the space form
@@ -376,39 +369,28 @@ export function classifyBashSubcommand(sub: string, opts: BashClassifyOptions = 
   // --- external-comms / financial (host checks are CASE-INSENSITIVE — hosts are
   // lowercase, so an UPPERCASE url like API.STRIPE.COM must not evade) ---
   if (/\b(curl|wget|http|https|fetch)\b/.test(lower)) {
-    // Host checks are anchored to the URL authority (urlHasHost parses each URL token),
-    // NOT a bare substring, so `api.telegram.org.evil.com` / `evil.com?x=api.telegram.org`
-    // cannot match. Compute ALL endpoint classes up front: curl/wget accept MULTIPLE URLs
-    // in one invocation and `-d` posts to every one, so the owner-telegram EXEMPTION (a
-    // positive allow) must apply ONLY when telegram is the SOLE external target. A sub
-    // that co-locates an owner-telegram URL with a send/financial endpoint exfiltrates to
-    // the latter — the exfil/spend host wins, never the exemption (P2-1).
+    // Host checks are anchored to the URL authority (urlHasHost parses each URL token), NOT a
+    // bare substring, so `api.telegram.org.evil.com` / `evil.com?x=api.telegram.org` cannot match.
     const financial = FINANCIAL_HOSTS.some(h => urlHasHost(s, h));
     const send = SEND_ENDPOINT_HOSTS.some(h => urlHasHost(s, h));
     const telegram = urlHasHost(s, TELEGRAM_API_HOST);
-    // Financial is the highest-severity external class → classify first; a co-located
-    // telegram URL can never exempt a spend call.
+    // Financial is the highest-severity external class → classify first.
     if (financial) {
       return { category: 'financial', catastrophic: true, label: 'financial-endpoint' };
     }
     if (telegram) {
-      // Owner-exemption applies ONLY when api.telegram.org is the SOLE external URL in
-      // the sub. ANY other http(s) URL — a known send/financial host OR an UNKNOWN host
-      // (attacker.example) — co-located in the same curl is an exfil sink (-d posts to
-      // ALL URLs), so it can never be owner-exempted. `!send` alone missed the unknown-
-      // host case (codex): count ALL parsed URL hosts, exempt only when every one is
-      // telegram.
+      // Raw curl/wget to the Telegram API is NEVER owner-exempt. The owner control channel is
+      // the `bus send-telegram` CLI (a single fixed positional destination, classified below) —
+      // NOT an arbitrary curl/wget command whose destination can hide in any flag, body,
+      // URL-query, shell quoting (`$'…'`), encoding, or non-flag HTTP client. Recovering the
+      // owner chat_id from arbitrary shell+client syntax is an unwinnable parse (five distinct
+      // decoy/quoting/client bypass edges surfaced in review); REMOVING this positive-allow
+      // dissolves the chat_id-decoy authorization-bypass at the root — there is no exemption
+      // left to abuse — and can only make the gate STRICTER. (A genuine owner send via raw curl,
+      // e.g. sendPhoto which has no bus command yet, is gated under enforce; such sends should
+      // move to a CLI command. Shadow mode ⇒ no behaviour change today.)
       const onlyTelegram = urlHosts(s).every(h => h === TELEGRAM_API_HOST);
-      if (onlyTelegram) {
-        const owners = opts.ownerChatIds;
-        // Owner-ness undeterminable (no owner list) → ALLOW (never freeze the owner
-        // control channel on an unresolvable owner list; see action-gate carve-out).
-        if (owners === undefined) return ALLOW;
-        const chatId = extractTelegramChatId(s);
-        if (chatId !== null && owners.includes(chatId)) return ALLOW; // owner — exempt
-      }
-      // non-owner telegram, OR telegram co-located with ANY other URL → external-comms.
-      return { category: 'external-comms', catastrophic: true, label: onlyTelegram ? 'telegram-nonowner' : 'telegram-colocated-exfil' };
+      return { category: 'external-comms', catastrophic: true, label: onlyTelegram ? 'telegram-send' : 'telegram-colocated-exfil' };
     }
     if (send) {
       return { category: 'external-comms', catastrophic: true, label: 'external-send-endpoint' };
