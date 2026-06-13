@@ -238,9 +238,30 @@ export function extractTelegramChatId(sub: string): string | null {
  * carry a leading path segment (e.g. `slack.com/api`); the boundary is enforced after it.
  */
 export function urlHasHost(command: string, host: string): boolean {
-  const esc = host.replace(/[.]/g, '\\.').replace(/\//g, '\\/');
-  // require an explicit scheme so the authority is unambiguous; end at a host boundary.
-  return new RegExp('https?:\\/\\/' + esc + "(?=[\\/:?#\"'\\s]|$)", 'i').test(command);
+  // `host` may be "example.com" or "example.com/path-prefix" (e.g. slack.com/api).
+  const slash = host.indexOf('/');
+  const wantHost = (slash === -1 ? host : host.slice(0, slash)).toLowerCase();
+  const wantPath = slash === -1 ? '' : host.slice(slash).toLowerCase();
+  // Tokenize on whitespace + shell metacharacters, then PARSE each URL-looking token
+  // with the URL API and compare the parsed authority. We deliberately do NOT regex-
+  // match the hostname (CodeQL js/incomplete-hostname-regexp: host checks must use URL
+  // parsing, not a hand-rolled regex). `api.telegram.org.evil.com` parses to that FULL
+  // hostname so it can never equal `api.telegram.org`; a host appearing in a path/query
+  // is never the parsed authority. A scheme is required (the authority is unambiguous).
+  for (const token of command.split(/[\s'"`|;&<>()]+/)) {
+    const lower = token.toLowerCase();
+    if (!lower.startsWith('http://') && !lower.startsWith('https://')) continue;
+    let parsed: URL;
+    try {
+      parsed = new URL(token);
+    } catch {
+      continue; // not a valid URL token
+    }
+    if (parsed.hostname.toLowerCase() !== wantHost) continue;
+    if (wantPath && !parsed.pathname.toLowerCase().startsWith(wantPath)) continue;
+    return true;
+  }
+  return false;
 }
 
 export interface BashClassifyOptions {
