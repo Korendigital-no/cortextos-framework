@@ -251,4 +251,11 @@ export function initializeCrmSchema(db: Database.Database): void {
   // traffic — the marker lives only on the audit row, nothing to filter
   // downstream.
   safeAlter(db, 'ALTER TABLE crm_webhook_log ADD COLUMN is_test INTEGER DEFAULT 0');
+  // Intentional-hold/snooze for the stale-deal sweep (#stale-hold): a deal can
+  // be deliberately parked ("send in Q3") without an open follow-up task. An
+  // explicit snoozed_until timestamp suppresses the deal from the stale sweep
+  // until it expires, then the deal correctly resurfaces if still untouched. See
+  // dealHoldUntil() in crm.ts, which also reads quarter-send/"hold until <date>"
+  // markers from title/notes for deals snoozed by text rather than this column.
+  safeAlter(db, 'ALTER TABLE crm_deals ADD COLUMN snoozed_until TEXT');
 }

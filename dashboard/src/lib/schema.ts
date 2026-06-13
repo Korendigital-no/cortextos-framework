@@ -372,6 +372,11 @@ export function initializeSchema(db: Database.Database): void {
   // that ever logged time is archived, not destroyed). Dashboard-only column —
   // the active client list filters `deleted_at IS NULL`; restore clears it.
   safeAddColumn(db, 'crm_clients', 'deleted_at', 'TEXT');
+  // Intentional-hold/snooze for the stale-deal sweep: a deal with a future
+  // snoozed_until (or a "Q3 send" / "hold until <date>" marker in title/notes)
+  // is suppressed from the stale sweep until it expires. Mirror so dashboard
+  // deal queries resolve the column. See dealHoldUntil() in src/bus/crm.ts.
+  safeAddColumn(db, 'crm_deals', 'snoozed_until', 'TEXT');
 
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_crm_time_entries_project ON crm_time_entries(project_id);
