@@ -12,7 +12,7 @@ import { join } from 'path';
  */
 const TEMPLATE_ROOT = join(__dirname, '..', '..', '..', 'templates');
 const TEMPLATES = ['agent', 'analyst', 'orchestrator'];
-const REQUIRED_MATCHER_TOOLS = ['Bash', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit'];
+const REQUIRED_MATCHER_TOOLS = ['Bash', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'WebFetch'];
 
 function preToolUse(template: string): any[] {
   const p = join(TEMPLATE_ROOT, template, '.claude', 'settings.json');

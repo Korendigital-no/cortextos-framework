@@ -65,8 +65,9 @@ function str(v: unknown): string | undefined {
  * Every file-MUTATING tool is mapped so none bypasses the config-change gate (P1-1):
  * Write, Edit, MultiEdit, NotebookEdit. Classification of write/edit is by PATH
  * (isConfigChangePath); `content` only binds the approval fingerprint to a payload.
- * Bash is the command string (classified by action-patterns). Everything else
- * (WebFetch/Read/Grep/Glob/WebSearch/unknown) ⇒ null ⇒ allow.
+ * Bash is the command string (classified by action-patterns). WebFetch is
+ * external network I/O and maps to external-comms. Everything else
+ * (Read/Grep/Glob/WebSearch/unknown) ⇒ null ⇒ allow.
  */
 export function toDescriptor(toolName: string, toolInput: unknown): ActionDescriptor | null {
   const ti = (toolInput ?? {}) as Record<string, unknown>;
@@ -102,8 +103,12 @@ export function toDescriptor(toolName: string, toolInput: unknown): ActionDescri
       const path = str(ti.notebook_path);
       return path ? { kind: 'edit', path, content: str(ti.new_source) } : null;
     }
+    case 'WebFetch': {
+      const url = str(ti.url);
+      return url ? { kind: 'web-fetch', url, prompt: str(ti.prompt) } : null;
+    }
     default:
-      return null; // WebFetch/Read/Grep/Glob/WebSearch/unknown ⇒ allow (fast)
+      return null; // Read/Grep/Glob/WebSearch/unknown ⇒ allow (fast)
   }
 }
 

@@ -42,6 +42,7 @@ import { findApproval, consumeApproval, writePendingApproval } from './approval-
 export type ActionDescriptor =
   | { kind: 'telegram'; to: string; text: string; mediaType?: 'photo' | 'document' | null; filePath?: string }
   | { kind: 'bash'; command: string }
+  | { kind: 'web-fetch'; url: string; prompt?: string }
   // `content` (the bytes being written) binds the approval to a specific payload —
   // Doc 3's Write/Edit hook populates it so an approved benign write to a path
   // cannot be spent by a different payload to the same path (P2). Optional for
@@ -93,6 +94,8 @@ export function classifyAction(d: ActionDescriptor, opts: ClassifyOptions = {}):
     }
     case 'bash':
       return classifyBash(d.command, { scratchPrefixes: opts.scratchPrefixes, ownerChatIds: opts.ownerChatIds });
+    case 'web-fetch':
+      return { category: 'external-comms', catastrophic: true, label: 'web-fetch' };
     case 'write':
     case 'edit':
       // config-change is catastrophic (fail-CLOSED on gate error): a corrupt
@@ -161,6 +164,9 @@ export function fingerprint(category: ApprovalCategory, d: ActionDescriptor): st
     case 'bash':
       norm = 'bash\n' + normalizeBash(d.command);
       break;
+    case 'web-fetch':
+      norm = `web-fetch\n${d.url}\n${d.prompt !== undefined ? sha256(d.prompt) : ''}`;
+      break;
     case 'write':
     case 'edit':
       // bind the path AND the content hash (when present) so an approval for one
@@ -210,6 +216,7 @@ function shortTitle(d: ActionDescriptor): string {
   switch (d.kind) {
     case 'telegram': return `send-telegram to ${d.to}`;
     case 'bash': return `bash: ${d.command.slice(0, 80)}`;
+    case 'web-fetch': return `web-fetch: ${d.url.slice(0, 80)}`;
     case 'write':
     case 'edit': return `${d.kind} ${d.path}`;
     case 'bus-command': return `bus ${d.subcommand}`;

