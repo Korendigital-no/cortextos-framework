@@ -406,6 +406,13 @@ export function classifyBashSubcommand(sub: string, opts: BashClassifyOptions = 
     return { category: 'external-comms', catastrophic: true, label: 'cli-send-telegram-nonowner' };
   }
 
+  // `crm-report --send` reads its Telegram destination from env, not a fixed
+  // positional owner channel. The command therefore cannot be owner-exempt at
+  // the bash-string layer; gate it as a catastrophic external document send.
+  if (/\bbus\s+crm-report\b/.test(lower) && /(^|\s)--send(\s|$)/.test(lower)) {
+    return { category: 'external-comms', catastrophic: true, label: 'cli-crm-report-send' };
+  }
+
   // --- deployment (NOT catastrophic — reversible-ish; fails open on gate error) ---
   if (/\bgh\s+pr\s+merge\b/.test(lower)) {
     return { category: 'deployment', catastrophic: false, label: 'gh-pr-merge' };

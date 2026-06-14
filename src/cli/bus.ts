@@ -3456,6 +3456,14 @@ busCommand.command('crm-report')
         return;
       }
 
+      await gateBusAction({
+        kind: 'telegram',
+        to: chatId,
+        text: `crm-report ${type}`,
+        mediaType: 'document',
+        filePath: tmpPath,
+      });
+
       try {
         const { TelegramAPI } = await import('../telegram/api.js');
         const api = new TelegramAPI(botToken);
