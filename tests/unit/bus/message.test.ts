@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, readdirSync, readFileSync } from 'fs';
+import { mkdtempSync, rmSync, readdirSync, readFileSync, writeFileSync, mkdirSync, existsSync, statSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { sendMessage, checkInbox, ackInbox } from '../../../src/bus/message';
+import { verifyInboxMessage } from '../../../src/bus/message-signing';
 import { resolvePaths } from '../../../src/utils/paths';
-import type { BusPaths } from '../../../src/types';
+import type { BusPaths, InboxMessage } from '../../../src/types';
 
 describe('Message Bus', () => {
   let testDir: string;
@@ -68,9 +69,29 @@ describe('Message Bus', () => {
       expect(content).toHaveProperty('timestamp');
       expect(content).toHaveProperty('text', 'Build the page');
       expect(content).toHaveProperty('reply_to', null);
+      expect(content).toHaveProperty('signature');
+      expect(content.signature).toMatchObject({
+        alg: 'Ed25519',
+        signer: 'paul',
+      });
 
       // Verify filename has priority 1 (high)
       expect(files[0]).toMatch(/^1-/);
+    });
+
+    it('creates a per-agent Ed25519 keypair and signs new messages', () => {
+      sendMessage(senderPaths, 'sender', 'receiver', 'normal', 'Signed hello');
+
+      const receiverInbox = join(testDir, 'inbox', 'receiver');
+      const files = readdirSync(receiverInbox).filter(f => f.endsWith('.json'));
+      const msg = JSON.parse(readFileSync(join(receiverInbox, files[0]), 'utf-8')) as InboxMessage;
+
+      const privateKeyPath = join(testDir, 'state', 'sender', 'bus-signing', 'ed25519-private.pem');
+      const publicKeyPath = join(testDir, 'state', 'sender', 'bus-signing', 'ed25519-public.pem');
+      expect(existsSync(privateKeyPath)).toBe(true);
+      expect(existsSync(publicKeyPath)).toBe(true);
+      expect(statSync(publicKeyPath).mode & 0o777).toBe(0o644);
+      expect(verifyInboxMessage(testDir, msg).status).toBe('valid');
     });
 
     it('encodes priority correctly in filename', () => {
@@ -122,6 +143,61 @@ describe('Message Bus', () => {
 
       expect(inboxFiles.length).toBe(0);
       expect(inflightFiles.length).toBe(1);
+    });
+
+    it('accepts unsigned legacy messages and records shadow observability', () => {
+      mkdirSync(receiverPaths.inbox, { recursive: true });
+      const legacy: InboxMessage = {
+        id: 'legacy-1',
+        from: 'mike',
+        to: 'receiver',
+        priority: 'normal',
+        timestamp: '2026-06-14T00:00:00.000Z',
+        text: 'unsigned legacy',
+        reply_to: null,
+      };
+      writeFileSync(join(receiverPaths.inbox, '2-1780000000000-from-mike-abcde.json'), JSON.stringify(legacy));
+
+      const messages = checkInbox(receiverPaths);
+
+      expect(messages).toHaveLength(1);
+      expect(messages[0].id).toBe('legacy-1');
+      const log = readFileSync(join(receiverPaths.logDir, 'bus-signature-shadow.jsonl'), 'utf-8');
+      expect(log).toContain('"status":"unsigned"');
+      expect(log).toContain('"accepted":true');
+    });
+
+    it('accepts tampered signed messages in shadow and logs invalid instead of rejecting', () => {
+      sendMessage(senderPaths, 'sender', 'receiver', 'normal', 'original');
+      const receiverInbox = join(testDir, 'inbox', 'receiver');
+      const file = readdirSync(receiverInbox).find(f => f.endsWith('.json'));
+      if (!file) throw new Error('expected inbox file');
+      const filePath = join(receiverInbox, file);
+      const msg = JSON.parse(readFileSync(filePath, 'utf-8')) as InboxMessage;
+      msg.text = 'tampered after signing';
+      writeFileSync(filePath, JSON.stringify(msg));
+
+      const messages = checkInbox(receiverPaths);
+
+      expect(messages).toHaveLength(1);
+      expect(messages[0].text).toBe('tampered after signing');
+      expect(readdirSync(receiverPaths.inflight).filter(f => f.endsWith('.json'))).toHaveLength(1);
+      const log = readFileSync(join(receiverPaths.logDir, 'bus-signature-shadow.jsonl'), 'utf-8');
+      expect(log).toContain('"status":"invalid"');
+      expect(log).toContain('"accepted":true');
+    });
+
+    it('accepts signed messages with missing sender public key in shadow', () => {
+      sendMessage(senderPaths, 'sender', 'receiver', 'normal', 'signed but key unavailable');
+      rmSync(join(testDir, 'state', 'sender', 'bus-signing', 'ed25519-public.pem'), { force: true });
+
+      const messages = checkInbox(receiverPaths);
+
+      expect(messages).toHaveLength(1);
+      expect(messages[0].text).toBe('signed but key unavailable');
+      const log = readFileSync(join(receiverPaths.logDir, 'bus-signature-shadow.jsonl'), 'utf-8');
+      expect(log).toContain('"status":"missing-public-key"');
+      expect(log).toContain('"accepted":true');
     });
   });
 
