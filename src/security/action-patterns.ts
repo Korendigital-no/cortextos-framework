@@ -406,6 +406,14 @@ export function classifyBashSubcommand(sub: string, opts: BashClassifyOptions = 
     return { category: 'external-comms', catastrophic: true, label: 'cli-send-telegram-nonowner' };
   }
 
+  // Additional Telegram-mutating bus commands do not have the single fixed
+  // owner-channel contract of `send-telegram`: destinations are arbitrary,
+  // callback-derived, or env-derived. Classify the shell surface strictly.
+  if (/\bbus\s+(edit-message|answer-callback|react-telegram)\b/.test(lower)
+      || (/\bbus\s+crm-report\b/.test(lower) && /(^|\s)--send(\s|$)/.test(lower))) {
+    return { category: 'external-comms', catastrophic: true, label: 'cli-telegram-mutation' };
+  }
+
   // --- deployment (NOT catastrophic — reversible-ish; fails open on gate error) ---
   if (/\bgh\s+pr\s+merge\b/.test(lower)) {
     return { category: 'deployment', catastrophic: false, label: 'gh-pr-merge' };

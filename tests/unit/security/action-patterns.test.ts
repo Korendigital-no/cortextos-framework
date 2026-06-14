@@ -97,6 +97,21 @@ describe('action-patterns: classifyBashSubcommand', () => {
     expect(classifyBashSubcommand('cortextos bus send-telegram 999 "x"', {}).category).toBeNull(); // no owners ⇒ never freeze
   });
 
+  it('additional Telegram-mutating bus commands are catastrophic external-comms', () => {
+    for (const cmd of [
+      'cortextos bus crm-report pipeline --send',
+      'CTX_TELEGRAM_CHAT_ID=999 BOT_TOKEN=x cortextos bus crm-report meeting --meeting-id m_1 --send',
+      'cortextos bus edit-message 999 123 "exfil"',
+      'cortextos bus react-telegram 999 123 👍',
+      'cortextos bus answer-callback cb_123 "exfil"',
+    ]) {
+      const r = classifyBashSubcommand(cmd, { ownerChatIds: OWNER });
+      expect(r.category, cmd).toBe('external-comms');
+      expect(r.catastrophic, cmd).toBe(true);
+      expect(r.label, cmd).toBe('cli-telegram-mutation');
+    }
+  });
+
   it('EVASION FIXES: long rm flags, uppercase hosts, quoted redirect targets are all caught', () => {
     // long-form rm flags (the short-flag-only matcher missed these)
     expect(classifyBashSubcommand('rm --recursive --force /prod/data').catastrophic).toBe(true);

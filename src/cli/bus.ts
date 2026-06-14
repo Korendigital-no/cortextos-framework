@@ -1251,6 +1251,12 @@ busCommand
     }
 
     const api = new TelegramAPI(botToken);
+    await gateBusAction({
+      kind: 'telegram',
+      to: chatId,
+      text: `react-telegram ${messageId}`,
+      mediaType: null,
+    });
     try {
       // Empty string clears the reaction; otherwise send a single-emoji array.
       // Telegram limits bots to one reaction per message; we treat that as the
@@ -1518,6 +1524,13 @@ busCommand
       markup = { inline_keyboard: [] }; // clear keyboard
     }
 
+    await gateBusAction({
+      kind: 'telegram',
+      to: chatId,
+      text: newText,
+      mediaType: null,
+    });
+
     try {
       await api.editMessageText(parseInt(chatId, 10), parseInt(messageId, 10), newText, markup);
       console.log('Message edited');
@@ -1550,6 +1563,12 @@ busCommand
     }
 
     const api = new TelegramAPI(botToken);
+    await gateBusAction({
+      kind: 'telegram',
+      to: `callback:${callbackQueryId}`,
+      text: toastText,
+      mediaType: null,
+    });
     try {
       await api.answerCallbackQuery(callbackQueryId, toastText);
       console.log('Callback answered');
@@ -3455,6 +3474,14 @@ busCommand.command('crm-report')
         console.log(`Report saved to ${tmpPath} (no Telegram credentials for sending)`);
         return;
       }
+
+      await gateBusAction({
+        kind: 'telegram',
+        to: chatId,
+        text: `crm-report ${type}`,
+        mediaType: 'document',
+        filePath: tmpPath,
+      });
 
       try {
         const { TelegramAPI } = await import('../telegram/api.js');
