@@ -63,7 +63,11 @@ export function isConfigChangePath(targetPath: string): boolean {
   const p = targetPath.replace(/\\/g, '/');
   const base = p.split('/').pop() || '';
   // --- ALWAYS sensitive (secrets / settings / bootstrap / approval rows) anywhere ---
-  if (base === '.env' || base.startsWith('.env.') || base === 'secrets.env') return true;
+  // `.cortextos-env` is the CTX env-spoof vector: it sets CTX_ORG / CTX_FRAMEWORK_ROOT
+  // that the gate's own config resolution (mode / owner anchor) reads, so planting one
+  // could mispoint or null the gate. Gating it here closes that self-subversion on
+  // both surfaces (Doc 3 §7 / P1-2 — the hook's MODE config is otherwise env-derived).
+  if (base === '.env' || base.startsWith('.env.') || base === 'secrets.env' || base === '.cortextos-env') return true;
   // Claude Code settings (auto-approved within an agent's own .claude/ by
   // hook-permission-telegram — exactly why settings writes must be gated here).
   if (/\.claude\/settings[^/]*\.json$/.test(p)) return true;

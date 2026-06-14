@@ -15,6 +15,7 @@ import { browseCatalog, installCommunityItem, prepareSubmission, submitCommunity
 import { collectMetrics, parseUsageOutput, storeUsageData, checkUpstream, collectTelegramCommands, registerTelegramCommands } from '../bus/metrics.js';
 import { createApproval, updateApproval, listApprovals, notifyApprovalCreated, APPROVAL_LIST_FILTERS, type ApprovalListFilter } from '../bus/approval.js';
 import { evaluateGate, type ActionDescriptor } from '../security/action-gate.js';
+import { gateEventName, gateSeverity, gateMeta, shouldLogGate } from '../security/gate-telemetry.js';
 import { createReminder, listReminders, ackReminder, pruneReminders } from '../bus/reminders.js';
 import { updateCronFire, parseDurationMs, readCronState } from '../bus/cron-state.js';
 import { addCron, removeCron, readCrons, updateCron as updateCronDef, getCronByName, getExecutionLog } from '../bus/crons.js';
@@ -88,23 +89,13 @@ async function gateBusAction(descriptor: ActionDescriptor): Promise<void> {
   });
 
   // Structured telemetry — category/approval id only, never the payload
-  // (SEC-INJECTION-v1 §9). Skip the boring allow case (no category matched) to
-  // avoid flooding the activity feed on every owner-Telegram / safe action.
-  if (decision.category || !decision.allow || decision.error) {
+  // (SEC-INJECTION-v1 §9). The shape/event/severity logic is shared with the Surface B
+  // hook via src/security/gate-telemetry.ts so the two surfaces cannot drift. Skips the
+  // boring allow case (no category matched) to avoid flooding the feed on safe actions.
+  if (shouldLogGate(decision)) {
     try {
-      const evt = !decision.allow
-        ? (decision.error ? 'gate_error' : 'gate_block')
-        : decision.shadow ? 'gate_shadow_would_block'
-        : decision.soft ? 'gate_soft_allow'
-        : decision.error ? 'gate_error'
-        : 'gate_allow';
-      const severity: EventSeverity = (!decision.allow && decision.error) ? 'critical' : 'info';
-      logEvent(paths, env.agentName, env.org, 'action', evt, severity, JSON.stringify({
-        kind: descriptor.kind,
-        category: decision.category ?? null,
-        approval_id: decision.approvalId ?? null,
-        allow: decision.allow,
-      }));
+      logEvent(paths, env.agentName, env.org, 'action',
+        gateEventName(decision), gateSeverity(decision), gateMeta(descriptor.kind, decision));
     } catch { /* telemetry is best-effort */ }
   }
 
@@ -2782,6 +2773,38 @@ busCommand
   .command('hook-loop-detector')
   .description('PreToolUse hook: detects and blocks repeated tool loops (same-args repetition + ping-pong alternation)')
   .action(() => runHook('hook-loop-detector'));
+
+busCommand
+  .command('hook-action-gate')
+  .description('PreToolUse hook: approval action-gate (Surface B) — gates external/destructive/config-change tool calls via the shared evaluateGate core')
+  .action(() => runHook('hook-action-gate'));
+
+busCommand
+  .command('notify-approval-created')
+  .description('Fire the human notify for an already-written pending approval. Detached/notify-only target of the action-gate hook (the row is written synchronously by the gate; this only sends the Telegram/activity ping). Best-effort — never throws to its spawner.')
+  .argument('<approval-id>', 'The pending approval id to notify about')
+  .action(async (approvalId: string) => {
+    // The id becomes a filename → guard path-traversal. Bad input ⇒ silent exit 0 (this
+    // is a fire-and-forget notifier spawned detached; it must never crash the spawner).
+    if (!/^[A-Za-z0-9_-]+$/.test(approvalId)) { process.exit(0); }
+    try {
+      const env = resolveEnv();
+      if (!env.org || !env.agentName) { process.exit(0); }
+      const paths = resolvePaths(env.agentName, env.instanceId, env.org, env.ctxRoot);
+      const rowPath = join(paths.approvalDir, 'pending', `${approvalId}.json`);
+      if (!existsSync(rowPath)) { process.exit(0); } // already resolved / never existed
+      const row = JSON.parse(readFileSync(rowPath, 'utf-8')) as {
+        id: string; title: string; category: ApprovalCategory; requesting_agent: string; description: string;
+      };
+      await notifyApprovalCreated(
+        paths, env.org, row.id, row.title, row.category, row.requesting_agent,
+        row.description, env.frameworkRoot, env.agentDir,
+      );
+    } catch {
+      /* best-effort notifier — the pending row is already on the dashboard */
+    }
+    process.exit(0);
+  });
 
 // --- OAuth token rotation commands ---
 

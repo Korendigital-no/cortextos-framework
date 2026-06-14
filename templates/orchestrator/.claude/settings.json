@@ -34,6 +34,16 @@
     ],
     "PreToolUse": [
       {
+        "matcher": "Bash|Write|Edit|MultiEdit|NotebookEdit|WebFetch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cortextos bus hook-action-gate",
+            "timeout": 5
+          }
+        ]
+      },
+      {
         "hooks": [
           {
             "type": "command",
