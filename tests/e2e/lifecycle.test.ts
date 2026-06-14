@@ -231,8 +231,8 @@ describe('E2E Lifecycle', () => {
       const files = readdirSync(inboxDir).filter(f => f.endsWith('.json'));
       const msg = JSON.parse(readFileSync(join(inboxDir, files[0]), 'utf-8'));
 
-      // Verify exact field set matches bash send-message.sh
-      const expectedFields = ['id', 'from', 'to', 'priority', 'timestamp', 'text', 'reply_to'];
+      // Verify required message fields plus Doc-1 shadow-mode Ed25519 signature.
+      const expectedFields = ['id', 'from', 'to', 'priority', 'timestamp', 'text', 'reply_to', 'signature'];
       expect(Object.keys(msg).sort()).toEqual(expectedFields.sort());
 
       // Verify field types
@@ -243,6 +243,12 @@ describe('E2E Lifecycle', () => {
       expect(typeof msg.timestamp).toBe('string');
       expect(typeof msg.text).toBe('string');
       expect(msg.reply_to).toBeNull();
+      expect(msg.signature).toMatchObject({
+        alg: 'Ed25519',
+        signer: 'paul',
+      });
+      expect(typeof msg.signature.key_id).toBe('string');
+      expect(typeof msg.signature.signature).toBe('string');
 
       // Verify timestamp format (ISO 8601)
       expect(msg.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
