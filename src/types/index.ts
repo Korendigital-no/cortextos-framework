@@ -22,7 +22,20 @@ export interface InboxMessage {
   timestamp: string; // ISO 8601
   text: string;
   reply_to: string | null;
-  sig?: string; // Security (H10): HMAC-SHA256 signature — optional for backwards compat
+  /**
+   * Doc-1 bus authenticity, phase 1: per-agent Ed25519 signature. Optional for
+   * backward compatibility; unsigned messages are accepted in shadow mode.
+   */
+  signature?: BusMessageSignature;
+  /** Legacy shared-HMAC field. Accepted for old files, no longer emitted. */
+  sig?: string;
+}
+
+export interface BusMessageSignature {
+  alg: 'Ed25519';
+  signer: string;
+  key_id: string;
+  signature: string;
 }
 
 // Task Types

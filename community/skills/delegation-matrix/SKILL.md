@@ -1,21 +1,26 @@
 ---
 name: delegation-matrix
 effort: low
-description: "Orchestrator/agent/Codex delegation matrix. Reference this when scoping a task to determine who owns what. Covers three Codex modes: reviewer-only (default), implementer+reviewer, and no Codex."
+description: "Orchestrator/agent/Codex delegation matrix. Reference this when scoping a task to determine who owns what. Codex review is the standard build policy; implementation can remain agent-owned or move to Codex by mode."
 triggers: ["who owns", "delegation", "codex or agent", "should codex", "task scoping", "who does this", "delegation matrix", "codex mode"]
+external_calls: []
 ---
 
 # Delegation Matrix
 
 > Reference when scoping any task. Dividing line: **execution-heavy → Codex (if configured as implementer). Judgment-heavy → Agent always.**
 
-Codex is a configurable option. Pick the mode that matches your setup:
+## Standard Build Review Policy
+
+Codex review is the standard policy for build work before a PR is considered ready for human/merge review. The agent may still own implementation, but it should obtain and address a Codex review unless the work is a one-line/config-only change or the orchestrator explicitly marks the task as no-Codex.
+
+Use the mode table to decide who implements. Do not use it to skip review for normal build PRs.
 
 | Mode | Codex role | When to use |
 |------|-----------|-------------|
-| **Mode 1** (default) | Reviewer only | Out of the box — Codex reviews Agent output before PR |
+| **Mode 1** | Standard reviewer | Agent implements; Codex reviews Agent output before PR |
 | **Mode 2** | Implementer + reviewer | Codex is set up and trusted for implementation |
-| **Mode 3** | Not used | No Codex in your stack — Agent handles everything |
+| **Mode 3** | Not used | Explicit no-Codex exception — Agent handles implementation and review |
 
 ---
 
@@ -35,13 +40,13 @@ Codex is a configurable option. Pick the mode that matches your setup:
 | Mechanical refactors and migrations | — | **owns** (Modes 1+3) / delegates (Mode 2) | **owns** (Mode 2) |
 | Repetitive multi-file edits | — | **owns** (Modes 1+3) / delegates (Mode 2) | **owns** (Mode 2) |
 | Test drafting and fixture setup | — | **owns** (Modes 1+3) / delegates (Mode 2) | **owns** (Mode 2) |
-| Code review before PR | — | **owns** (Mode 3) | **owns** (Modes 1+2) |
+| Code review before PR | — | **owns** only for explicit Mode 3 exception | **standard owner** (Modes 1+2) |
 
 ---
 
 ## Default Coding Workflow by Mode
 
-### Mode 1 — Codex as reviewer (default, out of box)
+### Mode 1 — Agent implements, Codex reviews
 
 1. **Orchestrator** receives task, dispatches to Agent
 2. **Agent** implements
@@ -59,6 +64,8 @@ For tasks >~20 lines or touching multiple files:
 5. **Agent** opens the PR
 
 ### Mode 3 — No Codex
+
+Use only when Codex is unavailable or the orchestrator explicitly scopes the task as no-Codex.
 
 1. **Orchestrator** receives task, dispatches to Agent
 2. **Agent** designs and implements directly

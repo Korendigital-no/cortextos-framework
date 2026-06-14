@@ -378,14 +378,8 @@ export const installCommand = new Command('install')
       console.log('  Created .env');
     }
 
-    // Bus signing key
-    const signingKeyPath = join(ctxRoot, 'config', 'bus-signing-key');
-    if (!existsSync(signingKeyPath)) {
-      const signingKey = randomBytes(32).toString('hex');
-      writeFileSync(signingKeyPath, signingKey, 'utf-8');
-      try { chmodSync(signingKeyPath, 0o600); } catch { /* ignore on Windows */ }
-      console.log('  Generated bus-signing-key (HMAC-SHA256)');
-    }
+    // Bus signing keys are per-agent Ed25519 keypairs generated lazily on first
+    // bus send. Do not create the legacy shared HMAC key for new installs.
 
     // ─── Dashboard credentials ────────────────────────────────────────────────
 
