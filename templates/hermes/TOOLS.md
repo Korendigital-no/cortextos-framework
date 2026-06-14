@@ -29,8 +29,8 @@ Agent secrets: `orgs/{org}/agents/{agent}/.env`
 | `create-task "<title>" --desc "<desc>"` | Create a task (visible on dashboard) |
 | `update-task <id> <status>` | Update status: pending / in_progress / blocked / completed |
 | `complete-task <id> --result "<what>"` | Mark done with result |
-| `list-tasks [--status S] [--agent A]` | List / filter tasks |
-| `check-stale-tasks` | Find tasks stale >2h in_progress |
+| `list-tasks [--status S] [--agent A] [--all-orgs]` | List / filter tasks |
+| `check-stale-tasks [--all-orgs]` | Find tasks stale >2h in_progress |
 | `check-human-tasks` | Check for stale human-assigned tasks |
 
 ### Messages

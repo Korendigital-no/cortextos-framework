@@ -1,47 +1,19 @@
 import { readdirSync, readFileSync, renameSync, statSync, existsSync, unlinkSync, utimesSync } from 'fs';
 import { join } from 'path';
-import { createHmac, timingSafeEqual } from 'crypto';
 import type { InboxMessage, Priority, BusPaths } from '../types/index.js';
 import { PRIORITY_MAP } from '../types/index.js';
 import { atomicWriteSync, ensureDir } from '../utils/atomic.js';
 import { acquireLock, releaseLock, withFileLockSync } from '../utils/lock.js';
 import { randomString } from '../utils/random.js';
 import { validateAgentName, validatePriority } from '../utils/validate.js';
+import { signInboxMessage, verifyInboxMessage, logSignatureShadow } from './message-signing.js';
 
 // ---------------------------------------------------------------------------
-// Security (H10): HMAC-SHA256 message signing
+// Security: per-agent Ed25519 bus message signing
 // ---------------------------------------------------------------------------
-
-/**
- * Load the shared bus signing key from config.
- * Returns null if the key file doesn't exist (legacy installs without signing).
- */
-function loadSigningKey(ctxRoot: string): string | null {
-  const keyPath = join(ctxRoot, 'config', 'bus-signing-key');
-  if (!existsSync(keyPath)) return null;
-  try {
-    return readFileSync(keyPath, 'utf-8').trim();
-  } catch {
-    return null;
-  }
-}
-
-function hmacSign(key: string, payload: string): string {
-  return createHmac('sha256', key).update(payload).digest('hex');
-}
-
-function hmacVerify(key: string, payload: string, sig: string): boolean {
-  const expected = hmacSign(key, payload);
-  try {
-    return timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(sig, 'hex'));
-  } catch {
-    return false;
-  }
-}
-
-function signPayload(msgId: string, from: string, to: string, text: string): string {
-  return `${msgId}:${from}:${to}:${text}`;
-}
+// Phase 1 is intentionally SHADOW/backward-compatible: senders sign new
+// messages, receivers verify when possible, but unsigned/invalid messages are
+// still delivered and only logged. Enforce-reject is a later explicit flip.
 
 /**
  * Send a message to another agent's inbox.
@@ -66,9 +38,7 @@ export function sendMessage(
   const msgId = `${epochMs}-${from}-${rand}`;
   const filename = `${pnum}-${epochMs}-from-${from}-${rand}.json`;
 
-  // Security (H10): Sign message with HMAC-SHA256.
-  const signingKey = loadSigningKey(paths.ctxRoot);
-  const message: InboxMessage = {
+  const unsignedMessage: Omit<InboxMessage, 'signature' | 'sig'> = {
     id: msgId,
     from,
     to,
@@ -76,8 +46,8 @@ export function sendMessage(
     timestamp: new Date().toISOString().replace(/\.\d{3}Z$/, '.000Z'),
     text,
     reply_to: replyTo || null,
-    ...(signingKey ? { sig: hmacSign(signingKey, signPayload(msgId, from, to, text)) } : {}),
   };
+  const message = signInboxMessage(paths, unsignedMessage);
 
   // Write to target agent's inbox
   const inboxDir = join(paths.ctxRoot, 'inbox', to);
@@ -117,9 +87,6 @@ export function checkInbox(paths: BusPaths): InboxMessage[] {
       return [];
     }
 
-    // Security (H10): Load signing key for HMAC verification.
-    const signingKey = loadSigningKey(paths.ctxRoot);
-
     const messages: InboxMessage[] = [];
     for (const file of files) {
       const srcPath = join(inbox, file);
@@ -127,20 +94,10 @@ export function checkInbox(paths: BusPaths): InboxMessage[] {
         const content = readFileSync(srcPath, 'utf-8');
         const msg: InboxMessage = JSON.parse(content);
 
-        // Security (H10): Verify HMAC signature if key is available and message has sig.
-        if (signingKey && msg.sig) {
-          const valid = hmacVerify(signingKey, signPayload(msg.id, msg.from, msg.to, msg.text), msg.sig);
-          if (!valid) {
-            console.error(`[bus/message] SECURITY: Message ${msg.id} from '${msg.from}' failed HMAC verification — rejecting`);
-            const errDir = join(inbox, '.errors');
-            ensureDir(errDir);
-            try { renameSync(srcPath, join(errDir, file)); } catch { /* ignore */ }
-            continue;
-          }
-        } else if (signingKey && !msg.sig) {
-          // Signing key exists but message has no sig — legacy message, log warning
-          console.warn(`[bus/message] WARNING: Unsigned message ${msg.id} from '${msg.from}' — accepted (legacy)`);
-        }
+        // Doc-1 phase 1: verify in shadow, but ALWAYS accept. This preserves the
+        // existing fleet bus while we observe unsigned/invalid senders before a
+        // later explicit enforce flip.
+        logSignatureShadow(paths, msg, verifyInboxMessage(paths.ctxRoot, msg));
 
         // Move to inflight
         const destPath = join(inflight, file);
