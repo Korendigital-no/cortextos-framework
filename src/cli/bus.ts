@@ -123,6 +123,24 @@ async function gateBusAction(descriptor: ActionDescriptor): Promise<void> {
   }
 }
 
+function resolveActivityChatId(orgDir: string, ctxRoot: string, org: string): string | null {
+  const candidates = [
+    join(orgDir, 'activity-channel.env'),
+    join(ctxRoot, 'orgs', org, 'activity-channel.env'),
+  ];
+  for (const candidate of candidates) {
+    if (!existsSync(candidate)) continue;
+    try {
+      const content = readFileSync(candidate, 'utf-8');
+      const match = content.match(/^ACTIVITY_CHAT_ID=(.+)$/m);
+      if (match?.[1]?.trim()) return match[1].trim();
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
 /**
  * Check if the org requires deliverables and the task has none attached.
  * Returns an error message if the transition should be blocked, or null if allowed.
@@ -867,6 +885,15 @@ busCommand
   .action(async (message: string) => {
     const env = resolveEnv();
     const orgDir = env.agentDir ? env.agentDir.replace(/\/agents\/.*$/, '') : '';
+    const activityChatId = resolveActivityChatId(orgDir, env.ctxRoot, env.org);
+    await gateBusAction({
+      kind: 'telegram',
+      // Activity-channel destinations are configured/env-derived, not the fixed
+      // owner control-channel positional used by `send-telegram`.
+      to: `activity-channel:${activityChatId || env.org || 'unknown'}`,
+      text: message,
+      mediaType: null,
+    });
     const success = await postActivity(orgDir, env.ctxRoot, env.org, message);
     if (success) {
       console.log('Activity posted');
@@ -1071,9 +1098,16 @@ busCommand
   .option('--dry-run', 'Show what would be submitted')
   .option('--author <author>', 'Author name or handle for attribution')
   .option('--contribute', 'Create branch, push to origin, and open a PR against upstream')
-  .action((name: string, type: string, description: string, opts: { dryRun?: boolean; author?: string; contribute?: boolean }) => {
+  .action(async (name: string, type: string, description: string, opts: { dryRun?: boolean; author?: string; contribute?: boolean }) => {
     const env = resolveEnv();
     const frameworkRoot = env.frameworkRoot || env.projectRoot || process.cwd();
+    if (opts.contribute && !opts.dryRun) {
+      await gateBusAction({
+        kind: 'bus-command',
+        subcommand: 'submit-community-item-contribute',
+        detail: `${type}:${name}`,
+      });
+    }
     const result = submitCommunityItem(frameworkRoot, env.ctxRoot, name, type, description, {
       dryRun: opts.dryRun,
       author: opts.author,
@@ -1120,6 +1154,12 @@ busCommand
   .argument('<bot-token>', 'Telegram bot token')
   .argument('<scan-dirs...>', 'Directories to scan for skills')
   .action(async (botToken: string, scanDirs: string[]) => {
+    await gateBusAction({
+      kind: 'telegram',
+      to: 'telegram-bot:setMyCommands',
+      text: `register-telegram-commands ${scanDirs.join(' ')}`,
+      mediaType: null,
+    });
     const commands = collectTelegramCommands(scanDirs);
     const result = await registerTelegramCommands(botToken, commands);
     console.log(JSON.stringify(result, null, 2));
@@ -2833,6 +2873,16 @@ busCommand
           telegramApi = new TelegramAPI(botTokenMatch[1].trim());
           chatId = chatIdMatch[1].trim();
         }
+      }
+      if (telegramApi && chatId) {
+        await gateBusAction({
+          kind: 'telegram',
+          // The destination comes from the agent .env, not a trusted fixed owner
+          // positional, so do not let owner-chat exemption short-circuit it.
+          to: `tui-stream:${chatId}`,
+          text: `tui-stream --telegram ${sessionName}`,
+          mediaType: null,
+        });
       }
     }
 

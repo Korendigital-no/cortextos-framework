@@ -409,9 +409,17 @@ export function classifyBashSubcommand(sub: string, opts: BashClassifyOptions = 
   // Additional Telegram-mutating bus commands do not have the single fixed
   // owner-channel contract of `send-telegram`: destinations are arbitrary,
   // callback-derived, or env-derived. Classify the shell surface strictly.
-  if (/\bbus\s+(edit-message|answer-callback|react-telegram)\b/.test(lower)
+  if (/\bbus\s+(post-activity|edit-message|answer-callback|react-telegram|register-telegram-commands)\b/.test(lower)
+      || (/\bbus\s+tui-stream\b/.test(lower) && /(^|\s)--telegram(\s|$)/.test(lower))
       || (/\bbus\s+crm-report\b/.test(lower) && /(^|\s)--send(\s|$)/.test(lower))) {
     return { category: 'external-comms', catastrophic: true, label: 'cli-telegram-mutation' };
+  }
+
+  // `submit-community-item --contribute` publishes externally via git push + gh
+  // PR creation. It is not Telegram/external-comms, but it is an external
+  // publish/deployment-class action and must be gated before process execution.
+  if (/\bbus\s+submit-community-item\b/.test(lower) && /(^|\s)--contribute(\s|$)/.test(lower)) {
+    return { category: 'deployment', catastrophic: false, label: 'cli-community-publish' };
   }
 
   // --- deployment (NOT catastrophic — reversible-ish; fails open on gate error) ---

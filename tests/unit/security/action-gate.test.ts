@@ -45,6 +45,9 @@ describe('action-gate: classifyAction', () => {
     const del = classifyAction({ kind: 'bus-command', subcommand: 'delete-contact' });
     expect(del.category).toBe('data-deletion');
     expect(del.catastrophic).toBe(true);
+    const publish = classifyAction({ kind: 'bus-command', subcommand: 'submit-community-item-contribute' });
+    expect(publish.category).toBe('deployment');
+    expect(publish.catastrophic).toBe(false);
     expect(classifyAction({ kind: 'bus-command', subcommand: 'list-tasks' }).category).toBeNull();
   });
 });
