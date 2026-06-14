@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
+const SYSTEM_TMPDIR = tmpdir();
 const sendDocumentSpy = vi.fn().mockResolvedValue({ result: { message_id: 1 } });
 const sendMessageSpy = vi.fn().mockResolvedValue({ result: { message_id: 1 } });
 const editMessageTextSpy = vi.fn().mockResolvedValue({ ok: true });
@@ -11,6 +12,8 @@ const setMessageReactionSpy = vi.fn().mockResolvedValue({ ok: true });
 const postActivitySpy = vi.fn().mockResolvedValue(true);
 const registerTelegramCommandsSpy = vi.fn().mockResolvedValue({ status: 'ok', count: 1, commands: [] });
 const submitCommunityItemSpy = vi.fn().mockReturnValue({ status: 'contributed', name: 'demo' });
+const generatePipelineReportSpy = vi.fn(() => '<html><body>pipeline report</body></html>');
+const generateMeetingSummaryHtmlSpy = vi.fn(() => '<html><body>meeting report</body></html>');
 
 vi.mock('../../../src/telegram/api.js', () => ({
   TelegramAPI: class {
@@ -63,8 +66,8 @@ vi.mock('../../../src/bus/crm-db.js', () => ({
 }));
 
 vi.mock('../../../src/bus/crm-reports.js', () => ({
-  generatePipelineReport: () => '<html><body>pipeline report</body></html>',
-  generateMeetingSummaryHtml: () => '<html><body>meeting report</body></html>',
+  generatePipelineReport: (...args: unknown[]) => generatePipelineReportSpy(...args),
+  generateMeetingSummaryHtml: (...args: unknown[]) => generateMeetingSummaryHtmlSpy(...args),
 }));
 
 import { busCommand } from '../../../src/cli/bus';
@@ -75,6 +78,7 @@ const OWNER = '6733625733';
 const NON_OWNER = '999999';
 
 let tempRoot: string;
+let tempTmpDir: string;
 let originalEnv: NodeJS.ProcessEnv;
 let exitSpy: ReturnType<typeof vi.spyOn>;
 let stderrSpy: ReturnType<typeof vi.spyOn>;
@@ -84,7 +88,7 @@ function writeJson(path: string, value: unknown): void {
 }
 
 beforeEach(() => {
-  tempRoot = mkdtempSync(join(tmpdir(), 'telegram-subcommand-gate-'));
+  tempRoot = mkdtempSync(join(SYSTEM_TMPDIR, 'telegram-subcommand-gate-'));
   originalEnv = { ...process.env };
 
   for (const spy of [
@@ -96,13 +100,17 @@ beforeEach(() => {
     postActivitySpy,
     registerTelegramCommandsSpy,
     submitCommunityItemSpy,
+    generatePipelineReportSpy,
+    generateMeetingSummaryHtmlSpy,
   ]) {
     spy.mockClear();
   }
 
   const agentDir = join(tempRoot, 'orgs', ORG, 'agents', AGENT);
+  tempTmpDir = join(tempRoot, 'tmp');
   mkdirSync(agentDir, { recursive: true });
   mkdirSync(join(tempRoot, 'orgs', ORG), { recursive: true });
+  mkdirSync(tempTmpDir, { recursive: true });
 
   writeJson(join(tempRoot, 'orgs', ORG, 'context.json'), {
     action_gate_mode: 'enforce',
@@ -126,6 +134,7 @@ beforeEach(() => {
   process.env.CTX_INSTANCE_ID = 'default';
   process.env.CTX_TELEGRAM_CHAT_ID = NON_OWNER;
   process.env.BOT_TOKEN = 'fake-token-for-test';
+  process.env.TMPDIR = tempTmpDir;
 
   exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: string | number | null) => {
     throw new Error(`process.exit(${code})`);
@@ -149,7 +158,9 @@ async function expectGateBlock(args: string[], category = 'external-comms'): Pro
 describe('Telegram-mutating bus subcommands action gate', () => {
   it('blocks crm-report --send before TelegramAPI.sendDocument', async () => {
     await expectGateBlock(['crm-report', 'pipeline', '--send']);
+    expect(generatePipelineReportSpy).not.toHaveBeenCalled();
     expect(sendDocumentSpy).not.toHaveBeenCalled();
+    expect(readdirSync(tempTmpDir).filter(name => name.endsWith('.html'))).toEqual([]);
   });
 
   it('blocks post-activity before activity-channel Telegram send', async () => {
