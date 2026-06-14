@@ -30,7 +30,7 @@ import { resolveEnv } from '../utils/env.js';
 import { IPCClient } from '../daemon/ipc-server.js';
 import { TelegramAPI } from '../telegram/api.js';
 import { logOutboundMessage, cacheLastSent } from '../telegram/logging.js';
-import type { Priority, Task, TaskStatus, EventCategory, EventSeverity, ApprovalCategory, ApprovalStatus, OrgContext, CronDefinition } from '../types/index.js';
+import type { Priority, Task, TaskStatus, EventCategory, EventSeverity, ApprovalCategory, ApprovalStatus, OrgContext, CronDefinition, StaleTaskReport, ArchiveReport } from '../types/index.js';
 
 /**
  * Surface A — the bus/CLI enforcement point of the approval action-gate
@@ -121,6 +121,19 @@ async function gateBusAction(descriptor: ActionDescriptor): Promise<void> {
     process.stderr.write(`gate-block: ${decision.reason}\n`);
     process.exit(3);
   }
+}
+
+function listCtxOrgs(ctxRoot: string): string[] {
+  const orgsDir = join(ctxRoot, 'orgs');
+  if (!existsSync(orgsDir)) return [];
+  return readdirSync(orgsDir, { withFileTypes: true })
+    .filter((d: { isDirectory(): boolean }) => d.isDirectory())
+    .map((d: { name: string }) => d.name)
+    .sort((a: string, b: string) => a.localeCompare(b));
+}
+
+function withFallbackOrg<T extends { org?: string }>(item: T, org: string): T {
+  return item.org ? item : { ...item, org };
 }
 
 /**
@@ -530,14 +543,28 @@ busCommand
   .option('--status <s>', 'Filter by status')
   .option('--format <fmt>', 'Output format: json or text', 'text')
   .option('--respect-deps', 'Sort DAG-aware: unblocked tasks first, blocked tasks last')
-  .action((opts: { agent?: string; status?: string; format?: string; respectDeps?: boolean }) => {
+  .option('--all-orgs', 'Scan all orgs under CTX_ROOT (matches dashboard view)', false)
+  .action((opts: { agent?: string; status?: string; format?: string; respectDeps?: boolean; allOrgs?: boolean }) => {
     const env = resolveEnv();
-    const paths = resolvePaths(env.agentName, env.instanceId, env.org, env.ctxRoot);
-    const tasks = listTasks(paths, {
+    let tasks: Task[] = [];
+    const filters = {
       agent: opts.agent,
       status: opts.status as TaskStatus,
       respectDeps: opts.respectDeps ?? false,
-    });
+    };
+
+    if (opts.allOrgs) {
+      for (const org of listCtxOrgs(env.ctxRoot)) {
+        const orgPaths = resolvePaths(env.agentName, env.instanceId, org, env.ctxRoot);
+        tasks = tasks.concat(listTasks(orgPaths, filters).map((task) => withFallbackOrg(task, org)));
+      }
+      if (!opts.respectDeps) {
+        tasks.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      }
+    } else {
+      const paths = resolvePaths(env.agentName, env.instanceId, env.org, env.ctxRoot);
+      tasks = listTasks(paths, filters);
+    }
 
     if (opts.format === 'json') {
       console.log(JSON.stringify(tasks, null, 2));
@@ -741,10 +768,24 @@ busCommand
 busCommand
   .command('check-stale-tasks')
   .description('Find stale tasks (in_progress >2h, pending >24h, overdue)')
-  .action(() => {
+  .option('--all-orgs', 'Scan all orgs under CTX_ROOT (matches dashboard view)', false)
+  .action((opts: { allOrgs?: boolean }) => {
     const env = resolveEnv();
-    const paths = resolvePaths(env.agentName, env.instanceId, env.org, env.ctxRoot);
-    const report = checkStaleTasks(paths);
+    let report: StaleTaskReport;
+    if (opts.allOrgs) {
+      report = { stale_in_progress: [], stale_pending: [], stale_human: [], overdue: [] };
+      for (const org of listCtxOrgs(env.ctxRoot)) {
+        const orgPaths = resolvePaths(env.agentName, env.instanceId, org, env.ctxRoot);
+        const orgReport = checkStaleTasks(orgPaths);
+        report.stale_in_progress.push(...orgReport.stale_in_progress.map((task) => withFallbackOrg(task, org)));
+        report.stale_pending.push(...orgReport.stale_pending.map((task) => withFallbackOrg(task, org)));
+        report.stale_human.push(...orgReport.stale_human.map((task) => withFallbackOrg(task, org)));
+        report.overdue.push(...orgReport.overdue.map((task) => withFallbackOrg(task, org)));
+      }
+    } else {
+      const paths = resolvePaths(env.agentName, env.instanceId, env.org, env.ctxRoot);
+      report = checkStaleTasks(paths);
+    }
     console.log(JSON.stringify(report));
   });
 
@@ -752,10 +793,22 @@ busCommand
   .command('archive-tasks')
   .description('Archive completed tasks older than 7 days')
   .option('--dry-run', 'Show what would be archived without modifying files')
-  .action((opts: { dryRun?: boolean }) => {
+  .option('--all-orgs', 'Scan all orgs under CTX_ROOT (matches dashboard view)', false)
+  .action((opts: { dryRun?: boolean; allOrgs?: boolean }) => {
     const env = resolveEnv();
-    const paths = resolvePaths(env.agentName, env.instanceId, env.org, env.ctxRoot);
-    const report = archiveTasks(paths, opts.dryRun ?? false);
+    let report: ArchiveReport;
+    if (opts.allOrgs) {
+      report = { archived: 0, skipped: 0, dry_run: opts.dryRun ?? false };
+      for (const org of listCtxOrgs(env.ctxRoot)) {
+        const orgPaths = resolvePaths(env.agentName, env.instanceId, org, env.ctxRoot);
+        const orgReport = archiveTasks(orgPaths, opts.dryRun ?? false);
+        report.archived += orgReport.archived;
+        report.skipped += orgReport.skipped;
+      }
+    } else {
+      const paths = resolvePaths(env.agentName, env.instanceId, env.org, env.ctxRoot);
+      report = archiveTasks(paths, opts.dryRun ?? false);
+    }
     console.log(JSON.stringify(report));
   });
 
