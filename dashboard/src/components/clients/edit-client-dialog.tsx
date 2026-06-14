@@ -101,6 +101,10 @@ export default function EditClientDialog({ open, client, onSaved, onCancel }: Ed
     setStatus(next.status);
     setNotes(next.notes);
     setError(null);
+    // Intentionally depend on the primitive client fields instead of the client
+    // object so kept-mounted dialogs reset on fresh payloads without relying on
+    // parent object identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     open,
     client.id,
