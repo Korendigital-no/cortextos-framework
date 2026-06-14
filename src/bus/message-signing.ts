@@ -1,5 +1,6 @@
 import {
   appendFileSync,
+  chmodSync,
   existsSync,
   readFileSync,
   writeFileSync,
@@ -58,6 +59,7 @@ function ensureSigningKeypair(ctxRoot: string, agent: string): { privateKeyPem: 
   ensureDir(join(ctxRoot, 'state', agent, 'bus-signing'));
   writeFileSync(paths.privateKey, privateKeyPem, { encoding: 'utf-8', mode: 0o600 });
   writeFileSync(paths.publicKey, publicKeyPem, { encoding: 'utf-8', mode: 0o644 });
+  chmodSync(paths.publicKey, 0o644);
   return { privateKeyPem, publicKeyPem };
 }
 

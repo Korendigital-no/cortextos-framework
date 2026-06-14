@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, readdirSync, readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
+import { mkdtempSync, rmSync, readdirSync, readFileSync, writeFileSync, mkdirSync, existsSync, statSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { sendMessage, checkInbox, ackInbox } from '../../../src/bus/message';
@@ -86,8 +86,11 @@ describe('Message Bus', () => {
       const files = readdirSync(receiverInbox).filter(f => f.endsWith('.json'));
       const msg = JSON.parse(readFileSync(join(receiverInbox, files[0]), 'utf-8')) as InboxMessage;
 
-      expect(existsSync(join(testDir, 'state', 'sender', 'bus-signing', 'ed25519-private.pem'))).toBe(true);
-      expect(existsSync(join(testDir, 'state', 'sender', 'bus-signing', 'ed25519-public.pem'))).toBe(true);
+      const privateKeyPath = join(testDir, 'state', 'sender', 'bus-signing', 'ed25519-private.pem');
+      const publicKeyPath = join(testDir, 'state', 'sender', 'bus-signing', 'ed25519-public.pem');
+      expect(existsSync(privateKeyPath)).toBe(true);
+      expect(existsSync(publicKeyPath)).toBe(true);
+      expect(statSync(publicKeyPath).mode & 0o777).toBe(0o644);
       expect(verifyInboxMessage(testDir, msg).status).toBe('valid');
     });
 
