@@ -8,7 +8,7 @@
  * sends null). Only the company name is required.
  */
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -47,19 +47,73 @@ export interface EditClientDialogProps {
 
 const STATUS_OPTIONS = ['active', 'paused', 'inactive', 'prospect', 'churned'];
 
+export interface EditClientFormState {
+  companyName: string;
+  contactName: string;
+  contactEmail: string;
+  dealType: string;
+  rateNok: string;
+  rateDescription: string;
+  hoursCommitment: string;
+  status: string;
+  notes: string;
+}
+
+export function formStateFromClient(client: EditClientValues): EditClientFormState {
+  return {
+    companyName: client.company_name,
+    contactName: client.contact_name ?? '',
+    contactEmail: client.contact_email ?? '',
+    dealType: client.deal_type ?? '',
+    rateNok: client.rate_nok != null ? String(client.rate_nok) : '',
+    rateDescription: client.rate_description ?? '',
+    hoursCommitment: client.hours_commitment ?? '',
+    status: client.status || 'active',
+    notes: client.notes ?? '',
+  };
+}
+
 export default function EditClientDialog({ open, client, onSaved, onCancel }: EditClientDialogProps) {
-  const [companyName, setCompanyName] = useState(client.company_name);
-  const [contactName, setContactName] = useState(client.contact_name ?? '');
-  const [contactEmail, setContactEmail] = useState(client.contact_email ?? '');
-  const [dealType, setDealType] = useState(client.deal_type ?? '');
-  const [rateNok, setRateNok] = useState(client.rate_nok != null ? String(client.rate_nok) : '');
-  const [rateDescription, setRateDescription] = useState(client.rate_description ?? '');
-  const [hoursCommitment, setHoursCommitment] = useState(client.hours_commitment ?? '');
-  const [status, setStatus] = useState(client.status || 'active');
-  const [notes, setNotes] = useState(client.notes ?? '');
+  const initialForm = formStateFromClient(client);
+  const [companyName, setCompanyName] = useState(initialForm.companyName);
+  const [contactName, setContactName] = useState(initialForm.contactName);
+  const [contactEmail, setContactEmail] = useState(initialForm.contactEmail);
+  const [dealType, setDealType] = useState(initialForm.dealType);
+  const [rateNok, setRateNok] = useState(initialForm.rateNok);
+  const [rateDescription, setRateDescription] = useState(initialForm.rateDescription);
+  const [hoursCommitment, setHoursCommitment] = useState(initialForm.hoursCommitment);
+  const [status, setStatus] = useState(initialForm.status);
+  const [notes, setNotes] = useState(initialForm.notes);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const inFlight = useRef(false);
+
+  useEffect(() => {
+    if (!open) return;
+    const next = formStateFromClient(client);
+    setCompanyName(next.companyName);
+    setContactName(next.contactName);
+    setContactEmail(next.contactEmail);
+    setDealType(next.dealType);
+    setRateNok(next.rateNok);
+    setRateDescription(next.rateDescription);
+    setHoursCommitment(next.hoursCommitment);
+    setStatus(next.status);
+    setNotes(next.notes);
+    setError(null);
+  }, [
+    open,
+    client.id,
+    client.company_name,
+    client.contact_name,
+    client.contact_email,
+    client.deal_type,
+    client.rate_nok,
+    client.rate_description,
+    client.hours_commitment,
+    client.status,
+    client.notes,
+  ]);
 
   const handleSubmit = async () => {
     const result = validateClientEdit({
