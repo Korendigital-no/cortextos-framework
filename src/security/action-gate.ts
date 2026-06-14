@@ -64,6 +64,7 @@ const BUS_SUBCOMMAND_CATEGORY: Record<string, { category: ApprovalCategory; cata
   'delete-document': { category: 'data-deletion', catastrophic: true },
   'delete-activity': { category: 'data-deletion', catastrophic: true },
   'delete-client': { category: 'data-deletion', catastrophic: true },
+  'submit-community-item-contribute': { category: 'deployment', catastrophic: false },
 };
 
 export interface ClassifyOptions {

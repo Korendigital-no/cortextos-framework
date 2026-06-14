@@ -136,6 +136,24 @@ function withFallbackOrg<T extends { org?: string }>(item: T, org: string): T {
   return item.org ? item : { ...item, org };
 }
 
+function resolveActivityChatId(orgDir: string, ctxRoot: string, org: string): string | null {
+  const candidates = [
+    join(orgDir, 'activity-channel.env'),
+    join(ctxRoot, 'orgs', org, 'activity-channel.env'),
+  ];
+  for (const candidate of candidates) {
+    if (!existsSync(candidate)) continue;
+    try {
+      const content = readFileSync(candidate, 'utf-8');
+      const match = content.match(/^ACTIVITY_CHAT_ID=(.+)$/m);
+      if (match?.[1]?.trim()) return match[1].trim();
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
 /**
  * Check if the org requires deliverables and the task has none attached.
  * Returns an error message if the transition should be blocked, or null if allowed.
@@ -920,6 +938,15 @@ busCommand
   .action(async (message: string) => {
     const env = resolveEnv();
     const orgDir = env.agentDir ? env.agentDir.replace(/\/agents\/.*$/, '') : '';
+    const activityChatId = resolveActivityChatId(orgDir, env.ctxRoot, env.org);
+    await gateBusAction({
+      kind: 'telegram',
+      // Activity-channel destinations are configured/env-derived, not the fixed
+      // owner control-channel positional used by `send-telegram`.
+      to: `activity-channel:${activityChatId || env.org || 'unknown'}`,
+      text: message,
+      mediaType: null,
+    });
     const success = await postActivity(orgDir, env.ctxRoot, env.org, message);
     if (success) {
       console.log('Activity posted');
@@ -1124,9 +1151,16 @@ busCommand
   .option('--dry-run', 'Show what would be submitted')
   .option('--author <author>', 'Author name or handle for attribution')
   .option('--contribute', 'Create branch, push to origin, and open a PR against upstream')
-  .action((name: string, type: string, description: string, opts: { dryRun?: boolean; author?: string; contribute?: boolean }) => {
+  .action(async (name: string, type: string, description: string, opts: { dryRun?: boolean; author?: string; contribute?: boolean }) => {
     const env = resolveEnv();
     const frameworkRoot = env.frameworkRoot || env.projectRoot || process.cwd();
+    if (opts.contribute && !opts.dryRun) {
+      await gateBusAction({
+        kind: 'bus-command',
+        subcommand: 'submit-community-item-contribute',
+        detail: `${type}:${name}`,
+      });
+    }
     const result = submitCommunityItem(frameworkRoot, env.ctxRoot, name, type, description, {
       dryRun: opts.dryRun,
       author: opts.author,
@@ -1173,6 +1207,12 @@ busCommand
   .argument('<bot-token>', 'Telegram bot token')
   .argument('<scan-dirs...>', 'Directories to scan for skills')
   .action(async (botToken: string, scanDirs: string[]) => {
+    await gateBusAction({
+      kind: 'telegram',
+      to: 'telegram-bot:setMyCommands',
+      text: `register-telegram-commands ${scanDirs.join(' ')}`,
+      mediaType: null,
+    });
     const commands = collectTelegramCommands(scanDirs);
     const result = await registerTelegramCommands(botToken, commands);
     console.log(JSON.stringify(result, null, 2));
@@ -1304,6 +1344,12 @@ busCommand
     }
 
     const api = new TelegramAPI(botToken);
+    await gateBusAction({
+      kind: 'telegram',
+      to: chatId,
+      text: `react-telegram ${messageId}`,
+      mediaType: null,
+    });
     try {
       // Empty string clears the reaction; otherwise send a single-emoji array.
       // Telegram limits bots to one reaction per message; we treat that as the
@@ -1571,6 +1617,13 @@ busCommand
       markup = { inline_keyboard: [] }; // clear keyboard
     }
 
+    await gateBusAction({
+      kind: 'telegram',
+      to: chatId,
+      text: newText,
+      mediaType: null,
+    });
+
     try {
       await api.editMessageText(parseInt(chatId, 10), parseInt(messageId, 10), newText, markup);
       console.log('Message edited');
@@ -1603,6 +1656,12 @@ busCommand
     }
 
     const api = new TelegramAPI(botToken);
+    await gateBusAction({
+      kind: 'telegram',
+      to: `callback:${callbackQueryId}`,
+      text: toastText,
+      mediaType: null,
+    });
     try {
       await api.answerCallbackQuery(callbackQueryId, toastText);
       console.log('Callback answered');
@@ -2868,6 +2927,16 @@ busCommand
           chatId = chatIdMatch[1].trim();
         }
       }
+      if (telegramApi && chatId) {
+        await gateBusAction({
+          kind: 'telegram',
+          // The destination comes from the agent .env, not a trusted fixed owner
+          // positional, so do not let owner-chat exemption short-circuit it.
+          to: `tui-stream:${chatId}`,
+          text: `tui-stream --telegram ${sessionName}`,
+          mediaType: null,
+        });
+      }
     }
 
     const logLine = (msg: string) => {
@@ -3478,20 +3547,40 @@ busCommand.command('crm-report')
   .option('--meeting-id <id>', 'Meeting ID (for meeting report)')
   .option('--send', 'Send as Telegram document to user')
   .action(async (type: string, opts: { meetingId?: string; send?: boolean }) => {
-    const db = getCrmDb();
-    let html: string | null = null;
     let filename = '';
 
     if (type === 'pipeline') {
-      html = generatePipelineReport(db);
       filename = `pipeline-report-${new Date().toISOString().split('T')[0]}.html`;
     } else if (type === 'meeting') {
       if (!opts.meetingId) { console.error('--meeting-id required for meeting report'); process.exit(1); }
-      html = generateMeetingSummaryHtml(db, opts.meetingId);
       filename = `meeting-summary-${opts.meetingId.substring(0, 8)}.html`;
     } else {
       console.error('Unknown report type. Use: pipeline or meeting');
       process.exit(1);
+    }
+
+    if (opts.send) {
+      const chatId = process.env.CTX_TELEGRAM_CHAT_ID;
+      const botToken = process.env.BOT_TOKEN;
+      if (chatId && botToken) {
+        // Gate BEFORE generating or writing the sensitive CRM report HTML. On an
+        // enforce-block, gateBusAction exits the process; no report bytes should
+        // have been materialized in TMPDIR.
+        await gateBusAction({
+          kind: 'telegram',
+          to: chatId,
+          text: `crm-report ${type}${opts.meetingId ? ` ${opts.meetingId}` : ''}`,
+          mediaType: 'document',
+        });
+      }
+    }
+
+    const db = getCrmDb();
+    let html: string | null = null;
+    if (type === 'pipeline') {
+      html = generatePipelineReport(db);
+    } else {
+      html = generateMeetingSummaryHtml(db, opts.meetingId!);
     }
 
     if (!html) { console.error('No data found for report'); process.exit(1); }

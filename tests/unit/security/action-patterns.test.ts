@@ -97,6 +97,31 @@ describe('action-patterns: classifyBashSubcommand', () => {
     expect(classifyBashSubcommand('cortextos bus send-telegram 999 "x"', {}).category).toBeNull(); // no owners ⇒ never freeze
   });
 
+  it('additional Telegram-mutating bus commands are catastrophic external-comms', () => {
+    for (const cmd of [
+      'cortextos bus crm-report pipeline --send',
+      'CTX_TELEGRAM_CHAT_ID=999 BOT_TOKEN=x cortextos bus crm-report meeting --meeting-id m_1 --send',
+      'cortextos bus post-activity "publish this to the activity channel"',
+      'cortextos bus edit-message 999 123 "exfil"',
+      'cortextos bus react-telegram 999 123 👍',
+      'cortextos bus answer-callback cb_123 "exfil"',
+      'cortextos bus tui-stream --telegram --session cx',
+      'cortextos bus register-telegram-commands bot-token ./skills',
+    ]) {
+      const r = classifyBashSubcommand(cmd, { ownerChatIds: OWNER });
+      expect(r.category, cmd).toBe('external-comms');
+      expect(r.catastrophic, cmd).toBe(true);
+      expect(r.label, cmd).toBe('cli-telegram-mutation');
+    }
+  });
+
+  it('community contribution publish command is deployment-class gated', () => {
+    const r = classifyBashSubcommand('cortextos bus submit-community-item my-skill skill "desc" --contribute');
+    expect(r.category).toBe('deployment');
+    expect(r.catastrophic).toBe(false);
+    expect(r.label).toBe('cli-community-publish');
+  });
+
   it('EVASION FIXES: long rm flags, uppercase hosts, quoted redirect targets are all caught', () => {
     // long-form rm flags (the short-flag-only matcher missed these)
     expect(classifyBashSubcommand('rm --recursive --force /prod/data').catastrophic).toBe(true);
