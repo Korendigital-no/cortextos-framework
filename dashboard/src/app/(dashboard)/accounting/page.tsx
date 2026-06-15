@@ -39,6 +39,11 @@ interface Expense {
   account_id: string | null; account_name: string | null; recurring_id: string | null;
 }
 
+interface Transfer {
+  id: string; from_account_name: string | null; to_account_name: string | null;
+  amount_nok: number; date: string; kind: string; description: string | null;
+}
+
 interface VatStatus {
   period: string; vat_collected_nok: number; vat_paid_nok: number; balance_nok: number;
   direction: 'owed' | 'refundable' | 'zero'; start_date: string; end_date: string;
@@ -79,6 +84,7 @@ export default function AccountingPage() {
   const [recurring, setRecurring] = useState<Recurring[]>([]);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [vat, setVat] = useState<VatStatus | null>(null);
   const [timeseries, setTimeseries] = useState<TimeseriesPoint[]>([]);
   const [tsFrom, setTsFrom] = useState(sixMonthsAgoYm());
@@ -94,13 +100,20 @@ export default function AccountingPage() {
   const [showAddRecurring, setShowAddRecurring] = useState(false);
   const [recForm, setRecForm] = useState({ name: '', account_id: '', amount_nok: '', day_of_month: '1', apply_on_last_day: false });
 
+  const [showAddTransfer, setShowAddTransfer] = useState(false);
+  const [transferForm, setTransferForm] = useState({ from_account_id: '', to_account_id: '', amount_nok: '', date: todayLocal(), description: '' });
+
+  const [showAddDraw, setShowAddDraw] = useState(false);
+  const [drawForm, setDrawForm] = useState({ from_account_id: '', amount_nok: '', date: todayLocal(), description: '' });
+
   const fetchAll = useCallback(async () => {
     try {
-      const [aRes, sRes, iRes, eRes, vRes, rRes, tsRes] = await Promise.all([
+      const [aRes, sRes, iRes, eRes, trRes, vRes, rRes, tsRes] = await Promise.all([
         fetch('/api/accounting/accounts'),
         fetch('/api/accounting/summary'),
         fetch('/api/accounting/invoices'),
         fetch('/api/accounting/expenses'),
+        fetch('/api/accounting/transfers'),
         fetch('/api/accounting/vat'),
         fetch('/api/accounting/recurring'),
         fetch(`/api/accounting/timeseries?from=${tsFrom}&to=${tsTo}`),
@@ -109,6 +122,7 @@ export default function AccountingPage() {
       if (sRes.ok) setSummary(await sRes.json());
       if (iRes.ok) setInvoices((await iRes.json()).invoices);
       if (eRes.ok) setExpenses((await eRes.json()).expenses);
+      if (trRes.ok) setTransfers((await trRes.json()).transfers);
       if (vRes.ok) setVat(await vRes.json());
       if (rRes.ok) setRecurring((await rRes.json()).recurring);
       if (tsRes.ok) setTimeseries((await tsRes.json()).series);
@@ -206,6 +220,52 @@ export default function AccountingPage() {
     fetchAll();
   }
 
+  async function handleAddTransfer() {
+    if (!transferForm.from_account_id || !transferForm.to_account_id) return;
+    if (transferForm.from_account_id === transferForm.to_account_id) {
+      alert('Fra-konto og til-konto må være forskjellige.');
+      return;
+    }
+    const amount = Number(transferForm.amount_nok);
+    if (!isFinite(amount) || amount <= 0 || amount >= 1e12) {
+      alert('Beløp må være et positivt tall under 1 000 000 000 000.');
+      return;
+    }
+    const res = await fetch('/api/accounting/transfers', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        from_account_id: transferForm.from_account_id, to_account_id: transferForm.to_account_id,
+        amount_nok: amount, date: transferForm.date, description: transferForm.description || undefined,
+      }),
+    });
+    if (res.ok) {
+      setTransferForm({ from_account_id: '', to_account_id: '', amount_nok: '', date: todayLocal(), description: '' });
+      setShowAddTransfer(false);
+      await fetchAll();
+    }
+  }
+
+  async function handleAddDraw() {
+    if (!drawForm.from_account_id) return;
+    const amount = Number(drawForm.amount_nok);
+    if (!isFinite(amount) || amount <= 0 || amount >= 1e12) {
+      alert('Beløp må være et positivt tall under 1 000 000 000 000.');
+      return;
+    }
+    const res = await fetch('/api/accounting/transfers', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        from_account_id: drawForm.from_account_id, amount_nok: amount,
+        date: drawForm.date, description: drawForm.description || undefined, kind: 'owner_draw',
+      }),
+    });
+    if (res.ok) {
+      setDrawForm({ from_account_id: '', amount_nok: '', date: todayLocal(), description: '' });
+      setShowAddDraw(false);
+      await fetchAll();
+    }
+  }
+
   async function applyRecurringNow() {
     await fetch('/api/accounting/recurring/apply', { method: 'POST' });
     fetchAll();
@@ -285,6 +345,55 @@ export default function AccountingPage() {
               );
             })}
           </div>
+          <div className="flex gap-2 mt-3">
+            <Button variant="outline" size="sm" onClick={() => setShowAddTransfer(!showAddTransfer)}><IconPlus className="size-4 mr-1" />Overføring</Button>
+            <Button variant="outline" size="sm" onClick={() => setShowAddDraw(!showAddDraw)}><IconPlus className="size-4 mr-1" />Privatuttak</Button>
+          </div>
+          {showAddTransfer && (
+            <div className="rounded-lg border bg-card p-4 space-y-3 mt-3">
+              <div className="grid grid-cols-2 gap-2">
+                <select value={transferForm.from_account_id} onChange={e => setTransferForm(f => ({ ...f, from_account_id: e.target.value }))} className="rounded-md border bg-background px-3 py-2 text-sm">
+                  <option value="">Fra konto</option>
+                  {accounts.filter(a => a.type !== 'personal').map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                </select>
+                <select value={transferForm.to_account_id} onChange={e => setTransferForm(f => ({ ...f, to_account_id: e.target.value }))} className="rounded-md border bg-background px-3 py-2 text-sm">
+                  <option value="">Til konto</option>
+                  {accounts.filter(a => a.type !== 'personal').map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                </select>
+                <input type="number" placeholder="Beløp" value={transferForm.amount_nok} onChange={e => setTransferForm(f => ({ ...f, amount_nok: e.target.value }))} step="0.01" className="rounded-md border bg-background px-3 py-2 text-sm" />
+                <input type="date" value={transferForm.date} onChange={e => setTransferForm(f => ({ ...f, date: e.target.value }))} className="rounded-md border bg-background px-3 py-2 text-sm" />
+                <input type="text" placeholder="Notat (valgfritt)" value={transferForm.description} onChange={e => setTransferForm(f => ({ ...f, description: e.target.value }))} className="rounded-md border bg-background px-3 py-2 text-sm col-span-2" />
+              </div>
+              <div className="flex gap-2 justify-end"><Button variant="ghost" size="sm" onClick={() => setShowAddTransfer(false)}>Cancel</Button><Button size="sm" onClick={handleAddTransfer}>Save</Button></div>
+            </div>
+          )}
+          {showAddDraw && (
+            <div className="rounded-lg border bg-card p-4 space-y-3 mt-3">
+              <div className="grid grid-cols-2 gap-2">
+                <select value={drawForm.from_account_id} onChange={e => setDrawForm(f => ({ ...f, from_account_id: e.target.value }))} className="rounded-md border bg-background px-3 py-2 text-sm">
+                  <option value="">Fra konto</option>
+                  {accounts.filter(a => a.type !== 'personal').map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                </select>
+                <input type="number" placeholder="Beløp" value={drawForm.amount_nok} onChange={e => setDrawForm(f => ({ ...f, amount_nok: e.target.value }))} step="0.01" className="rounded-md border bg-background px-3 py-2 text-sm" />
+                <input type="date" value={drawForm.date} onChange={e => setDrawForm(f => ({ ...f, date: e.target.value }))} className="rounded-md border bg-background px-3 py-2 text-sm" />
+                <input type="text" placeholder="Notat (valgfritt)" value={drawForm.description} onChange={e => setDrawForm(f => ({ ...f, description: e.target.value }))} className="rounded-md border bg-background px-3 py-2 text-sm col-span-2" />
+              </div>
+              <div className="flex gap-2 justify-end"><Button variant="ghost" size="sm" onClick={() => setShowAddDraw(false)}>Cancel</Button><Button size="sm" onClick={handleAddDraw}>Save</Button></div>
+            </div>
+          )}
+          {transfers.length > 0 && (
+            <div className="rounded-lg border divide-y mt-3">
+              {transfers.map(t => (
+                <div key={t.id} className="flex items-center justify-between px-4 py-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium truncate">{(t.from_account_name ?? '—')} → {(t.to_account_name ?? '—')}{t.description ? ` — ${t.description}` : ''}</p>
+                    <p className="text-xs text-muted-foreground">{formatDate(t.date)}{t.kind === 'owner_draw' ? ' · privatuttak' : ''}</p>
+                  </div>
+                  <span className="text-sm font-medium shrink-0">{formatNOK(t.amount_nok)}</span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
