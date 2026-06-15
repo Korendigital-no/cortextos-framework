@@ -319,6 +319,31 @@ export function initializeSchema(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_accounting_recurring_active ON accounting_recurring(active);
     CREATE INDEX IF NOT EXISTS idx_accounting_recurring_account ON accounting_recurring(account_id);
+
+    -- Accounting v4: internal transfers + owner's draw (privatuttak). RECORD-ONLY
+    -- ledger movements (no real money / bank integration / PSD2). A transfer moves
+    -- amount_nok from from_account_id to to_account_id; kind='owner_draw' is a
+    -- transfer to the tag-only 'personal' account. These affect ACCOUNT BALANCES
+    -- (+in to / -out from each account) but are NOT revenue or cost — they never
+    -- touch accounting_invoices/accounting_expenses, so the P&L (revenue/costs/
+    -- profit) stays correct by construction. A single row is the whole movement:
+    -- the per-account balance query reads it once as +in (to) and once as -out
+    -- (from), so the total across accounts is always net-zero.
+    CREATE TABLE IF NOT EXISTS accounting_transfers (
+      id TEXT PRIMARY KEY,
+      from_account_id TEXT NOT NULL REFERENCES accounting_accounts(id) ON DELETE RESTRICT,
+      to_account_id TEXT NOT NULL REFERENCES accounting_accounts(id) ON DELETE RESTRICT,
+      amount_nok REAL NOT NULL CHECK(amount_nok > 0 AND amount_nok = amount_nok AND amount_nok < 1e12),
+      date TEXT NOT NULL CHECK(date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
+      kind TEXT NOT NULL DEFAULT 'transfer' CHECK(kind IN ('transfer','owner_draw')),
+      description TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      CHECK(from_account_id <> to_account_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_accounting_transfers_from ON accounting_transfers(from_account_id);
+    CREATE INDEX IF NOT EXISTS idx_accounting_transfers_to ON accounting_transfers(to_account_id);
+    CREATE INDEX IF NOT EXISTS idx_accounting_transfers_date ON accounting_transfers(date);
     DROP INDEX IF EXISTS idx_crm_contacts_email;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_crm_contacts_email ON crm_contacts(email);
     CREATE INDEX IF NOT EXISTS idx_crm_contacts_company ON crm_contacts(company_id);

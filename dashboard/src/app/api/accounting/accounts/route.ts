@@ -18,7 +18,9 @@ export async function GET() {
   const accounts = db.prepare(`
     SELECT a.id, a.name, a.type, a.starting_balance_nok, a.created_at, a.updated_at,
       COALESCE((SELECT SUM(net_nok + vat_nok) FROM accounting_invoices WHERE account_id = a.id AND settled = 1), 0) AS settled_invoices_nok,
-      COALESCE((SELECT SUM(net_nok + vat_nok) FROM accounting_expenses WHERE account_id = a.id AND paid = 1), 0) AS paid_expenses_nok
+      COALESCE((SELECT SUM(net_nok + vat_nok) FROM accounting_expenses WHERE account_id = a.id AND paid = 1), 0) AS paid_expenses_nok,
+      COALESCE((SELECT SUM(amount_nok) FROM accounting_transfers WHERE to_account_id = a.id), 0) AS transfers_in_nok,
+      COALESCE((SELECT SUM(amount_nok) FROM accounting_transfers WHERE from_account_id = a.id), 0) AS transfers_out_nok
     FROM accounting_accounts a
     ORDER BY
       CASE a.type WHEN 'operating' THEN 1 WHEN 'tax' THEN 2 WHEN 'vat' THEN 3 WHEN 'personal' THEN 4 ELSE 5 END,
@@ -26,6 +28,7 @@ export async function GET() {
   `).all() as Array<{
     id: string; name: string; type: string;
     starting_balance_nok: number; settled_invoices_nok: number; paid_expenses_nok: number;
+    transfers_in_nok: number; transfers_out_nok: number;
     created_at: string; updated_at: string;
   }>;
 
@@ -39,12 +42,15 @@ export async function GET() {
         starting_balance_nok: 0,
         settled_invoices_nok: 0,
         paid_expenses_nok: 0,
+        transfers_in_nok: 0,
+        transfers_out_nok: 0,
         balance_nok: 0,
       };
     }
     return {
       ...a,
-      balance_nok: a.starting_balance_nok + a.settled_invoices_nok - a.paid_expenses_nok,
+      balance_nok: a.starting_balance_nok + a.settled_invoices_nok - a.paid_expenses_nok
+        + a.transfers_in_nok - a.transfers_out_nok,
     };
   });
 
