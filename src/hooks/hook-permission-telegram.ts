@@ -85,8 +85,7 @@ async function main(): Promise<void> {
   }
 
   // Poll for response (5 min timeout — 1 cron cycle, prevents stale-detector race)
-  const TIMEOUT_MS = PERMISSION_TIMEOUT_MS;
-  const content = await waitForResponseFile(responseFile, TIMEOUT_MS);
+  const content = await waitForResponseFile(responseFile, PERMISSION_TIMEOUT_MS);
 
   if (content !== null) {
     try {
