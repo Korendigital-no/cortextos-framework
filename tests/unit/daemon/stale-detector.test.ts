@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   isSelfInflictedStale, isWatchdogHeartbeat, shouldFireIdleWatchdog, staleThresholdsFromEnv,
   circuitAllowsRestart, recordCircuitRestart, formatStaleDetectorArmed,
+  parseIntervalToMs, staleThresholdsForCadence,
   DEFAULT_STALE_THRESHOLDS, STALE_CIRCUIT_MAX, STALE_CIRCUIT_WINDOW_MS,
 } from '../../../src/daemon/stale-detector.js';
 
@@ -142,5 +143,84 @@ describe('formatStaleDetectorArmed (greppable init line)', () => {
     const line = formatStaleDetectorArmed({ minInjections: 9, windowMs: 30 * 60_000 });
     expect(line).toContain('minInjections=9');
     expect(line).toContain('window=30min');
+  });
+});
+
+describe('parseIntervalToMs', () => {
+  it('parses hour shorthands', () => {
+    expect(parseIntervalToMs('4h')).toBe(4 * 3_600_000);
+    expect(parseIntervalToMs('1h')).toBe(3_600_000);
+    expect(parseIntervalToMs('24h')).toBe(24 * 3_600_000);
+  });
+
+  it('parses minute shorthands', () => {
+    expect(parseIntervalToMs('30m')).toBe(30 * 60_000);
+    expect(parseIntervalToMs('5m')).toBe(5 * 60_000);
+  });
+
+  it('parses day shorthands', () => {
+    expect(parseIntervalToMs('1d')).toBe(86_400_000);
+  });
+
+  it('parses compound shorthands', () => {
+    expect(parseIntervalToMs('2h30m')).toBe(2 * 3_600_000 + 30 * 60_000);
+    expect(parseIntervalToMs('1h15m')).toBe(75 * 60_000);
+  });
+
+  it('parses cron */N * * * * expressions', () => {
+    expect(parseIntervalToMs('*/5 * * * *')).toBe(5 * 60_000);
+    expect(parseIntervalToMs('*/30 * * * *')).toBe(30 * 60_000);
+  });
+
+  it('returns null for unrecognised formats', () => {
+    expect(parseIntervalToMs('daily')).toBeNull();
+    expect(parseIntervalToMs('')).toBeNull();
+    expect(parseIntervalToMs('0 */4 * * *')).toBeNull(); // arbitrary cron, not */N
+  });
+});
+
+describe('staleThresholdsForCadence', () => {
+  it('widens window to 1.5x heartbeat interval for a 4h cron (→ 6h)', () => {
+    const t = staleThresholdsForCadence(4 * 3_600_000);
+    expect(t.windowMs).toBe(6 * 3_600_000);
+    expect(t.minInjections).toBe(DEFAULT_STALE_THRESHOLDS.minInjections); // unchanged
+  });
+
+  it('widens window for a 1h cron (1.5h > 45min default)', () => {
+    const t = staleThresholdsForCadence(60 * 60_000);
+    expect(t.windowMs).toBe(Math.round(1.5 * 3_600_000));
+  });
+
+  it('preserves the base window when heartbeat interval is very short', () => {
+    // 10m heartbeat → 1.5× = 15m < 45min default; default wins
+    const t = staleThresholdsForCadence(10 * 60_000);
+    expect(t.windowMs).toBe(DEFAULT_STALE_THRESHOLDS.windowMs);
+  });
+
+  it('accepts a custom base and still applies max correctly', () => {
+    const base = { minInjections: 8, windowMs: 60 * 60_000 }; // 1h base
+    const t = staleThresholdsForCadence(30 * 60_000, base); // 30m hb → 45m < 1h base
+    expect(t.windowMs).toBe(60 * 60_000); // base window preserved
+    expect(t.minInjections).toBe(8);
+  });
+
+  it('a 4h-heartbeat agent with default base no longer false-stales at 2.5h', () => {
+    const T0 = 1_000_000_000_000;
+    const MIN = 60_000;
+    const thresholds = staleThresholdsForCadence(4 * 3_600_000);
+    // 2.5h silence, 6 injections — was a false-positive with the old 45min window
+    expect(isSelfInflictedStale({
+      injectionsSinceAgentBeat: 6,
+      lastAgentBeatMs: T0,
+      sessionStartMs: T0 - 120 * MIN,
+      nowMs: T0 + 150 * MIN,
+    }, thresholds)).toBe(false);
+    // Genuine stale: 7h silence with 6+ injections — should still fire
+    expect(isSelfInflictedStale({
+      injectionsSinceAgentBeat: 6,
+      lastAgentBeatMs: T0,
+      sessionStartMs: T0 - 120 * MIN,
+      nowMs: T0 + 7 * 60 * MIN,
+    }, thresholds)).toBe(true);
   });
 });

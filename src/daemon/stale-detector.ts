@@ -116,6 +116,53 @@ export function recordCircuitRestart(circuit: StaleCircuit, nowMs: number): Stal
 }
 
 /**
+ * Parse a simple interval shorthand ("4h", "30m", "2h30m", "1d") or a standard
+ * cron expression of the form "* /N * * * *" (no space — asterisk-slash-N)
+ * into milliseconds.  Returns null if unrecognised.
+ * Exported for unit testing and for fast-checker's config-read path.
+ */
+export function parseIntervalToMs(interval: string): number | null {
+  const s = interval.trim();
+
+  // cron "*/N * * * *" → N minutes
+  const cronMatch = s.match(/^\*\/(\d+)\s+\*\s+\*\s+\*\s+\*$/);
+  if (cronMatch) return parseInt(cronMatch[1], 10) * 60_000;
+
+  // shorthand: digits followed by h/m/d, possibly repeated ("2h30m")
+  const UNIT: Record<string, number> = { h: 3_600_000, m: 60_000, d: 86_400_000 };
+  let total = 0;
+  let matched = false;
+  const remainder = s.replace(/(\d+)([hmd])/g, (_, n, unit) => {
+    total += parseInt(n, 10) * UNIT[unit];
+    matched = true;
+    return '';
+  });
+  if (matched && remainder.trim() === '') return total > 0 ? total : null;
+
+  return null;
+}
+
+/**
+ * Compute cadence-aware stale thresholds for an agent whose heartbeat cron
+ * fires every `heartbeatIntervalMs` milliseconds.
+ *
+ * The default 45-min silence window fires on perfectly healthy idle agents
+ * (e.g. 4h heartbeat cron) because other crons accumulate 6+ injections
+ * before the agent posts its next real beat.  Widening the window to 1.5×
+ * the heartbeat interval gives the agent a full cycle to beat without
+ * triggering a false self-inflicted-stale restart.
+ */
+export function staleThresholdsForCadence(
+  heartbeatIntervalMs: number,
+  base: StaleThresholds = DEFAULT_STALE_THRESHOLDS,
+): StaleThresholds {
+  return {
+    ...base,
+    windowMs: Math.max(base.windowMs, Math.round(heartbeatIntervalMs * 1.5)),
+  };
+}
+
+/**
  * One-line, greppable arming summary the fast-checker logs when it activates the
  * detector. The detector deliberately did nothing observable at init, so proving
  * "is the self-inflicted-stale guard live on this build?" took a commit → dist
