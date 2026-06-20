@@ -148,17 +148,20 @@ export function parseIntervalToMs(interval: string): number | null {
  *
  * The default 45-min silence window fires on perfectly healthy idle agents
  * (e.g. 4h heartbeat cron) because other crons accumulate 6+ injections
- * before the agent posts its next real beat.  Widening the window to 1.5×
- * the heartbeat interval gives the agent a full cycle to beat without
- * triggering a false self-inflicted-stale restart.
+ * before the agent posts its next real beat.  We widen the window to one
+ * full heartbeat cycle plus a 15-min grace period, giving the agent exactly
+ * one cycle to beat before the detector fires.  Using +15min (not 1.5×)
+ * keeps the genuine-stale blind spot as small as possible: a degraded 4h
+ * agent is caught at 4h15min instead of 6h.
  */
 export function staleThresholdsForCadence(
   heartbeatIntervalMs: number,
   base: StaleThresholds = DEFAULT_STALE_THRESHOLDS,
 ): StaleThresholds {
+  const GRACE_MS = 15 * 60_000;
   return {
     ...base,
-    windowMs: Math.max(base.windowMs, Math.round(heartbeatIntervalMs * 1.5)),
+    windowMs: Math.max(base.windowMs, heartbeatIntervalMs + GRACE_MS),
   };
 }
 

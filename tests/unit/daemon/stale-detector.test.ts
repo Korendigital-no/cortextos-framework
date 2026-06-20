@@ -180,19 +180,19 @@ describe('parseIntervalToMs', () => {
 });
 
 describe('staleThresholdsForCadence', () => {
-  it('widens window to 1.5x heartbeat interval for a 4h cron (→ 6h)', () => {
+  it('widens window to heartbeat_interval + 15min for a 4h cron (→ 4h15min)', () => {
     const t = staleThresholdsForCadence(4 * 3_600_000);
-    expect(t.windowMs).toBe(6 * 3_600_000);
+    expect(t.windowMs).toBe(4 * 3_600_000 + 15 * 60_000); // 255 min = 4h15m
     expect(t.minInjections).toBe(DEFAULT_STALE_THRESHOLDS.minInjections); // unchanged
   });
 
-  it('widens window for a 1h cron (1.5h > 45min default)', () => {
+  it('widens window for a 1h cron (1h15min > 45min default)', () => {
     const t = staleThresholdsForCadence(60 * 60_000);
-    expect(t.windowMs).toBe(Math.round(1.5 * 3_600_000));
+    expect(t.windowMs).toBe(3_600_000 + 15 * 60_000); // 75 min
   });
 
   it('preserves the base window when heartbeat interval is very short', () => {
-    // 10m heartbeat → 1.5× = 15m < 45min default; default wins
+    // 10m heartbeat → +15min = 25min < 45min default; default wins
     const t = staleThresholdsForCadence(10 * 60_000);
     expect(t.windowMs).toBe(DEFAULT_STALE_THRESHOLDS.windowMs);
   });
