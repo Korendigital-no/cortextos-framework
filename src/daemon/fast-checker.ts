@@ -7,6 +7,7 @@ import { atomicWriteSync } from '../utils/atomic.js';
 import {
   isSelfInflictedStale, isWatchdogHeartbeat, shouldFireIdleWatchdog, staleThresholdsFromEnv,
   circuitAllowsRestart, recordCircuitRestart, formatStaleDetectorArmed,
+  parseIntervalToMs, staleThresholdsForCadence,
   type StaleCircuit, type StaleThresholds,
 } from './stale-detector.js';
 import type { InboxMessage, BusPaths, TelegramMessage, TelegramCallbackQuery } from '../types/index.js';
@@ -131,6 +132,19 @@ export class FastChecker {
     // Arming line for the self-inflicted-stale detector — one greppable record
     // that the guard is live on this build (verifiability is the feature).
     this.log(formatStaleDetectorArmed(this.staleThresholds));
+
+    // Widen the stale window to match the agent's configured heartbeat cron cadence.
+    // Agents with a 4h heartbeat cron only beat every 4h, but other crons (30-min
+    // crm-process-webhooks, 2h meta-token-greenpoll) accumulate 6+ injections inside
+    // the default 45-min window → false self-inflicted-stale restarts on idle agents.
+    const heartbeatIntervalMs = this.readHeartbeatCronIntervalMs();
+    if (heartbeatIntervalMs !== null) {
+      const cadenceThresholds = staleThresholdsForCadence(heartbeatIntervalMs, this.staleThresholds);
+      if (cadenceThresholds.windowMs !== this.staleThresholds.windowMs) {
+        this.staleThresholds = cadenceThresholds;
+        this.log(`stale-detector cadence-adjust: heartbeat=${Math.round(heartbeatIntervalMs / 60_000)}min → ` + formatStaleDetectorArmed(this.staleThresholds));
+      }
+    }
 
     // Idle-session heartbeat watchdog: fires every 50 min, but SKIPS when the
     // agent has posted its OWN heartbeat within the window — firing unconditionally
@@ -1131,6 +1145,24 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
       } catch (err) {
         this.log(`Error processing urgent signal: ${err}`);
       }
+    }
+  }
+
+  /**
+   * Read the heartbeat cron interval from config.json and convert it to ms.
+   * Returns null when the file is absent, the heartbeat cron is missing, or
+   * the interval string is not parseable (falls back to default threshold).
+   */
+  private readHeartbeatCronIntervalMs(): number | null {
+    try {
+      const configPath = join(this.agent.getAgentDir(), 'config.json');
+      const cfg = JSON.parse(readFileSync(configPath, 'utf-8'));
+      const crons: Array<{ name?: string; interval?: string }> = cfg.crons ?? [];
+      const hbCron = crons.find(c => c.name === 'heartbeat');
+      if (!hbCron?.interval) return null;
+      return parseIntervalToMs(hbCron.interval);
+    } catch {
+      return null;
     }
   }
 

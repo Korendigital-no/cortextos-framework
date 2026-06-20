@@ -1213,11 +1213,22 @@ busCommand
   .command('send-telegram')
   .description('Send a message to a Telegram chat')
   .argument('<chat-id>', 'Telegram chat ID')
-  .argument('<message>', 'Message text (supports Telegram Markdown unless --plain-text is set)')
+  .argument('[message]', 'Message text (supports Telegram Markdown unless --plain-text is set)')
   .option('--image <path>', 'Send a photo with caption')
   .option('--file <path>', 'Send a document/file with caption (any file type)')
   .option('--plain-text', 'Skip Telegram Markdown parsing entirely. Use this when the message contains unescaped _, *, backtick, or [ that would otherwise trip the Markdown parser. Without this flag, sendMessage still retries once with parse_mode disabled on a parse-entity error — so it is purely an opt-in to save the retry roundtrip.', false)
-  .action(async (chatId: string, message: string, opts: { image?: string; file?: string; plainText?: boolean }) => {
+  .action(async (chatId: string, message: string | undefined, opts: { image?: string; file?: string; plainText?: boolean }) => {
+    // Silent no-op for token-less / unconfigured agents (e.g. worker agents with
+    // no BOT_TOKEN or CHAT_ID set). Two cases:
+    //   1. chatId is empty string: caller passed "$CTX_TELEGRAM_CHAT_ID" (quoted)
+    //      with the env var unset or empty → no destination configured.
+    //   2. message is undefined: bash word-split an unquoted empty
+    //      $CTX_TELEGRAM_CHAT_ID away, shifting the message text into the chatId
+    //      position → no destination, chatId slot actually holds the message text.
+    // Both cases are no-ops — generating errors here produces repetitive cold-boot
+    // log noise for every session start of a worker agent.
+    if (!chatId || !message) process.exit(0);
+
     // Codex agents emit literal '\n'/'\t' inside single-quoted bash where bash
     // does not expand escapes, so they arrive at argv as 2-char literals and
     // Telegram renders them as visible text. Normalize before send + log.
