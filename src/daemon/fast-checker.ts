@@ -418,7 +418,13 @@ export class FastChecker {
     try {
       writeFileSync(ctxStatusPath, JSON.stringify({ used_percentage: 0, exceeds_200k_tokens: false, written_at: new Date().toISOString() }));
     } catch { /* non-fatal */ }
-    this.agent.sessionRefresh().catch(err => this.log(`Stale restart failed: ${err}`));
+    this.agent.sessionRefresh().catch(err => {
+      this.log(`Stale restart failed: ${err}`);
+      // sessionRefresh() failed AFTER hardRestart() wrote the markers and the
+      // circuit slot was consumed. The degraded PTY is still running with no
+      // automatic recovery path — alert so it is not a silent zombie.
+      void this.notifyStale(`🚨 ${this.agent.name}: stale-restart MISLYKTES (${err}) — degradert PTY kjører fortsatt. Sjekk manuelt.`);
+    });
   }
 
   private async notifyStale(text: string): Promise<void> {

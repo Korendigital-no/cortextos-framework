@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 vi.mock('child_process', () => ({ execFile: vi.fn() }));
+vi.mock('../../../src/bus/system.js', () => ({ hardRestart: vi.fn() }));
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -15,6 +16,10 @@ function createMockAgent(name = 'test-agent') {
     injectMessage: vi.fn().mockReturnValue(true),
     injectMessageDetailed: vi.fn().mockResolvedValue({ ok: true }),
     write: vi.fn(),
+    // stale-detector interface — no-ops unless overridden in a specific test
+    getInjectionsSinceMark: vi.fn().mockReturnValue(0),
+    markInjectionsSeen: vi.fn(),
+    sessionRefresh: vi.fn().mockResolvedValue(undefined),
   } as any;
 }
 
@@ -855,6 +860,84 @@ describe('FastChecker', () => {
       expect(result).toContain('local_file: /tmp/telegram-images/video_1743718313.mp4');
       expect(result).toContain('file_name: video_1743718313.mp4');
       expect(result).toContain("cortextos bus send-telegram 123456789 '<your reply>'");
+    });
+  });
+
+  describe('stale-restart failure: sessionRefresh error → notifyStale', () => {
+    it('fires a 🚨 Telegram alert when sessionRefresh rejects after hardRestart', async () => {
+      const agent = createMockAgent('test-agent');
+      agent.getInjectionsSinceMark.mockReturnValue(10); // >= minInjections (6)
+      agent.sessionRefresh.mockRejectedValue(new Error('PTY spawn failed'));
+
+      const api = createMockTelegramApi();
+      const checker = new FastChecker(agent, paths, '/tmp/framework', {
+        telegramApi: api,
+        chatId: '12345',
+      });
+
+      // Force the stale condition: old beat + many injections
+      const OLD = Date.now() - 60 * 60_000; // 60 min ago > 45 min windowMs
+      (checker as any).staleLastAgentBeatMs = OLD;
+      (checker as any).staleSessionStartMs = OLD - 60 * 60_000;
+      (checker as any).staleLastCheckMs = 0; // bypass 1-min guard
+
+      (checker as any).checkSelfInflictedStale();
+
+      // Flush microtask queue: (1) notifyStale(🔄) awaits sendMessage,
+      // (2) sessionRefresh rejection propagates through .catch(),
+      // (3) catch handler calls notifyStale(🚨), (4) that awaits sendMessage.
+      for (let i = 0; i < 6; i++) await Promise.resolve();
+
+      const calls = api.sendMessage.mock.calls as [string, string][];
+      const failureAlert = calls.find(c => c[1].includes('stale-restart MISLYKTES'));
+      expect(failureAlert).toBeTruthy();
+      expect(failureAlert![1]).toContain('PTY spawn failed');
+      expect(failureAlert![0]).toBe('12345');
+    });
+
+    it('does NOT fire the failure alert when sessionRefresh succeeds', async () => {
+      const agent = createMockAgent('test-agent');
+      agent.getInjectionsSinceMark.mockReturnValue(10);
+      agent.sessionRefresh.mockResolvedValue(undefined);
+
+      const api = createMockTelegramApi();
+      const checker = new FastChecker(agent, paths, '/tmp/framework', {
+        telegramApi: api,
+        chatId: '12345',
+      });
+
+      const OLD = Date.now() - 60 * 60_000;
+      (checker as any).staleLastAgentBeatMs = OLD;
+      (checker as any).staleSessionStartMs = OLD - 60 * 60_000;
+      (checker as any).staleLastCheckMs = 0;
+
+      (checker as any).checkSelfInflictedStale();
+      for (let i = 0; i < 6; i++) await Promise.resolve();
+
+      const calls = api.sendMessage.mock.calls as [string, string][];
+      const failureAlert = calls.find(c => c[1].includes('stale-restart MISLYKTES'));
+      expect(failureAlert).toBeUndefined();
+    });
+
+    it('does NOT fire the failure alert when Telegram is not configured', async () => {
+      const agent = createMockAgent('test-agent');
+      agent.getInjectionsSinceMark.mockReturnValue(10);
+      agent.sessionRefresh.mockRejectedValue(new Error('PTY spawn failed'));
+
+      // No telegramApi / chatId passed → notifyStale() is a silent no-op
+      const checker = new FastChecker(agent, paths, '/tmp/framework');
+
+      const OLD = Date.now() - 60 * 60_000;
+      (checker as any).staleLastAgentBeatMs = OLD;
+      (checker as any).staleSessionStartMs = OLD - 60 * 60_000;
+      (checker as any).staleLastCheckMs = 0;
+
+      // Should not throw even though Telegram is absent
+      await expect(
+        Promise.resolve().then(() => (checker as any).checkSelfInflictedStale()),
+      ).resolves.toBeUndefined();
+      for (let i = 0; i < 6; i++) await Promise.resolve();
+      // No assertion needed beyond "did not throw"
     });
   });
 
