@@ -430,7 +430,8 @@ export class FastChecker {
   private async notifyStale(text: string): Promise<void> {
     if (!this.telegramApi || !this.chatId) return;
     try {
-      await this.telegramApi.sendMessage(this.chatId, text);
+      // parseMode: null — agent names and Error.message may contain *, `, etc.
+      await this.telegramApi.sendMessage(this.chatId, text, undefined, { parseMode: null });
     } catch { /* alert is best-effort; the log line is the record */ }
   }
 

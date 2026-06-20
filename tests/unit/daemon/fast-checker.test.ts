@@ -919,6 +919,37 @@ describe('FastChecker', () => {
       expect(failureAlert).toBeUndefined();
     });
 
+    it('does NOT call sessionRefresh or failure alert when circuit is open (max restarts consumed)', async () => {
+      const agent = createMockAgent('test-agent');
+      agent.getInjectionsSinceMark.mockReturnValue(10);
+
+      const api = createMockTelegramApi();
+      const checker = new FastChecker(agent, paths, '/tmp/framework', {
+        telegramApi: api,
+        chatId: '12345',
+      });
+
+      // Fill the circuit to its limit (3 restarts in the window)
+      const now = Date.now();
+      (checker as any).staleCircuit = { restarts: [now - 100, now - 200, now - 300] };
+      const OLD = now - 60 * 60_000;
+      (checker as any).staleLastAgentBeatMs = OLD;
+      (checker as any).staleSessionStartMs = OLD - 60 * 60_000;
+      (checker as any).staleLastCheckMs = 0;
+
+      (checker as any).checkSelfInflictedStale();
+      for (let i = 0; i < 6; i++) await Promise.resolve();
+
+      // Circuit open → sessionRefresh never called, 🚨 failure alert never fires
+      expect(agent.sessionRefresh).not.toHaveBeenCalled();
+      const calls = api.sendMessage.mock.calls as [string, string][];
+      const failureAlert = calls.find(c => c[1].includes('stale-restart MISLYKTES'));
+      expect(failureAlert).toBeUndefined();
+      // But the ⚠️ circuit-open alert IS sent (once)
+      const circuitAlert = calls.find(c => c[1].includes('Auto-restart-grensen'));
+      expect(circuitAlert).toBeTruthy();
+    });
+
     it('does NOT fire the failure alert when Telegram is not configured', async () => {
       const agent = createMockAgent('test-agent');
       agent.getInjectionsSinceMark.mockReturnValue(10);
