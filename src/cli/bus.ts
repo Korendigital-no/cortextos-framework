@@ -2791,6 +2791,39 @@ busCommand
   .action(() => runHook('hook-action-gate'));
 
 busCommand
+  .command('hook-egress-monitor')
+  .description('PostToolUse hook: read-side exfiltration monitoring — logs egress_secret_read / egress_upload_pattern / egress_pipe_to_net / egress_novel_host signals (monitoring-only, never blocks)')
+  .action(() => runHook('hook-egress-monitor'));
+
+busCommand
+  .command('egress-alert')
+  .description('Fire a Telegram egress alert. Detached notify target of hook-egress-monitor for high-severity signals. Best-effort — never throws to its spawner.')
+  .argument('<agent>', 'Agent name')
+  .argument('<org>', 'Org name')
+  .argument('<event-name>', 'Egress event name')
+  .argument('<label>', 'Matched signal label')
+  .action(async (agent: string, org: string, eventName: string, label: string) => {
+    // Input validation: all args are classification labels (fixed enum + safe-pattern strings).
+    // Guard against obvious injection — if any arg is suspiciously long, silently exit.
+    if ([agent, org, eventName, label].some(a => typeof a !== 'string' || a.length > 200)) {
+      process.exit(0);
+    }
+    try {
+      const env = resolveEnv();
+      if (!env.telegramChatId || !env.telegramBotToken) { process.exit(0); }
+      const paths = resolvePaths(env.agentName, env.instanceId, env.org, env.ctxRoot);
+      const text = `⚠️ *Egress alert* — \`${eventName}\` on agent \`${agent}\` (${org})\nSignal: \`${label}\`\nThis is a monitoring event (no action blocked). Review activity feed.`;
+      const telegramApi = new TelegramAPI(env.telegramBotToken);
+      await telegramApi.sendMessage(env.telegramChatId, text, undefined, { parse_mode: 'Markdown' });
+      logEvent(paths, env.agentName, env.org, 'action', 'egress_alert_sent', 'info',
+        JSON.stringify({ signal_event: eventName, signal_label: label, agent }));
+    } catch {
+      /* best-effort — never crashes the spawner */
+    }
+    process.exit(0);
+  });
+
+busCommand
   .command('notify-approval-created')
   .description('Fire the human notify for an already-written pending approval. Detached/notify-only target of the action-gate hook (the row is written synchronously by the gate; this only sends the Telegram/activity ping). Best-effort — never throws to its spawner.')
   .argument('<approval-id>', 'The pending approval id to notify about')
