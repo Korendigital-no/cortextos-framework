@@ -23,6 +23,7 @@ import {
   IconCalendar,
   IconUsers,
   IconReceipt,
+  IconAd2,
 } from '@tabler/icons-react';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
@@ -54,6 +55,7 @@ const navItems: NavItem[] = [
   { label: 'Workflows', href: '/workflows', icon: IconClock, section: 'ops' },
   { label: 'Strategy', href: '/strategy', icon: IconTarget, section: 'ops' },
   { label: 'Analytics', href: '/analytics', icon: IconChartDots3, section: 'ops' },
+  { label: 'NC Ads', href: '/ad-engine', icon: IconAd2, section: 'ops' },
   { label: 'Accounting', href: '/accounting', icon: IconReceipt, section: 'ops' },
   { label: 'Content', href: '/content', icon: IconNotes, section: 'ops' },
 
