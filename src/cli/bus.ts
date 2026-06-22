@@ -27,7 +27,7 @@ import * as crm from '../bus/crm.js';
 import { processWebhookQueue } from '../bus/crm-webhook-processor.js';
 import { generatePipelineReport, generateMeetingSummaryHtml } from '../bus/crm-reports.js';
 import { resolvePaths } from '../utils/paths.js';
-import { resolveEnv } from '../utils/env.js';
+import { resolveEnv, parseEnvFile } from '../utils/env.js';
 import { IPCClient } from '../daemon/ipc-server.js';
 import { TelegramAPI } from '../telegram/api.js';
 import { logOutboundMessage, cacheLastSent } from '../telegram/logging.js';
@@ -2810,11 +2810,16 @@ busCommand
     }
     try {
       const env = resolveEnv();
-      if (!env.telegramChatId || !env.telegramBotToken) { process.exit(0); }
+      if (!env.agentDir) { process.exit(0); }
+      const agentEnvPath = join(env.agentDir, '.env');
+      const agentEnvVars = existsSync(agentEnvPath) ? parseEnvFile(agentEnvPath) : {};
+      const botToken = agentEnvVars.BOT_TOKEN || process.env.BOT_TOKEN || '';
+      const chatId = agentEnvVars.CHAT_ID || process.env.CTX_TELEGRAM_CHAT_ID || '';
+      if (!botToken || !chatId) { process.exit(0); }
       const paths = resolvePaths(env.agentName, env.instanceId, env.org, env.ctxRoot);
       const text = `⚠️ *Egress alert* — \`${eventName}\` on agent \`${agent}\` (${org})\nSignal: \`${label}\`\nThis is a monitoring event (no action blocked). Review activity feed.`;
-      const telegramApi = new TelegramAPI(env.telegramBotToken);
-      await telegramApi.sendMessage(env.telegramChatId, text, undefined, { parse_mode: 'Markdown' });
+      const telegramApi = new TelegramAPI(botToken);
+      await telegramApi.sendMessage(chatId, text, undefined, { parseMode: 'HTML' });
       logEvent(paths, env.agentName, env.org, 'action', 'egress_alert_sent', 'info',
         JSON.stringify({ signal_event: eventName, signal_label: label, agent }));
     } catch {
