@@ -22,6 +22,7 @@ import {
   IconX,
   IconNotes,
   IconBriefcase,
+  IconAd2,
 } from '@tabler/icons-react';
 import { cn } from '@/lib/utils';
 
@@ -40,6 +41,7 @@ const morePages = [
   { label: 'Knowledge Base', href: '/knowledge-base', icon: IconBook2 },
   { label: 'Wiki', href: '/wiki', icon: IconNotes },
   { label: 'Workflows', href: '/workflows', icon: IconClock },
+  { label: 'NC Ads', href: '/ad-engine', icon: IconAd2 },
   { label: 'Strategy', href: '/strategy', icon: IconTarget },
   { label: 'Experiments', href: '/experiments', icon: IconFlask },
   { label: 'Skills', href: '/skills', icon: IconPuzzle },
