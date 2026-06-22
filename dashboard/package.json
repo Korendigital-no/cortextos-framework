@@ -22,7 +22,7 @@
     "@dnd-kit/sortable": "^10.0.0",
     "@sentry/nextjs": "^10.54.0",
     "@tabler/icons-react": "^3.44.0",
-    "@tailwindcss/typography": "^0.5.19",
+    "@tailwindcss/typography": "^0.5.20",
     "@types/jsonwebtoken": "^9.0.10",
     "bcryptjs": "^3.0.3",
     "better-sqlite3": "^12.10.0",
