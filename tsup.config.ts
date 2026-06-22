@@ -14,6 +14,7 @@ export default defineConfig({
     'hooks/hook-context-status': 'src/hooks/hook-context-status.ts',
     'hooks/hook-loop-detector': 'src/hooks/hook-loop-detector.ts',
     'hooks/hook-action-gate': 'src/hooks/hook-action-gate.ts',
+    'hooks/hook-egress-monitor': 'src/hooks/hook-egress-monitor.ts',
   },
   format: ['cjs'],
   target: 'node20',

@@ -132,10 +132,13 @@ function buildAgentInfo(
       lastHeartbeat = hb.last_heartbeat || hb.timestamp || null;
       currentTask = hb.current_task || null;
       mode = hb.mode || null;
-      // Running = heartbeat written within last 10 minutes
+      // Running = heartbeat written within last 65 minutes.
+      // The idle watchdog fires every 50 min, so a 10-min threshold caused
+      // healthy idle agents to show STALE for ~40 of every 50 minutes.
+      // 65 min = 50-min watchdog interval + 15-min grace.
       if (lastHeartbeat) {
         const age = Date.now() - new Date(lastHeartbeat).getTime();
-        running = age < 10 * 60 * 1000;
+        running = age < 65 * 60 * 1000;
       }
     } catch {
       // Skip corrupt
