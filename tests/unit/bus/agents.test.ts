@@ -116,6 +116,46 @@ describe('Agent Discovery', () => {
       expect(agents[0].running).toBe(true); // Recent heartbeat means running
     });
 
+    it('running is true when heartbeat is 60 minutes old (within 65-min watchdog threshold)', () => {
+      const configDir = join(ctxRoot, 'config');
+      mkdirSync(configDir, { recursive: true });
+      writeFileSync(
+        join(configDir, 'enabled-agents.json'),
+        JSON.stringify({ worker: { org: 'testorg', enabled: true } }),
+      );
+
+      const hbDir = join(ctxRoot, 'state', 'worker');
+      mkdirSync(hbDir, { recursive: true });
+      const sixtyMinAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      writeFileSync(
+        join(hbDir, 'heartbeat.json'),
+        JSON.stringify({ agent: 'worker', last_heartbeat: sixtyMinAgo, status: '[watchdog] worker alive — idle session' }),
+      );
+
+      const agents = listAgents(ctxRoot);
+      expect(agents[0].running).toBe(true);
+    });
+
+    it('running is false when heartbeat is 70 minutes old (exceeds 65-min threshold)', () => {
+      const configDir = join(ctxRoot, 'config');
+      mkdirSync(configDir, { recursive: true });
+      writeFileSync(
+        join(configDir, 'enabled-agents.json'),
+        JSON.stringify({ worker: { org: 'testorg', enabled: true } }),
+      );
+
+      const hbDir = join(ctxRoot, 'state', 'worker');
+      mkdirSync(hbDir, { recursive: true });
+      const seventyMinAgo = new Date(Date.now() - 70 * 60 * 1000).toISOString();
+      writeFileSync(
+        join(hbDir, 'heartbeat.json'),
+        JSON.stringify({ agent: 'worker', last_heartbeat: seventyMinAgo, status: '[watchdog] worker alive — idle session' }),
+      );
+
+      const agents = listAgents(ctxRoot);
+      expect(agents[0].running).toBe(false);
+    });
+
     it('filters by org when specified', () => {
       const configDir = join(ctxRoot, 'config');
       mkdirSync(configDir, { recursive: true });
