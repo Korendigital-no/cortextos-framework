@@ -1227,7 +1227,10 @@ busCommand
     //      position → no destination, chatId slot actually holds the message text.
     // Both cases are no-ops — generating errors here produces repetitive cold-boot
     // log noise for every session start of a worker agent.
-    if (!chatId || !message) process.exit(0);
+    if (!chatId || (!message && !opts.image && !opts.file)) process.exit(0);
+    // Narrow type: after the guard, message may still be undefined for media-only sends.
+    // Coerce to empty string so callers that require string get a valid value (caption omitted = '').
+    message ??= '';
 
     // Codex agents emit literal '\n'/'\t' inside single-quoted bash where bash
     // does not expand escapes, so they arrive at argv as 2-char literals and
