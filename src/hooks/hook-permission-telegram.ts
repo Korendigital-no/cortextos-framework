@@ -3,7 +3,9 @@
  * hook-permission-telegram.ts - Blocking PermissionRequest hook
  * Forwards permission prompts to Telegram with Approve/Deny inline buttons.
  * Polls for a response file written by fast-checker when the user taps a button.
- * Timeout: 1800s (30 min, deny by default).
+ * Timeout: 300s (5 min, deny by default). Sized to one 5-min cron cycle so a
+ * silent approval window cannot accumulate 6 injections and race the stale
+ * detector's 45-min window into a false self-inflicted-stale restart.
  */
 
 import { TelegramAPI } from '../telegram/api';
@@ -22,6 +24,11 @@ import {
 } from './index';
 import { join } from 'path';
 import { mkdirSync } from 'fs';
+
+// Exported for unit tests and future config-override surface.
+// Sized to 1 cron cycle (5 min): prevents a silent approval window from
+// accumulating 6+ injections and racing the stale-detector's 45-min window.
+export const PERMISSION_TIMEOUT_MS = 300 * 1000;
 
 async function main(): Promise<void> {
   const input = await readStdin();
@@ -77,9 +84,8 @@ async function main(): Promise<void> {
     return;
   }
 
-  // Poll for response (30 min timeout)
-  const TIMEOUT_MS = 1800 * 1000;
-  const content = await waitForResponseFile(responseFile, TIMEOUT_MS);
+  // Poll for response (5 min timeout — 1 cron cycle, prevents stale-detector race)
+  const content = await waitForResponseFile(responseFile, PERMISSION_TIMEOUT_MS);
 
   if (content !== null) {
     try {
@@ -103,7 +109,7 @@ async function main(): Promise<void> {
     } catch {
       // Ignore notification failure
     }
-    outputDecision('deny', 'Timed out waiting for Telegram approval (30m)');
+    outputDecision('deny', 'Timed out waiting for Telegram approval (5m)');
   }
 }
 
