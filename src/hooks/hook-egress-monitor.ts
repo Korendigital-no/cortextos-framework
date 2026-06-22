@@ -23,8 +23,7 @@
  * misconfigured monitor MUST NOT block the fleet.
  */
 
-import { writeSync } from 'fs';
-import { join, dirname, resolve } from 'path';
+import { dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { spawn } from 'child_process';
 import { readStdin, parseHookInput } from './index.js';
@@ -159,12 +158,11 @@ export function classifyBashEgress(command: unknown): EgressSignal | null {
 
   let hasUpload = false;
   let hasNovelHost = false;
-  let uploadLabel = '';
 
   for (const sub of subs) {
     if (!hasUpload) {
       for (const re of BASH_UPLOAD_PATTERNS) {
-        if (re.test(sub)) { hasUpload = true; uploadLabel = re.source.slice(0, 40); break; }
+        if (re.test(sub)) { hasUpload = true; break; }
       }
     }
 
