@@ -76,6 +76,46 @@ afterEach(() => {
   rmSync(tempCwd, { recursive: true, force: true });
 });
 
+describe('token-less agent: silent no-op for unconfigured Telegram', () => {
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    // Intercept process.exit so calls don't actually terminate vitest.
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation((_code) => {
+      throw new Error(`process.exit(${_code})`);
+    });
+  });
+
+  afterEach(() => {
+    exitSpy.mockRestore();
+  });
+
+  it('exits silently (0) when chatId is empty string ("$CTX_TELEGRAM_CHAT_ID" quoted, variable unset)', async () => {
+    await expect(
+      busCommand.parseAsync(['send-telegram', '', 'Booting up... one moment'], { from: 'user' }),
+    ).rejects.toThrow('process.exit(0)');
+    expect(sendMessageSpy).not.toHaveBeenCalled();
+    expect(exitSpy).toHaveBeenCalledWith(0);
+  });
+
+  it('exits silently (0) when message arg is absent (unquoted empty $CTX_TELEGRAM_CHAT_ID word-split away)', async () => {
+    // Unquoted `$CTX_TELEGRAM_CHAT_ID` with empty/unset variable is word-split
+    // away by bash, shifting the message text into the chatId slot and leaving
+    // message as undefined. Commander now treats message as optional.
+    await expect(
+      busCommand.parseAsync(['send-telegram', 'Booting up... one moment'], { from: 'user' }),
+    ).rejects.toThrow('process.exit(0)');
+    expect(sendMessageSpy).not.toHaveBeenCalled();
+    expect(exitSpy).toHaveBeenCalledWith(0);
+  });
+
+  it('proceeds normally when both chatId and message are provided', async () => {
+    // Sanity: the no-op guard must NOT fire when Telegram IS configured.
+    await busCommand.parseAsync(['send-telegram', '12345', 'hello'], { from: 'user' });
+    expect(sendMessageSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('PR-12: send-telegram normalizes literal \\n / \\t (codex agent fix)', () => {
   it('converts codex-style literal \\n into real newlines before sending', async () => {
     await busCommand.parseAsync(
