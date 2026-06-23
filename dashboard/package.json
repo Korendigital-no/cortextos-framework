@@ -35,7 +35,7 @@
     "isomorphic-dompurify": "^3.15.0",
     "jose": "^6.2.3",
     "jsonwebtoken": "^9.0.3",
-    "lucide-react": "^1.6.0",
+    "lucide-react": "^1.21.0",
     "marked": "^18.0.0",
     "next": "16.2.7",
     "next-auth": "^5.0.0-beta.31",
