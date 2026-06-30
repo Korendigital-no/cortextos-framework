@@ -352,7 +352,7 @@ function ClientDetailView() {
 
           <div>
             <div className="flex items-center justify-between mb-3">
-              <h2 className="text-lg font-medium">Recent work log</h2>
+              <h2 className="text-lg font-medium">Work log</h2>
               <Button variant="outline" size="sm" onClick={() => setShowAddTime(!showAddTime)}><IconPlus className="size-4 mr-1" />Log time</Button>
             </div>
             {showAddTime && (
