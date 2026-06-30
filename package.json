@@ -42,7 +42,7 @@
     "templates/"
   ],
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.105.0",
+    "@anthropic-ai/sdk": "^0.107.0",
     "@inquirer/prompts": "^8.5.2",
     "better-sqlite3": "^12.11.1",
     "chalk": "^5.6.2",
