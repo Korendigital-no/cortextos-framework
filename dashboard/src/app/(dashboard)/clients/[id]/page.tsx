@@ -368,8 +368,8 @@ function ClientDetailView() {
             {timeEntries.length === 0 ? (
               <p className="py-8 text-center text-sm text-muted-foreground">No time entries yet.</p>
             ) : (
-              <div className="rounded-lg border divide-y">
-                {timeEntries.slice(0, 10).map(e => (
+              <div className="rounded-lg border divide-y max-h-[480px] overflow-y-auto">
+                {timeEntries.map(e => (
                   <div key={e.id} className="group flex items-center justify-between px-4 py-3">
                     <div><p className="text-sm">{e.description}</p><p className="text-xs text-muted-foreground">{formatDate(e.date)}</p></div>
                     <div className="flex items-center gap-3">
