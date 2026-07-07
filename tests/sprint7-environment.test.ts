@@ -209,7 +209,7 @@ describe('Sprint 7: Environment & Config Completeness', () => {
       expect(() => resolveEnv({
         frameworkRoot: fwRoot,
         agentDir: join(fwRoot, 'orgs', 'foo', 'agents', 'bar'),
-        projectRoot: '/Users/cortextos/cortextos',
+        projectRoot: '/Users/localuser/cortextos',
         agentName: 'bar',
       })).toThrow(/must equal CTX_FRAMEWORK_ROOT/);
     });
@@ -237,8 +237,8 @@ describe('Sprint 7: Environment & Config Completeness', () => {
     // contradict the root are STALE, not malicious: re-derive them under the
     // root instead. Explicit `overrides` contradictions still throw (TC-B/C).
     it('TC-E rederive: env-inherited live CTX_AGENT_DIR + CTX_PROJECT_ROOT under a frameworkRoot override are re-derived, not fatal', () => {
-      process.env.CTX_AGENT_DIR = '/Users/cortextos/cortextos/orgs/liveorg/agents/live-agent';
-      process.env.CTX_PROJECT_ROOT = '/Users/cortextos/cortextos';
+      process.env.CTX_AGENT_DIR = '/Users/localuser/cortextos/orgs/liveorg/agents/live-agent';
+      process.env.CTX_PROJECT_ROOT = '/Users/localuser/cortextos';
       const fwRoot = join(testDir, 'sandbox');
       const result = resolveEnv({
         frameworkRoot: fwRoot,
@@ -254,8 +254,8 @@ describe('Sprint 7: Environment & Config Completeness', () => {
       // inherits live CTX_AGENT_DIR/CTX_PROJECT_ROOT from the agent shell.
       const fwRoot = join(testDir, 'sandbox');
       process.env.CTX_FRAMEWORK_ROOT = fwRoot;
-      process.env.CTX_PROJECT_ROOT = '/Users/cortextos/cortextos';
-      process.env.CTX_AGENT_DIR = '/Users/cortextos/cortextos/orgs/liveorg/agents/live-agent';
+      process.env.CTX_PROJECT_ROOT = '/Users/localuser/cortextos';
+      process.env.CTX_AGENT_DIR = '/Users/localuser/cortextos/orgs/liveorg/agents/live-agent';
       process.env.CTX_AGENT_NAME = 'live-agent';
       process.env.CTX_ORG = 'liveorg';
       const result = resolveEnv();
