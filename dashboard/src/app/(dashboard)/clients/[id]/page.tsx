@@ -45,6 +45,27 @@ function formatNOK(value: number): string {
   return new Intl.NumberFormat('nb-NO', { maximumFractionDigits: 0 }).format(value);
 }
 
+function formatMonth(ym: string): string {
+  return new Date(ym + '-02').toLocaleDateString('nb-NO', { month: 'long', year: 'numeric' });
+}
+
+function groupByMonth(entries: TimeEntry[]): Array<{ month: string; label: string; entries: TimeEntry[]; totalHours: number }> {
+  const map = new Map<string, TimeEntry[]>();
+  for (const e of entries) {
+    const m = e.date.substring(0, 7);
+    if (!map.has(m)) map.set(m, []);
+    map.get(m)!.push(e);
+  }
+  return Array.from(map.entries())
+    .sort(([a], [b]) => b.localeCompare(a))
+    .map(([month, grp]) => ({
+      month,
+      label: formatMonth(month),
+      entries: grp,
+      totalHours: grp.reduce((s, e) => s + e.hours, 0),
+    }));
+}
+
 export default function ClientDetailPage() {
   return (
     <ToastProvider>
@@ -89,6 +110,7 @@ function ClientDetailView() {
 
   const [showAddNote, setShowAddNote] = useState(false);
   const [noteBody, setNoteBody] = useState('');
+  const [selectedMonth, setSelectedMonth] = useState<string>(() => new Date().toISOString().substring(0, 7));
 
   // Monotonic request id: a later fetchAll() supersedes an in-flight earlier one,
   // so out-of-order responses are discarded. Without this, clicking Undo while
@@ -270,6 +292,11 @@ function ClientDetailView() {
   const activeProjects = projects.filter(p => p.status === 'active').length;
   const openTasks = tasks.filter(t => t.status !== 'completed').length;
 
+  const allMonths = Array.from(new Set(timeEntries.map(e => e.date.substring(0, 7)))).sort().reverse();
+  const filteredEntries = selectedMonth === 'all' ? timeEntries : timeEntries.filter(e => e.date.startsWith(selectedMonth));
+  const filteredHours = filteredEntries.reduce((s, e) => s + e.hours, 0);
+  const filteredNOK = client.rate_nok ? filteredHours * client.rate_nok : null;
+
   return (
     <div className="space-y-6">
       <div className="flex items-start justify-between">
@@ -365,26 +392,77 @@ function ClientDetailView() {
                 <div className="flex gap-2 justify-end"><Button variant="ghost" size="sm" onClick={() => setShowAddTime(false)}>Cancel</Button><Button size="sm" onClick={handleAddTime} disabled={!timeDesc.trim() || !timeHours}>Log</Button></div>
               </div>
             )}
+            {timeEntries.length > 0 && (
+              <div className="flex items-center gap-2 mb-3">
+                <select
+                  value={selectedMonth}
+                  onChange={ev => setSelectedMonth(ev.target.value)}
+                  className="rounded-md border bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                >
+                  {allMonths.map(m => (
+                    <option key={m} value={m}>{formatMonth(m)}</option>
+                  ))}
+                  <option value="all">Alle måneder</option>
+                </select>
+              </div>
+            )}
             {timeEntries.length === 0 ? (
               <p className="py-8 text-center text-sm text-muted-foreground">No time entries yet.</p>
-            ) : (
-              <div className="rounded-lg border divide-y max-h-[480px] overflow-y-auto">
-                {timeEntries.map(e => (
-                  <div key={e.id} className="group flex items-center justify-between px-4 py-3">
-                    <div><p className="text-sm">{e.description}</p><p className="text-xs text-muted-foreground">{formatDate(e.date)}</p></div>
-                    <div className="flex items-center gap-3">
-                      <span className="flex items-center gap-1 text-sm font-medium"><IconClock className="size-3.5 text-muted-foreground" />{e.hours.toFixed(1)}h</span>
-                      <button
-                        onClick={() => setTimeEntryToDelete(e)}
-                        aria-label="Delete time entry"
-                        className="text-muted-foreground/40 hover:text-destructive transition-colors [@media(hover:hover)]:opacity-0 group-hover:opacity-100 focus:opacity-100"
-                      >
-                        <IconTrash className="size-4" />
-                      </button>
+            ) : selectedMonth === 'all' ? (
+              <div className="rounded-lg border overflow-y-auto max-h-[520px]">
+                {groupByMonth(timeEntries).map(({ month, label, entries: grp, totalHours: grpHours }) => {
+                  const grpNOK = client.rate_nok ? grpHours * client.rate_nok : null;
+                  return (
+                    <div key={month} className="border-b last:border-b-0">
+                      <div className="flex items-center justify-between px-4 py-2 bg-muted/30 sticky top-0 z-10 border-b">
+                        <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</span>
+                        <span className="text-xs text-muted-foreground">
+                          {grpHours.toFixed(1)}h
+                          {grpNOK != null && <span className="ml-2 font-medium text-foreground">{formatNOK(grpNOK)} kr</span>}
+                        </span>
+                      </div>
+                      <div className="divide-y">
+                        {grp.map(e => (
+                          <div key={e.id} className="group flex items-center justify-between px-4 py-3">
+                            <div><p className="text-sm">{e.description}</p><p className="text-xs text-muted-foreground">{formatDate(e.date)}</p></div>
+                            <div className="flex items-center gap-3">
+                              <span className="flex items-center gap-1 text-sm font-medium"><IconClock className="size-3.5 text-muted-foreground" />{e.hours.toFixed(1)}h</span>
+                              <button onClick={() => setTimeEntryToDelete(e)} aria-label="Delete time entry" className="text-muted-foreground/40 hover:text-destructive transition-colors [@media(hover:hover)]:opacity-0 group-hover:opacity-100 focus:opacity-100"><IconTrash className="size-4" /></button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
+            ) : (
+              <>
+                {filteredEntries.length > 0 && (
+                  <div className="flex items-center justify-between rounded-lg bg-muted/30 px-4 py-2.5 mb-3">
+                    <span className="text-sm font-medium">{formatMonth(selectedMonth)}</span>
+                    <span className="text-sm text-muted-foreground">
+                      {filteredHours.toFixed(1)} timer
+                      {filteredNOK != null && <span className="ml-2 font-semibold text-foreground">{formatNOK(filteredNOK)} kr</span>}
+                    </span>
+                  </div>
+                )}
+                {filteredEntries.length === 0 ? (
+                  <p className="py-8 text-center text-sm text-muted-foreground">Ingen timer i {formatMonth(selectedMonth)}.</p>
+                ) : (
+                  <div className="rounded-lg border divide-y max-h-[480px] overflow-y-auto">
+                    {filteredEntries.map(e => (
+                      <div key={e.id} className="group flex items-center justify-between px-4 py-3">
+                        <div><p className="text-sm">{e.description}</p><p className="text-xs text-muted-foreground">{formatDate(e.date)}</p></div>
+                        <div className="flex items-center gap-3">
+                          <span className="flex items-center gap-1 text-sm font-medium"><IconClock className="size-3.5 text-muted-foreground" />{e.hours.toFixed(1)}h</span>
+                          <button onClick={() => setTimeEntryToDelete(e)} aria-label="Delete time entry" className="text-muted-foreground/40 hover:text-destructive transition-colors [@media(hover:hover)]:opacity-0 group-hover:opacity-100 focus:opacity-100"><IconTrash className="size-4" /></button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
             )}
             <DeleteTimeEntryDialog
               open={timeEntryToDelete !== null}
