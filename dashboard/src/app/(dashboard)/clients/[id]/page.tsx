@@ -111,6 +111,7 @@ function ClientDetailView() {
   const [showAddNote, setShowAddNote] = useState(false);
   const [noteBody, setNoteBody] = useState('');
   const [selectedMonth, setSelectedMonth] = useState<string>(() => new Date().toISOString().substring(0, 7));
+  const [statScope, setStatScope] = useState<'month' | 'ytd' | 'all'>('month');
 
   // Monotonic request id: a later fetchAll() supersedes an in-flight earlier one,
   // so out-of-order responses are discarded. Without this, clicking Undo while
@@ -292,6 +293,16 @@ function ClientDetailView() {
   const activeProjects = projects.filter(p => p.status === 'active').length;
   const openTasks = tasks.filter(t => t.status !== 'completed').length;
 
+  const currentYear = new Date().getFullYear().toString();
+  const effectiveMonth = selectedMonth !== 'all' ? selectedMonth : new Date().toISOString().substring(0, 7);
+  const scopedEntries = statScope === 'month'
+    ? timeEntries.filter(e => e.date.startsWith(effectiveMonth))
+    : statScope === 'ytd'
+    ? timeEntries.filter(e => e.date.startsWith(currentYear))
+    : timeEntries;
+  const scopedHours = scopedEntries.reduce((s, e) => s + e.hours, 0);
+  const scopedRevenue = client.rate_nok ? scopedHours * client.rate_nok : null;
+
   const allMonths = Array.from(new Set(timeEntries.map(e => e.date.substring(0, 7)))).sort().reverse();
   const filteredEntries = selectedMonth === 'all' ? timeEntries : timeEntries.filter(e => e.date.startsWith(selectedMonth));
   const filteredHours = filteredEntries.reduce((s, e) => s + e.hours, 0);
@@ -370,11 +381,21 @@ function ClientDetailView() {
 
       {tab === 'overview' && (
         <div className="space-y-6">
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-            <div className="rounded-lg border bg-card p-4"><p className="text-xs text-muted-foreground">Total hours</p><p className="text-2xl font-semibold">{totals.total_hours.toFixed(1)}</p></div>
-            <div className="rounded-lg border bg-card p-4"><p className="text-xs text-muted-foreground">Active projects</p><p className="text-2xl font-semibold">{activeProjects}</p></div>
-            <div className="rounded-lg border bg-card p-4"><p className="text-xs text-muted-foreground">Open tasks</p><p className="text-2xl font-semibold">{openTasks}</p></div>
-            {revenue != null && <div className="rounded-lg border bg-card p-4"><p className="text-xs text-muted-foreground">Revenue (ex MVA)</p><p className="text-2xl font-semibold text-emerald-600 dark:text-emerald-400">{formatNOK(revenue)} kr</p></div>}
+          <div>
+            <div className="flex items-center gap-1 mb-3">
+              {(['month', 'ytd', 'all'] as const).map(s => (
+                <button key={s} onClick={() => setStatScope(s)}
+                  className={`px-2.5 py-1 text-xs rounded-md font-medium transition-colors ${statScope === s ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-muted'}`}>
+                  {s === 'month' ? 'Denne måned' : s === 'ytd' ? 'Hittil i år' : 'All tid'}
+                </button>
+              ))}
+            </div>
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+              <div className="rounded-lg border bg-card p-4"><p className="text-xs text-muted-foreground">Timer</p><p className="text-2xl font-semibold">{scopedHours.toFixed(1)}</p></div>
+              <div className="rounded-lg border bg-card p-4"><p className="text-xs text-muted-foreground">Aktive prosjekter</p><p className="text-2xl font-semibold">{activeProjects}</p></div>
+              <div className="rounded-lg border bg-card p-4"><p className="text-xs text-muted-foreground">Åpne oppgaver</p><p className="text-2xl font-semibold">{openTasks}</p></div>
+              {scopedRevenue != null && <div className="rounded-lg border bg-card p-4"><p className="text-xs text-muted-foreground">Inntekt (ex MVA)</p><p className="text-2xl font-semibold text-emerald-600 dark:text-emerald-400">{formatNOK(scopedRevenue)} kr</p></div>}
+            </div>
           </div>
 
           <div>
