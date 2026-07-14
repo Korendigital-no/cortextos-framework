@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ToastProvider, useToast } from '@/components/ui/toast';
 import DeleteTaskDialog from '@/components/clients/delete-task-dialog';
+import DeleteNoteDialog from '@/components/clients/delete-note-dialog';
 import DeleteTimeEntryDialog from '@/components/clients/delete-time-entry-dialog';
 import EditClientDialog from '@/components/clients/edit-client-dialog';
 import DeleteClientDialog from '@/components/clients/delete-client-dialog';
@@ -107,6 +108,7 @@ function ClientDetailView() {
   const [taskPriority, setTaskPriority] = useState('normal');
   const [taskToDelete, setTaskToDelete] = useState<ClientTask | null>(null);
   const [timeEntryToDelete, setTimeEntryToDelete] = useState<TimeEntry | null>(null);
+  const [noteToDelete, setNoteToDelete] = useState<Note | null>(null);
 
   const [showAddNote, setShowAddNote] = useState(false);
   const [noteBody, setNoteBody] = useState('');
@@ -212,9 +214,12 @@ function ClientDetailView() {
     fetchAll();
   }
 
-  async function handleDeleteNote(noteId: string) {
-    await fetch(`/api/clients/${id}/notes/${noteId}`, { method: 'DELETE' });
-    setNotes(prev => prev.filter(n => n.id !== noteId));
+  async function confirmDeleteNote() {
+    if (!noteToDelete) return;
+    const target = noteToDelete;
+    setNoteToDelete(null);
+    await fetch(`/api/clients/${id}/notes/${target.id}`, { method: 'DELETE' });
+    setNotes(prev => prev.filter(n => n.id !== target.id));
   }
 
   async function toggleTask(taskId: string, currentStatus: string) {
@@ -654,7 +659,7 @@ function ClientDetailView() {
                             <IconPencil className="size-3.5" />
                           </button>
                           <button
-                            onClick={() => handleDeleteNote(n.id)}
+                            onClick={() => setNoteToDelete(n)}
                             aria-label="Delete note"
                             className="rounded-md p-1.5 text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                           >
@@ -669,6 +674,12 @@ function ClientDetailView() {
               ))}
             </div>
           )}
+          <DeleteNoteDialog
+            open={noteToDelete !== null}
+            notePreview={noteToDelete ? noteToDelete.body.slice(0, 60) + (noteToDelete.body.length > 60 ? '…' : '') : ''}
+            onConfirm={confirmDeleteNote}
+            onCancel={() => setNoteToDelete(null)}
+          />
         </div>
       )}
     </div>
