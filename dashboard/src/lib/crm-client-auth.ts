@@ -29,3 +29,8 @@ export function clientTaskBelongsToClient(taskId: string, clientId: string): boo
   const row = db.prepare('SELECT 1 FROM crm_client_tasks WHERE id = ? AND client_id = ?').get(taskId, clientId);
   return !!row;
 }
+
+export function noteBelongsToClient(noteId: string, clientId: string): boolean {
+  const row = db.prepare('SELECT 1 FROM crm_client_notes WHERE id = ? AND client_id = ?').get(noteId, clientId);
+  return !!row;
+}
