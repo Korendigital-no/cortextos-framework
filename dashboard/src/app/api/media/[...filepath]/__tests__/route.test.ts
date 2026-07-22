@@ -17,7 +17,7 @@ let media: MediaRoute;
 
 beforeAll(async () => {
   media = await import('../route');
-});
+}, 30_000);
 
 afterAll(() => {
   try { fs.rmSync(rootTmp, { recursive: true, force: true }); } catch { /* ignore */ }

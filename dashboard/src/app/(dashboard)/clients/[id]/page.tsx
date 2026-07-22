@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ToastProvider, useToast } from '@/components/ui/toast';
 import DeleteTaskDialog from '@/components/clients/delete-task-dialog';
+import DeleteNoteDialog from '@/components/clients/delete-note-dialog';
 import DeleteTimeEntryDialog from '@/components/clients/delete-time-entry-dialog';
 import EditClientDialog from '@/components/clients/edit-client-dialog';
 import DeleteClientDialog from '@/components/clients/delete-client-dialog';
@@ -107,9 +108,12 @@ function ClientDetailView() {
   const [taskPriority, setTaskPriority] = useState('normal');
   const [taskToDelete, setTaskToDelete] = useState<ClientTask | null>(null);
   const [timeEntryToDelete, setTimeEntryToDelete] = useState<TimeEntry | null>(null);
+  const [noteToDelete, setNoteToDelete] = useState<Note | null>(null);
 
   const [showAddNote, setShowAddNote] = useState(false);
   const [noteBody, setNoteBody] = useState('');
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+  const [editingNoteBody, setEditingNoteBody] = useState('');
   const [selectedMonth, setSelectedMonth] = useState<string>(() => new Date().toISOString().substring(0, 7));
   const [statScope, setStatScope] = useState<'month' | 'ytd' | 'all'>('month');
 
@@ -192,6 +196,30 @@ function ClientDetailView() {
     });
     setNoteBody(''); setShowAddNote(false);
     fetchAll();
+  }
+
+  function startEditNote(note: Note) {
+    setEditingNoteId(note.id);
+    setEditingNoteBody(note.body);
+  }
+
+  async function handleSaveNote(noteId: string) {
+    if (!editingNoteBody.trim()) return;
+    await fetch(`/api/clients/${id}/notes/${noteId}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ body: editingNoteBody.trim() }),
+    });
+    setEditingNoteId(null);
+    setEditingNoteBody('');
+    fetchAll();
+  }
+
+  async function confirmDeleteNote() {
+    if (!noteToDelete) return;
+    const target = noteToDelete;
+    setNoteToDelete(null);
+    await fetch(`/api/clients/${id}/notes/${target.id}`, { method: 'DELETE' });
+    setNotes(prev => prev.filter(n => n.id !== target.id));
   }
 
   async function toggleTask(taskId: string, currentStatus: string) {
@@ -604,13 +632,54 @@ function ClientDetailView() {
           ) : (
             <div className="space-y-2">
               {notes.map(n => (
-                <div key={n.id} className="rounded-lg border bg-card p-4">
-                  <p className="text-sm whitespace-pre-wrap">{n.body}</p>
-                  <p className="text-xs text-muted-foreground mt-2">{formatDate(n.created_at)}</p>
+                <div key={n.id} className="group rounded-lg border bg-card p-4">
+                  {editingNoteId === n.id ? (
+                    <div className="space-y-2">
+                      <textarea
+                        value={editingNoteBody}
+                        onChange={e => setEditingNoteBody(e.target.value)}
+                        className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring min-h-[80px]"
+                        autoFocus
+                      />
+                      <div className="flex gap-2 justify-end">
+                        <Button variant="ghost" size="sm" onClick={() => { setEditingNoteId(null); setEditingNoteBody(''); }}>Cancel</Button>
+                        <Button size="sm" onClick={() => handleSaveNote(n.id)} disabled={!editingNoteBody.trim()}>Save</Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex items-start justify-between gap-2">
+                        <p className="text-sm whitespace-pre-wrap flex-1">{n.body}</p>
+                        <div className="flex items-center gap-1 shrink-0 [@media(hover:hover)]:opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+                          <button
+                            onClick={() => startEditNote(n)}
+                            aria-label="Edit note"
+                            className="rounded-md p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          >
+                            <IconPencil className="size-3.5" />
+                          </button>
+                          <button
+                            onClick={() => setNoteToDelete(n)}
+                            aria-label="Delete note"
+                            className="rounded-md p-1.5 text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          >
+                            <IconTrash className="size-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-2">{formatDate(n.created_at)}</p>
+                    </>
+                  )}
                 </div>
               ))}
             </div>
           )}
+          <DeleteNoteDialog
+            open={noteToDelete !== null}
+            notePreview={noteToDelete ? noteToDelete.body.slice(0, 60) + (noteToDelete.body.length > 60 ? '…' : '') : ''}
+            onConfirm={confirmDeleteNote}
+            onCancel={() => setNoteToDelete(null)}
+          />
         </div>
       )}
     </div>
