@@ -205,10 +205,14 @@ function ClientDetailView() {
 
   async function handleSaveNote(noteId: string) {
     if (!editingNoteBody.trim()) return;
-    await fetch(`/api/clients/${id}/notes/${noteId}`, {
+    const res = await fetch(`/api/clients/${id}/notes/${noteId}`, {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ body: editingNoteBody.trim() }),
     });
+    if (!res.ok) {
+      toast({ message: 'Could not save note', variant: 'error' });
+      return;
+    }
     setEditingNoteId(null);
     setEditingNoteBody('');
     fetchAll();
@@ -218,7 +222,12 @@ function ClientDetailView() {
     if (!noteToDelete) return;
     const target = noteToDelete;
     setNoteToDelete(null);
-    await fetch(`/api/clients/${id}/notes/${target.id}`, { method: 'DELETE' });
+    const res = await fetch(`/api/clients/${id}/notes/${target.id}`, { method: 'DELETE' });
+    if (!res.ok) {
+      toast({ message: 'Could not delete note', variant: 'error' });
+      fetchAll();
+      return;
+    }
     setNotes(prev => prev.filter(n => n.id !== target.id));
   }
 
