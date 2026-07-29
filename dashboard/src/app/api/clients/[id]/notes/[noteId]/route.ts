@@ -8,7 +8,12 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   const { id: clientId, noteId } = await params;
   if (!noteBelongsToClient(noteId, clientId)) return Response.json({ error: 'Note not found' }, { status: 404 });
 
-  const body = await request.json();
+  let body: { body?: unknown };
+  try {
+    body = await request.json();
+  } catch {
+    return Response.json({ error: 'Invalid JSON' }, { status: 400 });
+  }
   if (!body.body || typeof body.body !== 'string' || !body.body.trim()) {
     return Response.json({ error: 'body is required' }, { status: 400 });
   }
