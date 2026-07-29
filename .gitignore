@@ -72,3 +72,11 @@ WINDOWS_INSTALL_REPORT.md
 *INSTALL_REPORT.md
 /PHASE*-REPORT.md
 docs/phase-reports/
+
+# State backups (contain agent bus-signing PRIVATE keys — must NEVER reach git).
+# 2026-07-14: analyst auto-commit caught state_backup_pre_upstream_20260707/ staging
+# 22 ed25519-private.pem files. Repo-root backups aren't covered by orgs/ rule above.
+state_backup_pre_upstream_20260707/
+state_backup_*/
+# Defensive catch-all: private signing keys are never committed anywhere in the tree.
+**/ed25519-private.pem
