@@ -918,6 +918,7 @@ describe('CodexAppServerPTY thread lifecycle', () => {
         method: 'item/commandExecution/requestApproval',
         thread_id: null,
       },
+      { refreshHeartbeat: false },
     );
     expect(pty.getOutputBuffer().getRecent()).toContain('unsupported request');
   });

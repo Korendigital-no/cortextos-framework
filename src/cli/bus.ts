@@ -80,7 +80,8 @@ async function gateBusAction(descriptor: ActionDescriptor): Promise<void> {
   try {
     if (!existsSync(join(env.frameworkRoot, 'orgs', env.org, 'context.json'))) {
       logEvent(paths, env.agentName, env.org, 'action', 'gate_unconfigured', 'warning',
-        JSON.stringify({ kind: descriptor.kind, framework_root: env.frameworkRoot }));
+        JSON.stringify({ kind: descriptor.kind, framework_root: env.frameworkRoot }),
+        { refreshHeartbeat: true });
     }
   } catch { /* best-effort */ }
 
@@ -95,7 +96,8 @@ async function gateBusAction(descriptor: ActionDescriptor): Promise<void> {
   if (shouldLogGate(decision)) {
     try {
       logEvent(paths, env.agentName, env.org, 'action',
-        gateEventName(decision), gateSeverity(decision), gateMeta(descriptor.kind, decision));
+        gateEventName(decision), gateSeverity(decision), gateMeta(descriptor.kind, decision),
+        { refreshHeartbeat: true });
     } catch { /* telemetry is best-effort */ }
   }
 
@@ -247,7 +249,7 @@ busCommand
     }
 
     try {
-      logEvent(paths, env.agentName, env.org, 'message', 'agent_message_sent', 'info', JSON.stringify({ to, priority, msg_id: msgId, reply_to: effectiveReplyTo ?? null }));
+      logEvent(paths, env.agentName, env.org, 'message', 'agent_message_sent', 'info', JSON.stringify({ to, priority, msg_id: msgId, reply_to: effectiveReplyTo ?? null }), { refreshHeartbeat: true });
     } catch { /* non-fatal */ }
     console.log(msgId);
   });
@@ -269,7 +271,7 @@ busCommand
     const paths = resolvePaths(env.agentName, env.instanceId, env.org, env.ctxRoot);
     ackInbox(paths, id);
     try {
-      logEvent(paths, env.agentName, env.org, 'message', 'inbox_ack', 'info', JSON.stringify({ msg_id: id }));
+      logEvent(paths, env.agentName, env.org, 'message', 'inbox_ack', 'info', JSON.stringify({ msg_id: id }), { refreshHeartbeat: true });
     } catch { /* non-fatal */ }
     console.log(`ACK'd ${id}`);
   });
@@ -625,7 +627,7 @@ busCommand
     }
     const env = resolveEnv();
     const paths = resolvePaths(env.agentName, env.instanceId, env.org, env.ctxRoot);
-    logEvent(paths, env.agentName, env.org, category as EventCategory, event, severity as EventSeverity, opts.meta);
+    logEvent(paths, env.agentName, env.org, category as EventCategory, event, severity as EventSeverity, opts.meta, { refreshHeartbeat: true });
     console.log(`Logged ${category}/${event} (${severity})`);
   });
 
@@ -686,7 +688,7 @@ busCommand
     // even if the agent itself forgets to call log-event. This makes the
     // dashboard "agents" list derive from heartbeats, not just explicit events.
     try {
-      logEvent(paths, env.agentName, env.org, 'heartbeat', 'heartbeat', 'info', JSON.stringify({ status, task: opts.task ?? '' }));
+      logEvent(paths, env.agentName, env.org, 'heartbeat', 'heartbeat', 'info', JSON.stringify({ status, task: opts.task ?? '' }), { refreshHeartbeat: true });
     } catch {
       // Non-fatal: heartbeat write already succeeded
     }
@@ -1303,7 +1305,7 @@ busCommand
         try {
           const paths = resolvePaths(env.agentName, env.instanceId, env.org, env.ctxRoot);
           const preview = message.length > 120 ? message.slice(0, 120) + '…' : message;
-          logEvent(paths, env.agentName, env.org, 'message', 'telegram_sent', 'info', JSON.stringify({ chat_id: chatId, message_id: sentMessageId, preview }));
+          logEvent(paths, env.agentName, env.org, 'message', 'telegram_sent', 'info', JSON.stringify({ chat_id: chatId, message_id: sentMessageId, preview }), { refreshHeartbeat: true });
         } catch { /* non-fatal */ }
       }
 
@@ -2824,7 +2826,8 @@ busCommand
       const telegramApi = new TelegramAPI(botToken);
       await telegramApi.sendMessage(chatId, text, undefined, { parseMode: 'HTML' });
       logEvent(paths, env.agentName, env.org, 'action', 'egress_alert_sent', 'info',
-        JSON.stringify({ signal_event: eventName, signal_label: label, agent }));
+        JSON.stringify({ signal_event: eventName, signal_label: label, agent }),
+        { refreshHeartbeat: true });
     } catch {
       /* best-effort — never crashes the spawner */
     }
@@ -3073,7 +3076,7 @@ busCommand
                 line: trimmed,
                 session: sessionName,
                 high_signal: isHighSignal,
-              });
+              }, { refreshHeartbeat: true });
             } catch { /* Never fail the stream */ }
           } else {
             logLine(`[event] ${trimmed}`);
@@ -3739,7 +3742,8 @@ busCommand.command('log-measurement')
       console.error((err as Error).message);
       process.exit(1);
     }
-    logEvent(paths, meta.agent_id, env.org, 'measurement', 'task_handled', 'info', JSON.stringify(meta));
+    logEvent(paths, meta.agent_id, env.org, 'measurement', 'task_handled', 'info',
+      JSON.stringify(meta), { refreshHeartbeat: true });
     console.log(`Logged measurement/task_handled for client ${meta.client_id} (${meta.task_type}, outcome=${meta.outcome})`);
   });
 

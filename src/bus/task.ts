@@ -526,7 +526,7 @@ export function completeTask(
       logEvent(eventPaths, assignee, taskOrg, 'task', 'task_completed', 'info', {
         task_id: taskId,
         ...(result ? { result } : {}),
-      });
+      }, { refreshHeartbeat: true });
     } catch {
       // Never let observability break task completion.
     }
@@ -556,7 +556,8 @@ export function completeTask(
         const emitPaths = taskOrg
           ? { ...paths, analyticsDir: join(paths.ctxRoot, 'orgs', taskOrg, 'analytics') }
           : paths;
-        logEvent(emitPaths, assignee, taskOrg, 'measurement', 'task_handled', 'info', JSON.stringify(meta));
+        logEvent(emitPaths, assignee, taskOrg, 'measurement', 'task_handled', 'info',
+          JSON.stringify(meta), { refreshHeartbeat: true });
       } catch {
         // A malformed measurement must not block task completion; the task is
         // already persisted. (validateMeasurementMeta throwing lands here.)
