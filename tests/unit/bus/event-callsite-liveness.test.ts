@@ -22,6 +22,16 @@ const ON_BEHALF_EVENTS = new Set([
   'telegram_received',
   'codex_app_server_unsupported_request',
 ]);
+const ON_BEHALF_COMMANDS = new Set([
+  'send-message',
+  'ack-inbox',
+  'log-event',
+  'send-telegram',
+  'egress-alert',
+]);
+const ON_BEHALF_FUNCTIONS = new Set([
+  'gateBusAction',
+]);
 
 function sourceFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((entry) => {
@@ -35,7 +45,49 @@ interface LogEventCall {
   file: string;
   line: number;
   eventName: string | null;
+  commandName: string | null;
+  functionName: string | null;
   refreshHeartbeat: boolean | null;
+}
+
+function containingFunctionName(node: ts.Node): string | null {
+  let current: ts.Node | undefined = node;
+  while (current) {
+    if (ts.isFunctionDeclaration(current) && current.name) return current.name.text;
+    if (ts.isMethodDeclaration(current) && current.name && ts.isIdentifier(current.name)) {
+      return current.name.text;
+    }
+    current = current.parent;
+  }
+  return null;
+}
+
+function commanderCommandName(node: ts.Node): string | null {
+  let current: ts.Node | undefined = node;
+  while (current) {
+    if (
+      ts.isCallExpression(current)
+      && ts.isPropertyAccessExpression(current.expression)
+      && current.expression.name.text === 'action'
+    ) {
+      let found: string | null = null;
+      const findCommand = (candidate: ts.Node): void => {
+        if (
+          ts.isCallExpression(candidate)
+          && ts.isPropertyAccessExpression(candidate.expression)
+          && candidate.expression.name.text === 'command'
+        ) {
+          const name = candidate.arguments[0];
+          if (name && ts.isStringLiteralLike(name)) found = name.text;
+        }
+        if (found === null) ts.forEachChild(candidate, findCommand);
+      };
+      findCommand(current.expression.expression);
+      return found;
+    }
+    current = current.parent;
+  }
+  return null;
 }
 
 function inspectLogEventCalls(): LogEventCall[] {
@@ -82,6 +134,8 @@ function inspectLogEventCalls(): LogEventCall[] {
           file: relative(process.cwd(), file),
           line: line + 1,
           eventName,
+          commandName: commanderCommandName(node),
+          functionName: containingFunctionName(node),
           refreshHeartbeat,
         });
       }
@@ -104,14 +158,30 @@ describe('logEvent heartbeat ownership (#930 source invariant)', () => {
   it('keeps daemon/runtime on-behalf events spoof-safe and self-activity live', () => {
     const calls = inspectLogEventCalls();
     const wrong = calls.filter((call) => {
-      const expected = call.eventName !== null && ON_BEHALF_EVENTS.has(call.eventName)
-        ? false
-        : true;
+      const onBehalf = (
+        (call.eventName !== null && ON_BEHALF_EVENTS.has(call.eventName))
+        || (call.commandName !== null && ON_BEHALF_COMMANDS.has(call.commandName))
+        || (call.functionName !== null && ON_BEHALF_FUNCTIONS.has(call.functionName))
+      );
+      const expected = !onBehalf;
       return call.refreshHeartbeat !== expected;
     });
 
     expect(wrong).toEqual([]);
-    expect(calls.filter((call) => call.refreshHeartbeat === false).map((call) => call.eventName).sort())
-      .toEqual([...ON_BEHALF_EVENTS].sort());
+    const falseCalls = calls.filter((call) => call.refreshHeartbeat === false);
+    expect(new Set(falseCalls.map((call) => {
+      if (call.commandName !== null && ON_BEHALF_COMMANDS.has(call.commandName)) {
+        return call.commandName;
+      }
+      if (call.functionName !== null && ON_BEHALF_FUNCTIONS.has(call.functionName)) {
+        return call.functionName;
+      }
+      return call.eventName;
+    }))).toEqual(new Set([
+      ...ON_BEHALF_EVENTS,
+      ...ON_BEHALF_COMMANDS,
+      ...ON_BEHALF_FUNCTIONS,
+    ]));
+    expect(falseCalls.filter((call) => call.functionName === 'gateBusAction')).toHaveLength(2);
   });
 });
