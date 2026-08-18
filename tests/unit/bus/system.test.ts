@@ -6,6 +6,28 @@ import { execSync } from 'child_process';
 import { selfRestart, hardRestart, autoCommit, checkGoalStaleness, postActivity, containsCredential } from '../../../src/bus/system';
 import type { BusPaths } from '../../../src/types';
 
+// Git exports repository-local variables (notably GIT_DIR and GIT_WORK_TREE)
+// to hooks. The pre-push hook runs this suite, so nested-repository tests must
+// temporarily clear the full `git rev-parse --local-env-vars` set; otherwise
+// their `git init`/`git commit` commands silently target the parent worktree.
+const GIT_LOCAL_ENV_VARS = [
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_CONFIG',
+  'GIT_CONFIG_PARAMETERS',
+  'GIT_CONFIG_COUNT',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_DIR',
+  'GIT_WORK_TREE',
+  'GIT_IMPLICIT_WORK_TREE',
+  'GIT_GRAFT_FILE',
+  'GIT_INDEX_FILE',
+  'GIT_NO_REPLACE_OBJECTS',
+  'GIT_REPLACE_REF_BASE',
+  'GIT_PREFIX',
+  'GIT_SHALLOW_FILE',
+  'GIT_COMMON_DIR',
+] as const;
+
 function makePaths(testDir: string, agent: string = 'test-agent'): BusPaths {
   return {
     ctxRoot: testDir,
@@ -82,8 +104,12 @@ describe('Bus System', () => {
 
   describe('autoCommit', () => {
     let gitDir: string;
+    let inheritedGitEnv: Map<string, string | undefined>;
 
     beforeEach(() => {
+      inheritedGitEnv = new Map(GIT_LOCAL_ENV_VARS.map((name) => [name, process.env[name]]));
+      for (const name of GIT_LOCAL_ENV_VARS) delete process.env[name];
+
       gitDir = mkdtempSync(join(tmpdir(), 'cortextos-autocommit-test-'));
       execSync('git init', { cwd: gitDir, stdio: 'pipe' });
       execSync('git config user.email "test@test.com"', { cwd: gitDir, stdio: 'pipe' });
@@ -94,7 +120,16 @@ describe('Bus System', () => {
     });
 
     afterEach(() => {
-      rmSync(gitDir, { recursive: true, force: true });
+      try {
+        rmSync(gitDir, { recursive: true, force: true });
+      } finally {
+        // Never leak the test's process-wide env mutation, even if temp-dir
+        // cleanup fails (EBUSY/EPERM) or setup failed before gitDir was ready.
+        for (const [name, value] of inheritedGitEnv) {
+          if (value === undefined) delete process.env[name];
+          else process.env[name] = value;
+        }
+      }
     });
 
     it('filters out .env files', () => {
