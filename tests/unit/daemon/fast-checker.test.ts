@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 vi.mock('child_process', () => ({ execFile: vi.fn() }));
 vi.mock('../../../src/bus/system.js', () => ({ hardRestart: vi.fn() }));
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync, mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { FastChecker } from '../../../src/daemon/fast-checker';
@@ -1049,4 +1049,297 @@ describe('FastChecker', () => {
       expect(injected).toContain('````');
     });
   });
+
+  // Truth table for the context-handoff default-ON behavior shipped by PR-A.
+  // Guards two invariants people's downloaded agents depend on:
+  //   T1  unset ctx_handoff_threshold => default-ON at 60% (warn 30) of the model window.
+  //   T7  ctx_handoff_threshold <= 0  => deliberate opt-out (observe-only, never acts).
+  // Exercises the REAL checkContextStatus + getCtxThresholds (not a re-implementation),
+  // so flipping the 60 default back to 40, or breaking the <=0 opt-out, fails here.
+  describe('context-handoff default truth table (PR-A)', () => {
+    // Agent mock with the surface getCtxThresholds/checkContextStatus touch.
+    // getConfig() returns a stable reference so getCtxThresholds can mutate it
+    // from config.json the same way the real AgentProcess does.
+    function makeCtxAgent(name = 'ctx-agent') {
+      const config: any = {};
+      return {
+        name,
+        isBootstrapped: vi.fn().mockReturnValue(true),
+        injectMessage: vi.fn().mockReturnValue(true),
+        write: vi.fn(),
+        getAgentDir: () => testDir,
+        getConfig: () => config,
+        getOutputBuffer: () => ({ getRecent: () => '' }),
+        sessionRefresh: vi.fn().mockResolvedValue(undefined),
+      } as any;
+    }
+
+    function writeConfig(cfg: Record<string, unknown>) {
+      writeFileSync(join(testDir, 'config.json'), JSON.stringify(cfg), 'utf-8');
+    }
+
+    function writeCtxStatus(pct: number) {
+      writeFileSync(
+        join(paths.stateDir, 'context_status.json'),
+        JSON.stringify({ used_percentage: pct, exceeds_200k_tokens: false, written_at: new Date().toISOString() }),
+        'utf-8',
+      );
+    }
+
+    function injected(agent: any): string[] {
+      return agent.injectMessage.mock.calls.map((c: any[]) => c[0] as string);
+    }
+
+    it('T1: unset threshold defaults to handoff 60 / warn 30', () => {
+      const agent = makeCtxAgent();
+      const checker = new FastChecker(agent, paths, '/tmp/framework');
+      writeConfig({});
+      expect((checker as any).getCtxThresholds()).toEqual({ warn: 30, handoff: 60 });
+    });
+
+    it('T1: default-ON fires a handoff at 60%', async () => {
+      const agent = makeCtxAgent();
+      const checker = new FastChecker(agent, paths, '/tmp/framework');
+      writeConfig({});
+      writeCtxStatus(60);
+      await (checker as any).checkContextStatus();
+      expect(injected(agent).some(m => m.includes('CONTEXT HANDOFF REQUIRED'))).toBe(true);
+      expect((checker as any).ctxHandoffFiredAt).toBeGreaterThan(0);
+    });
+
+    it('T1: at 59% it warns (not handoff) and names the 60% trigger', async () => {
+      const agent = makeCtxAgent();
+      const checker = new FastChecker(agent, paths, '/tmp/framework');
+      writeConfig({});
+      writeCtxStatus(59);
+      await (checker as any).checkContextStatus();
+      const msgs = injected(agent);
+      expect(msgs.some(m => m.includes('CONTEXT HANDOFF REQUIRED'))).toBe(false);
+      expect(msgs.some(m => m.includes('Handoff triggers at 60%'))).toBe(true);
+      expect((checker as any).ctxHandoffFiredAt).toBe(0);
+    });
+
+    it('T7: ctx_handoff_threshold <= 0 opts out — no warning, no handoff', async () => {
+      const agent = makeCtxAgent();
+      const checker = new FastChecker(agent, paths, '/tmp/framework');
+      writeConfig({ ctx_handoff_threshold: 0 });
+      writeCtxStatus(90);
+      await (checker as any).checkContextStatus();
+      expect(agent.injectMessage).not.toHaveBeenCalled();
+      expect((checker as any).ctxHandoffFiredAt).toBe(0);
+    });
+
+    it('explicit threshold is still honored (config overrides the default)', async () => {
+      const agent = makeCtxAgent();
+      const checker = new FastChecker(agent, paths, '/tmp/framework');
+      writeConfig({ ctx_handoff_threshold: 50 });
+      writeCtxStatus(55);
+      await (checker as any).checkContextStatus();
+      expect(injected(agent).some(m => m.includes('CONTEXT HANDOFF REQUIRED'))).toBe(true);
+    });
+
+    it('cooperative-restart loop backstop trips the breaker after repeated handoff fires', async () => {
+      // Treadmill simulation: a runtime that does not reset context on the handoff
+      // restart re-crosses the threshold every cycle. Each cycle is a fresh session
+      // (ctxHandoffFiredAt back to 0) but the persisted handoff-fire window accumulates.
+      // The first two fires hand off normally (a benign 1-2 settle); the third trips the
+      // circuit breaker (30min pause) instead of handing off again, so the loop self-limits.
+      const agent = makeCtxAgent();
+      const checker = new FastChecker(agent, paths, '/tmp/framework');
+      writeConfig({});
+      for (let i = 0; i < 3; i++) {
+        writeCtxStatus(70);
+        (checker as any).ctxHandoffFiredAt = 0; // simulate the fresh session re-crossing
+        await (checker as any).checkContextStatus();
+      }
+      const handoffPrompts = injected(agent).filter(m => m.includes('CONTEXT HANDOFF REQUIRED'));
+      expect(handoffPrompts.length).toBe(2); // 3rd fire tripped the breaker instead of handing off
+      expect((checker as any).ctxCircuitBrokenAt).not.toBeNull();
+    });
+  });
+
+  // Futile-baseline guard: a session BORN at/above the handoff threshold (heavy
+  // resume baseline) cannot be helped by a handoff — the fresh session inherits the
+  // same baseline and re-fires. The guard captures the first post-grace reading as
+  // the session baseline and suppresses the Tier-2 handoff when that baseline already
+  // meets/exceeds threshold AND ~no work-fill has accumulated, routing a single
+  // once-per-session alert to the org's orchestrator (a bus inbox message, NOT the
+  // human's Telegram). These exercise the REAL checkContextStatus flow.
+  describe('context-handoff futile-baseline guard', () => {
+    const ORCH = 'orchestrator';
+    const ORG = 'testorg';
+    let frameworkRoot: string;
+    let agentDir: string;
+
+    beforeEach(() => {
+      frameworkRoot = mkdtempSync(join(tmpdir(), 'cortextos-fw-'));
+      // Canonical agent-dir layout <root>/orgs/<org>/agents/<name> so the guard can
+      // derive the org and read orgs/<org>/context.json for the orchestrator name.
+      agentDir = join(frameworkRoot, 'orgs', ORG, 'agents', 'ctx-agent');
+      mkdirSync(agentDir, { recursive: true });
+      writeFileSync(
+        join(frameworkRoot, 'orgs', ORG, 'context.json'),
+        JSON.stringify({ orchestrator: ORCH }),
+        'utf-8',
+      );
+    });
+
+    afterEach(() => {
+      rmSync(frameworkRoot, { recursive: true, force: true });
+      vi.useRealTimers();
+    });
+
+    function makeCtxAgent(name = 'ctx-agent') {
+      const config: any = {};
+      return {
+        name,
+        isBootstrapped: vi.fn().mockReturnValue(true),
+        injectMessage: vi.fn().mockReturnValue(true),
+        write: vi.fn(),
+        getAgentDir: () => agentDir,
+        getConfig: () => config,
+        getOutputBuffer: () => ({ getRecent: () => '' }),
+        sessionRefresh: vi.fn().mockResolvedValue(undefined),
+      } as any;
+    }
+
+    function writeConfig(cfg: Record<string, unknown>) {
+      writeFileSync(join(agentDir, 'config.json'), JSON.stringify(cfg), 'utf-8');
+    }
+
+    // Optional session_id: writing one drives the new-session detection that sets
+    // ctxSessionStartedAt (the guard's anchor). Omitting it leaves the session
+    // un-anchored — the legacy, guard-inert path.
+    function writeCtxStatus(pct: number, sessionId?: string) {
+      const data: any = {
+        used_percentage: pct,
+        exceeds_200k_tokens: false,
+        written_at: new Date().toISOString(),
+      };
+      if (sessionId !== undefined) data.session_id = sessionId;
+      writeFileSync(join(paths.stateDir, 'context_status.json'), JSON.stringify(data), 'utf-8');
+    }
+
+    function injected(agent: any): string[] {
+      return agent.injectMessage.mock.calls.map((c: any[]) => c[0] as string);
+    }
+
+    // The actual mechanism the alert uses: a bus message dropped in the
+    // orchestrator's inbox under ctxRoot (sendMessage), NOT a telegram call.
+    function orchestratorMessages(): any[] {
+      const dir = join(paths.ctxRoot, 'inbox', ORCH);
+      if (!existsSync(dir)) return [];
+      return readdirSync(dir)
+        .filter(f => f.endsWith('.json'))
+        .map(f => JSON.parse(readFileSync(join(dir, f), 'utf-8')));
+    }
+
+    // Default (claude) runtime grace window is 120_000ms — advance past it.
+    const GRACE_MS = 120_000;
+
+    it('A: heavy-baseline idle session is suppressed and alerts the orchestrator exactly once', async () => {
+      vi.useFakeTimers();
+      const t0 = new Date('2026-06-01T00:00:00Z').getTime();
+      vi.setSystemTime(t0);
+      const agent = makeCtxAgent();
+      const checker = new FastChecker(agent, paths, frameworkRoot);
+      writeConfig({});
+
+      // Birth an anchored session already above the 60% handoff threshold.
+      writeCtxStatus(72, 'sess-heavy');
+      await (checker as any).checkContextStatus(); // within grace — no baseline, no action
+
+      // Past grace, still ~idle at the same baseline: capture baseline + suppress.
+      vi.setSystemTime(t0 + GRACE_MS + 60_000);
+      writeCtxStatus(72, 'sess-heavy');
+      await (checker as any).checkContextStatus();
+
+      // A further idle tick must NOT emit a second alert (once-per-session throttle).
+      vi.setSystemTime(t0 + GRACE_MS + 120_000);
+      writeCtxStatus(72, 'sess-heavy');
+      await (checker as any).checkContextStatus();
+
+      expect(injected(agent).some(m => m.includes('CONTEXT HANDOFF REQUIRED'))).toBe(false);
+      expect((checker as any).ctxHandoffFiredAt).toBe(0);
+      expect((checker as any).ctxHandoffFires.length).toBe(0);
+      expect((checker as any).ctxCircuitBrokenAt).toBeNull();
+      expect((checker as any).ctxSessionBaselinePct).toBe(72);
+
+      const msgs = orchestratorMessages();
+      expect(msgs.length).toBe(1);
+      expect(msgs[0].from).toBe('ctx-agent');
+      expect(msgs[0].to).toBe(ORCH);
+      expect(msgs[0].text).toMatch(/baseline/i);
+      expect(msgs[0].text).toMatch(/threshold/i);
+    });
+
+    it('B: low-baseline session that grows into the threshold still hands off (no alert)', async () => {
+      vi.useFakeTimers();
+      const t0 = new Date('2026-06-01T00:00:00Z').getTime();
+      vi.setSystemTime(t0);
+      const agent = makeCtxAgent();
+      const checker = new FastChecker(agent, paths, frameworkRoot);
+      writeConfig({});
+
+      writeCtxStatus(20, 'sess-grow');
+      await (checker as any).checkContextStatus(); // within grace
+
+      vi.setSystemTime(t0 + GRACE_MS + 60_000);
+      writeCtxStatus(20, 'sess-grow');
+      await (checker as any).checkContextStatus(); // post-grace: baseline = 20 (< handoff)
+
+      vi.setSystemTime(t0 + GRACE_MS + 180_000);
+      writeCtxStatus(65, 'sess-grow'); // real work-fill grew it into the threshold
+      await (checker as any).checkContextStatus();
+
+      expect((checker as any).ctxSessionBaselinePct).toBe(20);
+      expect(injected(agent).some(m => m.includes('CONTEXT HANDOFF REQUIRED'))).toBe(true);
+      expect((checker as any).ctxHandoffFiredAt).toBeGreaterThan(0);
+      expect(orchestratorMessages().length).toBe(0);
+    });
+
+    it('C: session born above threshold still hands off once work-fill exceeds the margin', async () => {
+      vi.useFakeTimers();
+      const t0 = new Date('2026-06-01T00:00:00Z').getTime();
+      vi.setSystemTime(t0);
+      const agent = makeCtxAgent();
+      const checker = new FastChecker(agent, paths, frameworkRoot);
+      writeConfig({});
+
+      writeCtxStatus(62, 'sess-margin');
+      await (checker as any).checkContextStatus(); // within grace
+
+      vi.setSystemTime(t0 + GRACE_MS + 60_000);
+      writeCtxStatus(62, 'sess-margin');
+      await (checker as any).checkContextStatus(); // baseline = 62, suppressed (62-62 < 10)
+
+      expect((checker as any).ctxSessionBaselinePct).toBe(62);
+      expect((checker as any).ctxHandoffFiredAt).toBe(0); // still suppressed while idle
+
+      // Accumulate real work-fill beyond WORKFILL_MARGIN (10): 78 - 62 = 16.
+      vi.setSystemTime(t0 + GRACE_MS + 180_000);
+      writeCtxStatus(78, 'sess-margin');
+      await (checker as any).checkContextStatus();
+
+      expect(injected(agent).some(m => m.includes('CONTEXT HANDOFF REQUIRED'))).toBe(true);
+      expect((checker as any).ctxHandoffFiredAt).toBeGreaterThan(0);
+    });
+
+    it('D: an un-anchored session (no session_id) still hands off at threshold — legacy path', async () => {
+      const agent = makeCtxAgent();
+      const checker = new FastChecker(agent, paths, frameworkRoot);
+      writeConfig({});
+
+      // No session_id → ctxSessionStartedAt never set → baseline never captured.
+      writeCtxStatus(65);
+      await (checker as any).checkContextStatus();
+
+      expect((checker as any).ctxSessionStartedAt).toBe(0);
+      expect((checker as any).ctxSessionBaselinePct).toBeNull();
+      expect(injected(agent).some(m => m.includes('CONTEXT HANDOFF REQUIRED'))).toBe(true);
+      expect((checker as any).ctxHandoffFiredAt).toBeGreaterThan(0);
+      expect(orchestratorMessages().length).toBe(0);
+    });
+  });
 });
+
