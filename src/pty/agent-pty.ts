@@ -231,8 +231,10 @@ export class AgentPTY {
     // Skip Claude Code's permission system by default (back-compat: agents have
     // historically run unattended). Set `dangerously_skip_permissions: false` in
     // the agent config to KEEP the gate on — then Claude Code's PermissionRequest
-    // flow (and the hook-permission-telegram approval) actually engages. Without
-    // this flag the CLI override would suppress any settings.json permission mode.
+    // flow (and the hook-permission-telegram approval) actually engages. The
+    // templates set permissions.defaultMode=bypassPermissions for autonomous
+    // defaults, so opt-out agents must also pass an explicit CLI permission mode
+    // to override that project setting.
     // Only the literal boolean `false` disables the skip; warn on a non-boolean so
     // a typo (e.g. the string "false") can't silently leave an agent ungated when
     // the operator intended to engage the gate.
@@ -243,7 +245,9 @@ export class AgentPTY {
         `(got ${JSON.stringify(skipPermissions)}); defaulting to skip-on.`,
       );
     }
-    if (skipPermissions !== false) {
+    if (skipPermissions === false) {
+      args.push('--permission-mode', 'default');
+    } else {
       args.push('--dangerously-skip-permissions');
     }
 

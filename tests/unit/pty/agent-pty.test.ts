@@ -32,28 +32,44 @@ function argsFor(config: any): string[] {
     .buildClaudeArgs('fresh', 'PROMPT');
 }
 
+function expectPermissionMode(args: string[], mode: string): void {
+  const index = args.indexOf('--permission-mode');
+  expect(index).toBeGreaterThanOrEqual(0);
+  expect(args[index + 1]).toBe(mode);
+}
+
 describe('AgentPTY --dangerously-skip-permissions toggle', () => {
   it('includes the flag by default (back-compat: skip stays ON)', () => {
-    expect(argsFor({})).toContain('--dangerously-skip-permissions');
+    const args = argsFor({});
+    expect(args).toContain('--dangerously-skip-permissions');
+    expect(args).not.toContain('--permission-mode');
   });
 
   it('includes the flag when dangerously_skip_permissions is explicitly true', () => {
-    expect(argsFor({ dangerously_skip_permissions: true })).toContain('--dangerously-skip-permissions');
+    const args = argsFor({ dangerously_skip_permissions: true });
+    expect(args).toContain('--dangerously-skip-permissions');
+    expect(args).not.toContain('--permission-mode');
   });
 
-  it('does NOT include the flag when dangerously_skip_permissions is false (permission gate engaged)', () => {
-    expect(argsFor({ dangerously_skip_permissions: false })).not.toContain('--dangerously-skip-permissions');
+  it('uses explicit default permission mode when dangerously_skip_permissions is false (permission gate engaged)', () => {
+    const args = argsFor({ dangerously_skip_permissions: false });
+    expect(args).not.toContain('--dangerously-skip-permissions');
+    expectPermissionMode(args, 'default');
   });
 
   it('includes the flag when dangerously_skip_permissions is explicitly undefined (treated as default)', () => {
-    expect(argsFor({ dangerously_skip_permissions: undefined })).toContain('--dangerously-skip-permissions');
+    const args = argsFor({ dangerously_skip_permissions: undefined });
+    expect(args).toContain('--dangerously-skip-permissions');
+    expect(args).not.toContain('--permission-mode');
   });
 
   it('fails safe (keeps the flag) and warns on a non-boolean value, e.g. the string "false"', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       // A typo'd string must NOT silently disable the skip flag.
-      expect(argsFor({ dangerously_skip_permissions: 'false' as any })).toContain('--dangerously-skip-permissions');
+      const args = argsFor({ dangerously_skip_permissions: 'false' as any });
+      expect(args).toContain('--dangerously-skip-permissions');
+      expect(args).not.toContain('--permission-mode');
       expect(warn).toHaveBeenCalled();
     } finally {
       warn.mockRestore();
