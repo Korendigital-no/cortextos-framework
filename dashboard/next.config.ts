@@ -1,5 +1,6 @@
 import type { NextConfig } from "next";
 import { withSentryConfig } from "@sentry/nextjs";
+import path from "path";
 
 // Next.js 15.2+ blocks non-localhost origins from /_next/* dev-internal
 // resources by default. When the dashboard is accessed over Tailscale, a LAN
@@ -18,6 +19,12 @@ const allowedDevOrigins = (process.env.DASHBOARD_ALLOWED_DEV_ORIGINS ?? '')
   .filter(Boolean);
 
 const nextConfig: NextConfig = {
+  turbopack: {
+    // Fix Next.js 16 multiple-lockfiles workspace-root misdetection: repo root
+    // package-lock.json made Turbopack anchor to /cortextos instead of /dashboard,
+    // breaking NFT tracing and module resolution. Pinning root = this dir fixes it.
+    root: path.resolve(__dirname),
+  },
   // Dist-dir isolation (task_1780688854348): builds/dev write SEPARATE dirs
   // (.next-build / .next-dev via env from package.json scripts); the serve
   // dir .next is only ever touched by the prestart swap in ensure-built.sh
