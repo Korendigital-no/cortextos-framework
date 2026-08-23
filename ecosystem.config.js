@@ -25,6 +25,20 @@ module.exports = {
         CTX_FRAMEWORK_ROOT: ROOT,
         CTX_PROJECT_ROOT: ROOT,
         CTX_ORG: process.env.CTX_ORG || "korendigital",
+        // Node's shared fetch/Undici pool can wedge on hosts with a dead IPv6
+        // path to api.telegram.org; set to '1' to route Telegram JSON API calls
+        // and file downloads over a dedicated keep-alive IPv4 node:https path
+        // (multipart photo/document uploads stay on pooled fetch). Leave '0' by
+        // default.
+        CORTEXTOS_TELEGRAM_UNPOOLED_HTTPS: process.env.CORTEXTOS_TELEGRAM_UNPOOLED_HTTPS || '0',
+        // Debug-only: set to '1' to enable SIGUSR2 signal → controlled
+        // uncaughtException for testing the crash-visibility path
+        // (.daemon-crashed markers + crash-loop operator Telegram alert).
+        // Leave '0' in production; enable temporarily to reproduce crash
+        // paths during development. `kill -SIGUSR2 $(pm2 pid cortextos-daemon)`
+        // then watch the operator chat for "🚨 CRITICAL: daemon crash-looping"
+        // after 3 crashes in 15 min.
+        CTX_DEBUG_ALLOW_CRASH_TRIGGER: '0',
       },
       max_restarts: 50,
       restart_delay: 5000,
