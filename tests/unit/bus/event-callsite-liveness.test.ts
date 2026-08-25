@@ -1,6 +1,6 @@
 import { readFileSync, readdirSync, statSync } from 'fs';
 import { join, relative } from 'path';
-import ts from 'typescript';
+import * as ts from '@typescript/typescript6';
 import { describe, expect, it } from 'vitest';
 
 /**
