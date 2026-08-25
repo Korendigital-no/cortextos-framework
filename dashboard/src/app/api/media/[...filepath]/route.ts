@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { marked } from 'marked';
 import DOMPurify from 'isomorphic-dompurify';
-import { getCTXRoot, getFrameworkRoot, getAllowedRootsConfigPath } from '@/lib/config';
+import { getCTXRoot, getAllowedRootsConfigPath } from '@/lib/config';
 import { mediaResponseHeaders } from '@/lib/media-headers';
 
 export const dynamic = 'force-dynamic';
@@ -14,7 +14,10 @@ export const dynamic = 'force-dynamic';
 // CTX_ROOT is always implicitly allowed. Additional directories can be added
 // via Settings > Allowed Roots so agents can reference files from project
 // trees outside the default runtime directory. The list is stored in
-// {CTX_ROOT}/config/allowed-roots.json and read on every request.
+// {CTX_ROOT}/config/allowed-roots.json and read on every request. The
+// framework source tree is intentionally not implicit: it contains secrets
+// such as agent .env files and must only be exposed by an explicit allowed
+// root entry.
 // ---------------------------------------------------------------------------
 
 interface AllowedRootsFile {
@@ -91,9 +94,8 @@ export async function GET(
 
   // Reconstruct the relative path from the URL segments.
   const relativePath = filepath.join('/');
-  const frameworkRoot = getFrameworkRoot();
   const additionalRoots = readAllowedRoots();
-  const validRoots = [ctxRoot, frameworkRoot, ...additionalRoots];
+  const validRoots = [ctxRoot, ...additionalRoots];
 
   // Resolve the file against configured roots in two passes.
   //
