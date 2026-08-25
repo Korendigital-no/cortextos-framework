@@ -28,6 +28,7 @@ const ON_BEHALF_COMMANDS = new Set([
   'log-event',
   'send-telegram',
   'egress-alert',
+  'tui-stream',
 ]);
 const ON_BEHALF_FUNCTIONS = new Set([
   'gateBusAction',

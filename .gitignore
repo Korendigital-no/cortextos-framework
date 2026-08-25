@@ -72,3 +72,6 @@ WINDOWS_INSTALL_REPORT.md
 *INSTALL_REPORT.md
 /PHASE*-REPORT.md
 docs/phase-reports/
+
+# Pre-upstream backup snapshot — private, must never be committed
+state_backup_pre_upstream_20260707/

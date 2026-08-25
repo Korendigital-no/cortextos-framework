@@ -3087,7 +3087,9 @@ busCommand
                 line: trimmed,
                 session: sessionName,
                 high_signal: isHighSignal,
-              }, { refreshHeartbeat: true });
+              // Detached observer: output may be historical or belong to a
+              // different agent selected via --session. Never infer liveness.
+              }, { refreshHeartbeat: false });
             } catch { /* Never fail the stream */ }
           } else {
             logLine(`[event] ${trimmed}`);
