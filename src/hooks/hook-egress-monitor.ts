@@ -256,7 +256,8 @@ async function main(): Promise<void> {
 
     const severity = signal.highSeverity ? 'warning' : 'info';
     logEvent(paths, env.agentName, env.org, 'action', signal.eventName, severity,
-      JSON.stringify({ tool: toolName, signal: signal.label, high_severity: signal.highSeverity }));
+      JSON.stringify({ tool: toolName, signal: signal.label, high_severity: signal.highSeverity }),
+      { refreshHeartbeat: true });
 
     // 4) High-severity: also fire a Telegram alert (detached, never awaited).
     if (signal.highSeverity) {

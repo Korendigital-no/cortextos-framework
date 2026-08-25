@@ -80,7 +80,11 @@ async function gateBusAction(descriptor: ActionDescriptor): Promise<void> {
   try {
     if (!existsSync(join(env.frameworkRoot, 'orgs', env.org, 'context.json'))) {
       logEvent(paths, env.agentName, env.org, 'action', 'gate_unconfigured', 'warning',
-        JSON.stringify({ kind: descriptor.kind, framework_root: env.frameworkRoot }));
+        JSON.stringify({ kind: descriptor.kind, framework_root: env.frameworkRoot }),
+        // This gate fronts generic CLI transports, including watchdog and
+        // daemon-side callers acting under an agent identity. Gate telemetry
+        // is never proof that the represented reasoning loop is alive.
+        { refreshHeartbeat: false });
     }
   } catch { /* best-effort */ }
 
@@ -95,7 +99,8 @@ async function gateBusAction(descriptor: ActionDescriptor): Promise<void> {
   if (shouldLogGate(decision)) {
     try {
       logEvent(paths, env.agentName, env.org, 'action',
-        gateEventName(decision), gateSeverity(decision), gateMeta(descriptor.kind, decision));
+        gateEventName(decision), gateSeverity(decision), gateMeta(descriptor.kind, decision),
+        { refreshHeartbeat: false });
     } catch { /* telemetry is best-effort */ }
   }
 
@@ -247,7 +252,9 @@ busCommand
     }
 
     try {
-      logEvent(paths, env.agentName, env.org, 'message', 'agent_message_sent', 'info', JSON.stringify({ to, priority, msg_id: msgId, reply_to: effectiveReplyTo ?? null }));
+      // Generic transport: callers include crash hooks acting on behalf of a
+      // crashed agent, so sending a message is not proof that agent is alive.
+      logEvent(paths, env.agentName, env.org, 'message', 'agent_message_sent', 'info', JSON.stringify({ to, priority, msg_id: msgId, reply_to: effectiveReplyTo ?? null }), { refreshHeartbeat: false });
     } catch { /* non-fatal */ }
     console.log(msgId);
   });
@@ -269,7 +276,8 @@ busCommand
     const paths = resolvePaths(env.agentName, env.instanceId, env.org, env.ctxRoot);
     ackInbox(paths, id);
     try {
-      logEvent(paths, env.agentName, env.org, 'message', 'inbox_ack', 'info', JSON.stringify({ msg_id: id }));
+      // Generic transport commands can be invoked by daemon-side automation.
+      logEvent(paths, env.agentName, env.org, 'message', 'inbox_ack', 'info', JSON.stringify({ msg_id: id }), { refreshHeartbeat: false });
     } catch { /* non-fatal */ }
     console.log(`ACK'd ${id}`);
   });
@@ -625,7 +633,9 @@ busCommand
     }
     const env = resolveEnv();
     const paths = resolvePaths(env.agentName, env.instanceId, env.org, env.ctxRoot);
-    logEvent(paths, env.agentName, env.org, category as EventCategory, event, severity as EventSeverity, opts.meta);
+    // `log-event` is also used by watchdogs under another agent's identity.
+    // Preserve logEvent's fail-safe default-off liveness semantics.
+    logEvent(paths, env.agentName, env.org, category as EventCategory, event, severity as EventSeverity, opts.meta, { refreshHeartbeat: false });
     console.log(`Logged ${category}/${event} (${severity})`);
   });
 
@@ -686,7 +696,7 @@ busCommand
     // even if the agent itself forgets to call log-event. This makes the
     // dashboard "agents" list derive from heartbeats, not just explicit events.
     try {
-      logEvent(paths, env.agentName, env.org, 'heartbeat', 'heartbeat', 'info', JSON.stringify({ status, task: opts.task ?? '' }));
+      logEvent(paths, env.agentName, env.org, 'heartbeat', 'heartbeat', 'info', JSON.stringify({ status, task: opts.task ?? '' }), { refreshHeartbeat: true });
     } catch {
       // Non-fatal: heartbeat write already succeeded
     }
@@ -1303,7 +1313,9 @@ busCommand
         try {
           const paths = resolvePaths(env.agentName, env.instanceId, env.org, env.ctxRoot);
           const preview = message.length > 120 ? message.slice(0, 120) + '…' : message;
-          logEvent(paths, env.agentName, env.org, 'message', 'telegram_sent', 'info', JSON.stringify({ chat_id: chatId, message_id: sentMessageId, preview }));
+          // Watchdogs and other daemon helpers send through this generic CLI
+          // command, including after stopping an agent. Never infer liveness.
+          logEvent(paths, env.agentName, env.org, 'message', 'telegram_sent', 'info', JSON.stringify({ chat_id: chatId, message_id: sentMessageId, preview }), { refreshHeartbeat: false });
         } catch { /* non-fatal */ }
       }
 
@@ -2824,7 +2836,9 @@ busCommand
       const telegramApi = new TelegramAPI(botToken);
       await telegramApi.sendMessage(chatId, text, undefined, { parseMode: 'HTML' });
       logEvent(paths, env.agentName, env.org, 'action', 'egress_alert_sent', 'info',
-        JSON.stringify({ signal_event: eventName, signal_label: label, agent }));
+        JSON.stringify({ signal_event: eventName, signal_label: label, agent }),
+        // Detached notifier spawned on behalf of the monitored agent.
+        { refreshHeartbeat: false });
     } catch {
       /* best-effort — never crashes the spawner */
     }
@@ -3073,7 +3087,9 @@ busCommand
                 line: trimmed,
                 session: sessionName,
                 high_signal: isHighSignal,
-              });
+              // Detached observer: output may be historical or belong to a
+              // different agent selected via --session. Never infer liveness.
+              }, { refreshHeartbeat: false });
             } catch { /* Never fail the stream */ }
           } else {
             logLine(`[event] ${trimmed}`);
@@ -3739,7 +3755,8 @@ busCommand.command('log-measurement')
       console.error((err as Error).message);
       process.exit(1);
     }
-    logEvent(paths, meta.agent_id, env.org, 'measurement', 'task_handled', 'info', JSON.stringify(meta));
+    logEvent(paths, meta.agent_id, env.org, 'measurement', 'task_handled', 'info',
+      JSON.stringify(meta), { refreshHeartbeat: true });
     console.log(`Logged measurement/task_handled for client ${meta.client_id} (${meta.task_type}, outcome=${meta.outcome})`);
   });
 
