@@ -156,6 +156,38 @@ describe('processFathomWebhook', () => {
     expect(result.meeting_id).toBeTruthy();
     expect(result.tasks_created).toBe(0);
   });
+
+  it('extracts summary text when default_summary is a Fathom object {markdown_formatted}', () => {
+    // Real Fathom webhooks send default_summary as an object, not a string.
+    // Passing the raw object to better-sqlite3 as a positional param caused
+    // "Too few parameter values were provided" (object treated as named-binding).
+    const payload = {
+      recording_id: 'rec_obj_summary',
+      meeting_title: 'Tieto Demo Prep',
+      default_summary: { markdown_formatted: '## Purpose\nPrepare Tieto demo.', template_name: 'default' },
+      action_items: [],
+      calendar_invitees: [],
+      url: 'https://fathom.video/rec/obj',
+      share_url: 'https://fathom.video/share/obj',
+      recording_start_time: '2026-08-25T12:00:00Z',
+      recording_end_time: '2026-08-25T13:00:00Z',
+    };
+    const job = { id: 99, source: 'fathom', event_type: 'meeting_content_ready', payload: JSON.stringify(payload), status: 'pending', attempt_count: 0 };
+
+    const result = processFathomWebhook(db, job, null);
+
+    expect(result.meeting_id).toBeTruthy();
+    const meeting = db.prepare('SELECT summary FROM crm_meetings WHERE id = ?').get(result.meeting_id) as { summary: string };
+    expect(meeting.summary).toBe('## Purpose\nPrepare Tieto demo.');
+  });
+
+  it('stores summary as-is when default_summary is already a string', () => {
+    const job = makeFathomJob();
+    const result = processFathomWebhook(db, job, null);
+
+    const meeting = db.prepare('SELECT summary FROM crm_meetings WHERE id = ?').get(result.meeting_id) as { summary: string };
+    expect(meeting.summary).toBe('Discussed project scope');
+  });
 });
 
 describe('webhook_log schema', () => {
