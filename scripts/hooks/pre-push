@@ -13,6 +13,21 @@ set -euo pipefail
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
+# Scrub env vars that poison the test environment when pushing from a worktree
+# or from inside a cortextOS agent process:
+#
+# - GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE / GIT_OBJECT_DIRECTORY / GIT_COMMON_DIR
+#   Git sets these when invoking hooks so git commands within the hook operate on
+#   this repo. But test suites that spin up their own `git init` temp repos inherit
+#   them, so those git commands (e.g. `git commit`) run against THIS repo instead of
+#   the temp one → test failures that don't reproduce outside the hook.
+#
+# - CTX_* (cortextOS daemon vars: CTX_ROOT, CTX_AGENT_NAME, etc.)
+#   Injected by the agent runtime. Tests that inspect env or resolve paths via these
+#   vars get wrong results when the vars are set.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_COMMON_DIR
+while IFS= read -r var; do unset "$var"; done < <(env | grep -oE '^CTX_[A-Z_]+')
+
 echo "[pre-push] Running build..."
 if ! npm run build --silent; then
   echo ""
