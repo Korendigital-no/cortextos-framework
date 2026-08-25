@@ -253,23 +253,12 @@ export async function callAiForMeetingAnalysis(
   actionItems: string,
   attendees: string,
 ): Promise<FathomAiOutput> {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error('OPENAI_API_KEY not configured');
+  const anthropicKey = process.env.ANTHROPIC_API_KEY;
+  const openaiKey = process.env.OPENAI_API_KEY;
+  if (!anthropicKey && !openaiKey) throw new Error('No AI API key configured (ANTHROPIC_API_KEY or OPENAI_API_KEY required)');
 
-  const { default: OpenAI } = await import('openai');
-  const client = new OpenAI({ apiKey });
-
-  const response = await client.chat.completions.create({
-    model: 'gpt-5.4',
-    max_tokens: 2048,
-    messages: [
-      {
-        role: 'system',
-        content: 'You are a CRM assistant that analyzes sales meeting data. Extract structured information from meeting summaries and action items. Be precise and concise. If information is not available, use reasonable defaults. For due_days, estimate based on urgency (1-3 for urgent, 5-7 for normal, 14 for low priority). For owner, use "sales" if unclear. Always respond with valid JSON only, no markdown.',
-      },
-      {
-        role: 'user',
-        content: `Analyze this meeting data and return a JSON object:
+  const systemPrompt = 'You are a CRM assistant that analyzes sales meeting data. Extract structured information from meeting summaries and action items. Be precise and concise. If information is not available, use reasonable defaults. For due_days, estimate based on urgency (1-3 for urgent, 5-7 for normal, 14 for low priority). For owner, use "sales" if unclear. Always respond with valid JSON only, no markdown.';
+  const userPrompt = `Analyze this meeting data and return a JSON object:
 
 SUMMARY:
 ${summary}
@@ -293,12 +282,34 @@ Return JSON with this exact structure:
     { "text": "action item description", "owner": "sales" or "customer", "due_days": number }
   ],
   "follow_up_email_draft": "short professional follow-up email text"
-}`,
-      },
-    ],
-  });
+}`;
 
-  const text = response.choices[0]?.message?.content ?? '';
+  let text: string;
+
+  if (anthropicKey) {
+    const { default: Anthropic } = await import('@anthropic-ai/sdk');
+    const client = new Anthropic({ apiKey: anthropicKey });
+    const response = await client.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 2048,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: userPrompt }],
+    });
+    text = response.content[0]?.type === 'text' ? response.content[0].text : '';
+  } else {
+    const { default: OpenAI } = await import('openai');
+    const client = new OpenAI({ apiKey: openaiKey });
+    const response = await client.chat.completions.create({
+      model: 'gpt-4o',
+      max_tokens: 2048,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
+    });
+    text = response.choices[0]?.message?.content ?? '';
+  }
+
   const jsonMatch = text.match(/\{[\s\S]*\}/);
   if (!jsonMatch) throw new Error('No JSON in AI response');
 
@@ -330,7 +341,10 @@ export function processFathomWebhook(
 
   const recordingId = payload.recording_id as string | undefined;
   const meetingTitle = (payload.meeting_title ?? payload.title ?? 'Meeting') as string;
-  const summary = payload.default_summary as string | undefined;
+  const rawSummary = payload.default_summary;
+  const summary: string | null = typeof rawSummary === 'string'
+    ? rawSummary
+    : (rawSummary as { markdown_formatted?: string } | null)?.markdown_formatted ?? null;
   const transcript = payload.transcript ? JSON.stringify(payload.transcript) : null;
   const actionItemsRaw = payload.action_items ? JSON.stringify(payload.action_items) : null;
   const attendeesRaw = payload.calendar_invitees as Array<{ email?: string; name?: string }> | undefined;
