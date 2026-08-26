@@ -366,12 +366,22 @@ describe('ingestKnowledgeBase — mtime-guard (blocking)', () => {
     expect(warnLog.some((m) => m.includes('is a directory'))).toBe(true);
   });
 
-  it('stamps written with pre-ingest mtime after execFileSync succeeds', () => {
+  it('stamps written with PRE-ingest mtime — ordering guard for P1-8 fix', () => {
+    // This test is order-sensitive: statSync returns preMtime before execFileSync runs,
+    // then execFileSyncMock changes the return value to postMtime (simulating a file
+    // edited mid-ingest). The stamp must use preMtime. If the preMtimes capture loop
+    // were moved to AFTER execFileSync (regression of P1-8), statSync would return
+    // postMtime and the toBe(preMtime) assertion would fail — catching the bug.
     mockConfiguredKb();
-    execFileSyncMock.mockReturnValue('');
     const absPath = '/abs/memory.md';
-    const mtime = 2_000_000;
-    fsMocks.statSync.mockReturnValue(mockFileStat(mtime));
+    const preMtime = 2_000_000;
+    const postMtime = 3_000_000;
+
+    fsMocks.statSync.mockReturnValue(mockFileStat(preMtime));
+    execFileSyncMock.mockImplementation(() => {
+      // Simulate file written during ingest — future statSync calls see a newer mtime.
+      fsMocks.statSync.mockReturnValue(mockFileStat(postMtime));
+    });
 
     ingestKnowledgeBase([absPath], { ...baseOptions, scope: 'private', mtimeGuard: true });
 
@@ -379,7 +389,9 @@ describe('ingestKnowledgeBase — mtime-guard (blocking)', () => {
     const [stampPath, stampContent] = atomicWriteSyncMock.mock.calls[0] as [string, string];
     expect(stampPath).toMatch(/ingest-stamps\.json$/);
     const stamps = JSON.parse(stampContent);
-    expect(stamps[`${absPath}::agent-tester`]).toBe(mtime);
+    // Must be preMtime (captured before ingest), NOT postMtime (file was edited during ingest)
+    expect(stamps[`${absPath}::agent-tester`]).toBe(preMtime);
+    expect(stamps[`${absPath}::agent-tester`]).not.toBe(postMtime);
   });
 
   it('stamps NOT written when execFileSync throws (exception propagates)', () => {
