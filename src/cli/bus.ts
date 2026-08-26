@@ -1491,7 +1491,9 @@ busCommand
   .option('--agent <name>', 'Agent name (for private scope)')
   .option('--scope <s>', 'Scope: shared or private', 'shared')
   .option('--force', 'Re-ingest even if already indexed')
-  .action((paths: string[], opts: { org?: string; agent?: string; scope?: string; force?: boolean }) => {
+  .option('--mtime-guard', 'Skip files unchanged since last ingest; only re-ingest changed files')
+  .option('--detach', 'Run ingest in background (non-blocking); errors logged to ingest-bg.log')
+  .action((paths: string[], opts: { org?: string; agent?: string; scope?: string; force?: boolean; mtimeGuard?: boolean; detach?: boolean }) => {
     const env = resolveEnv();
     const org = opts.org || env.org;
     if (!org) {
@@ -1506,6 +1508,8 @@ busCommand
       agent: opts.agent || env.agentName,
       scope: (opts.scope as 'shared' | 'private') || 'shared',
       force: opts.force,
+      mtimeGuard: opts.mtimeGuard,
+      detach: opts.detach,
       frameworkRoot: env.frameworkRoot || process.cwd(),
       instanceId: env.instanceId,
     });
