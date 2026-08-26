@@ -431,16 +431,19 @@ export function ingestKnowledgeBase(
     // inherited its own copy; the parent does not need it open.
     closeSync(logFd);
 
-    // P1-7 fix: attach error handler before unref so spawn-level failures
-    // (e.g. Python executable missing) are logged to file rather than crashing
-    // or silently disappearing.
-    child.on('error', (err: Error) => {
+    // P1-7 fix (strengthened): keep child referenced until we know if it
+    // launched successfully. 'spawn' fires on success → unref immediately.
+    // 'error' fires on launch failure (e.g. ENOENT — pythonPath missing or
+    // not executable) → log to file synchronously, then unref.
+    // Calling child.unref() unconditionally here would let the process exit
+    // before the 'error' event fires, silently swallowing the failure.
+    child.once('spawn', () => { child.unref(); });
+    child.once('error', (err: Error) => {
       try {
         writeFileSync(logFile, `[${new Date().toISOString()}] kb-ingest spawn error: ${err.message}\n`, { flag: 'a' });
       } catch { /* ignore if log write itself fails */ }
+      child.unref();
     });
-
-    child.unref();
     console.log(`[kb] Detached ingest started (pid ${child.pid ?? 'unknown'}) → log: ${logFile}`);
     return;
   }
