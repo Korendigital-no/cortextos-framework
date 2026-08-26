@@ -1,6 +1,6 @@
-import { execFileSync } from 'child_process';
-import { existsSync, mkdirSync, readFileSync } from 'fs';
-import { join } from 'path';
+import { execFileSync, spawn } from 'child_process';
+import { existsSync, mkdirSync, openSync, readFileSync, statSync, writeFileSync } from 'fs';
+import { join, resolve } from 'path';
 import { homedir } from 'os';
 import type { BusPaths } from '../types/index.js';
 import { normalizeOrgName } from '../utils/org.js';
@@ -94,6 +94,36 @@ function buildKBEnv(
     MMRAG_CONFIG: join(kbRoot, 'config.json'),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Mtime-guard helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-file ingest timestamps. Key format: `<abs-path>::<collection>` so
+ * different org/agent/scope combinations never collide (guardrail #3).
+ */
+interface IngestStamps {
+  [key: string]: number; // mtime in ms at last successful ingest
+}
+
+function stampKey(absPath: string, collection: string): string {
+  return `${absPath}::${collection}`;
+}
+
+function loadStamps(stampFile: string): IngestStamps {
+  try {
+    return JSON.parse(readFileSync(stampFile, 'utf-8')) as IngestStamps;
+  } catch {
+    return {};
+  }
+}
+
+function saveStamps(stampFile: string, stamps: IngestStamps): void {
+  writeFileSync(stampFile, JSON.stringify(stamps, null, 2) + '\n', 'utf-8');
+}
+
+// ---------------------------------------------------------------------------
 
 export interface KBQueryResult {
   content: string;
@@ -240,6 +270,13 @@ export function queryKnowledgeBase(
 
 /**
  * Ingest files into the knowledge base.
+ *
+ * New options (additive — existing callers unaffected, guardrail #2):
+ *   mtimeGuard — skip files unchanged since last ingest; force-reingest only
+ *                changed files. Bypassed when `force` is explicitly set.
+ *   detach     — spawn Python in background (fire-and-forget); returns
+ *                immediately. Errors logged to `ingest-bg.log` in the KB
+ *                root (never silently swallowed, guardrail #1).
  */
 export function ingestKnowledgeBase(
   paths: string[],
@@ -248,11 +285,13 @@ export function ingestKnowledgeBase(
     agent?: string;
     scope?: 'shared' | 'private';
     force?: boolean;
+    mtimeGuard?: boolean;
+    detach?: boolean;
     frameworkRoot: string;
     instanceId: string;
   },
 ): void {
-  const { agent, scope = 'shared', force, frameworkRoot, instanceId } = options;
+  const { agent, scope = 'shared', force, mtimeGuard, detach, frameworkRoot, instanceId } = options;
   // Normalize once (see queryKnowledgeBase for rationale).
   const org = normalizeOrgName(frameworkRoot, options.org);
 
@@ -293,13 +332,55 @@ export function ingestKnowledgeBase(
     mkdirSync(chromaDir, { recursive: true });
   }
 
-  console.log(`Ingesting into collection: ${collection}`);
-  for (const p of paths) {
-    console.log(`  Source: ${p}`);
+  const stampFile = join(kbRoot, 'ingest-stamps.json');
+
+  // --- Mtime-guard ---
+  // When mtimeGuard is on AND --force is NOT set, filter to only files whose
+  // mtime has advanced since the last successful ingest for this collection.
+  // Changed files get --force passed to mmrag.py so stale chunks are evicted.
+  // Guard is bypassed entirely when --force is explicitly set (guardrail #2).
+  let pathsToIngest = paths.map(p => resolve(p));
+  let forceForPython = force;
+
+  if (mtimeGuard && !force) {
+    const stamps = loadStamps(stampFile);
+    const changed: string[] = [];
+    const unchanged: string[] = [];
+
+    for (const absPath of pathsToIngest) {
+      try {
+        const mtime = statSync(absPath).mtimeMs;
+        const key = stampKey(absPath, collection);
+        if (stamps[key] !== undefined && stamps[key] >= mtime) {
+          unchanged.push(absPath);
+        } else {
+          changed.push(absPath);
+        }
+      } catch {
+        // File unreadable or missing — pass through so mmrag.py surfaces a clear error
+        changed.push(absPath);
+      }
+    }
+
+    if (unchanged.length > 0) {
+      console.log(`[kb] mtime-guard: skipping ${unchanged.length} unchanged file(s)`);
+      for (const p of unchanged) console.log(`  Unchanged: ${p}`);
+    }
+
+    pathsToIngest = changed;
+    if (changed.length > 0) forceForPython = true;
   }
 
-  const args = [mmragPath, 'ingest', ...paths, '--collection', collection];
-  if (force) args.push('--force');
+  if (pathsToIngest.length === 0) {
+    console.log('[kb] mtime-guard: all files up to date, nothing to ingest');
+    return;
+  }
+
+  console.log(`Ingesting into collection: ${collection}`);
+  for (const p of pathsToIngest) console.log(`  Source: ${p}`);
+
+  const args = [mmragPath, 'ingest', ...pathsToIngest, '--collection', collection];
+  if (forceForPython) args.push('--force');
 
   // Multimodal PDF ingestion via Gemini Flash routinely takes 2–5 min for
   // documents over ~10 pages with images/tables. Two minutes was too low and
@@ -316,12 +397,47 @@ export function ingestKnowledgeBase(
       : KB_INGEST_TIMEOUT_DEFAULT_MS,
   );
 
+  if (detach) {
+    // --- Detach mode: fire-and-forget, errors logged to file (guardrail #1 — FAIL-LOUD) ---
+    const logFile = join(kbRoot, 'ingest-bg.log');
+    const logFd = openSync(logFile, 'a');
+
+    // Update stamps optimistically before spawn so the next heartbeat won't
+    // re-queue the same files while this background process is still running.
+    if (mtimeGuard && !force) {
+      const stamps = loadStamps(stampFile);
+      for (const absPath of pathsToIngest) {
+        try { stamps[stampKey(absPath, collection)] = statSync(absPath).mtimeMs; } catch { /* skip */ }
+      }
+      saveStamps(stampFile, stamps);
+    }
+
+    const child = spawn(pythonPath, args, {
+      detached: true,
+      stdio: ['ignore', logFd, logFd],
+      env,
+    });
+    child.unref();
+    console.log(`[kb] Detached ingest started (pid ${child.pid}) → log: ${logFile}`);
+    return;
+  }
+
+  // --- Blocking mode (default) ---
   execFileSync(pythonPath, args, {
     encoding: 'utf-8',
     timeout: ingestTimeoutMs,
     env,
     stdio: 'inherit',
   });
+
+  // Update stamps after successful sync ingest
+  if (mtimeGuard && !force) {
+    const stamps = loadStamps(stampFile);
+    for (const absPath of pathsToIngest) {
+      try { stamps[stampKey(absPath, collection)] = statSync(absPath).mtimeMs; } catch { /* skip */ }
+    }
+    saveStamps(stampFile, stamps);
+  }
 
   console.log(`\nIngest complete → collection: ${collection}`);
 }
