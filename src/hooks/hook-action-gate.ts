@@ -217,7 +217,8 @@ function maybeLogUnconfigured(
   try {
     if (!existsSync(join(frameworkRoot, 'orgs', org, 'context.json'))) {
       logEvent(paths, agent, org, 'action', 'gate_unconfigured', 'warning',
-        JSON.stringify({ kind, framework_root: frameworkRoot, surface: 'tool-hook' }));
+        JSON.stringify({ kind, framework_root: frameworkRoot, surface: 'tool-hook' }),
+        { refreshHeartbeat: true });
     }
   } catch {
     /* best-effort telemetry */
@@ -263,7 +264,7 @@ async function main(): Promise<void> {
     try {
       logEvent(paths, agent, org, 'action',
         gateEventName(outcome.decision), gateSeverity(outcome.decision),
-        gateMeta(descriptor.kind, outcome.decision));
+        gateMeta(descriptor.kind, outcome.decision), { refreshHeartbeat: true });
     } catch {
       /* telemetry is best-effort */
     }

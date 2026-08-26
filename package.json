@@ -12,8 +12,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:codex": "vitest run tests/e2e/lifecycle-codex.test.ts tests/integration/multi-agent-crons-codex.test.ts tests/integration/codex-bus-roundtrip.test.ts tests/integration/codex-handoff-lifecycle.test.ts tests/integration/fleet-health-mixed-codex-claude.test.ts dashboard/src/lib/__tests__/cost-parser-codex.test.ts",
-    "typecheck": "tsc --noEmit",
-    "lint": "tsc --noEmit",
+    "typecheck": "node ./node_modules/typescript/bin/tsc --noEmit",
+    "lint": "node ./node_modules/typescript/bin/tsc --noEmit",
     "test:playwright": "npx playwright test"
   },
   "keywords": [
@@ -57,6 +57,7 @@
     "@playwright/test": "^1.62.1",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^26.2.0",
+    "@typescript/typescript6": "^6.0.2",
     "tsup": "^8.5.1",
     "tsx": "^4.23.12",
     "typescript": "^7.0.2",
