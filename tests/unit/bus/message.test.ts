@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, readdirSync, readFileSync, writeFileSync, mkdirSync, existsSync, statSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { sendMessage, checkInbox, ackInbox } from '../../../src/bus/message';
+import { sendMessage, checkInbox, ackInbox, withInboxDeliveryLock } from '../../../src/bus/message';
 import { verifyInboxMessage } from '../../../src/bus/message-signing';
 import { resolvePaths } from '../../../src/utils/paths';
 import type { BusPaths, InboxMessage } from '../../../src/types';
@@ -213,6 +213,140 @@ describe('Message Bus', () => {
 
       expect(inflightFiles.length).toBe(0);
       expect(processedFiles.length).toBe(1);
+
+      const processed = JSON.parse(readFileSync(join(receiverPaths.processed, processedFiles[0]), 'utf-8'));
+      expect(processed.acknowledged).toBe(true);
+      expect(processed.acked_at).toEqual(expect.any(String));
+    });
+
+    it('acks a recovered message from inbox before it can be delivered again', () => {
+      const msgId = sendMessage(senderPaths, 'sender', 'receiver', 'normal', 'test');
+
+      ackInbox(receiverPaths, msgId);
+
+      expect(readdirSync(receiverPaths.inbox).filter(f => f.endsWith('.json'))).toHaveLength(0);
+      expect(readdirSync(receiverPaths.processed).filter(f => f.endsWith('.json'))).toHaveLength(1);
+      expect(checkInbox(receiverPaths)).toEqual([]);
+    });
+
+    it('reconciles a late ACK against an exhausted processed record', () => {
+      mkdirSync(receiverPaths.processed, { recursive: true });
+      const filename = '2-1780000000000-from-sender-abcde.json';
+      writeFileSync(join(receiverPaths.processed, filename), JSON.stringify({
+        id: 'late-ack',
+        from: 'sender',
+        to: 'receiver',
+        priority: 'normal',
+        timestamp: '2026-08-25T10:00:00.000Z',
+        text: 'already parked',
+        reply_to: null,
+        redeliveries: 4,
+        redelivery_exhausted: true,
+      }));
+
+      ackInbox(receiverPaths, 'late-ack');
+
+      const processed = JSON.parse(readFileSync(join(receiverPaths.processed, filename), 'utf-8'));
+      expect(processed.acknowledged).toBe(true);
+      expect(processed.acked_at).toEqual(expect.any(String));
+      expect(processed.redelivery_exhausted).toBe(true);
+    });
+
+    it('persists an ACK receipt so a racing message cannot redeliver after restart', () => {
+      // Simulate the lock-timeout/race edge: ACK becomes durable just before
+      // the authoritative queue file is visible to the ACK scan.
+      ackInbox(receiverPaths, 'racing-ack');
+
+      mkdirSync(receiverPaths.inbox, { recursive: true });
+      const filename = '2-1780000000001-from-sender-fghij.json';
+      writeFileSync(join(receiverPaths.inbox, filename), JSON.stringify({
+        id: 'racing-ack',
+        from: 'sender',
+        to: 'receiver',
+        priority: 'normal',
+        timestamp: '2026-08-25T10:00:01.000Z',
+        text: 'must be reconciled, never delivered',
+        reply_to: null,
+      }));
+
+      expect(checkInbox(receiverPaths)).toEqual([]);
+      expect(readdirSync(receiverPaths.inbox).filter(f => f.endsWith('.json'))).toHaveLength(0);
+      const processed = JSON.parse(readFileSync(join(receiverPaths.processed, filename), 'utf-8'));
+      expect(processed.acknowledged).toBe(true);
+      expect(processed.acked_at).toEqual(expect.any(String));
+    });
+
+    it('reconciles a receipt into a processed record that appears after the ACK', () => {
+      ackInbox(receiverPaths, 'parked-race-ack');
+
+      mkdirSync(receiverPaths.processed, { recursive: true });
+      const filename = '2-1780000000002-from-sender-klmno.json';
+      writeFileSync(join(receiverPaths.processed, filename), JSON.stringify({
+        id: 'parked-race-ack',
+        from: 'sender',
+        to: 'receiver',
+        priority: 'normal',
+        timestamp: '2026-08-25T10:00:02.000Z',
+        text: 'parked after ACK scan raced recovery',
+        reply_to: null,
+        redeliveries: 4,
+        redelivery_exhausted: true,
+      }));
+
+      expect(checkInbox(receiverPaths)).toEqual([]);
+      const processed = JSON.parse(readFileSync(join(receiverPaths.processed, filename), 'utf-8'));
+      expect(processed.acknowledged).toBe(true);
+      expect(processed.acked_at).toEqual(expect.any(String));
+      expect(processed.redelivery_exhausted).toBe(true);
+    });
+
+    it('fails closed on a corrupt matching receipt and lets explicit ACK repair it', () => {
+      ackInbox(receiverPaths, 'corrupt-receipt-ack');
+      const receiptDir = join(receiverPaths.stateDir, 'message-acks');
+      const receiptFile = readdirSync(receiptDir).find(f => f.endsWith('.json'));
+      if (!receiptFile) throw new Error('expected ACK receipt');
+      writeFileSync(join(receiptDir, receiptFile), '{not-json');
+
+      mkdirSync(receiverPaths.inbox, { recursive: true });
+      const filename = '2-1780000000003-from-sender-pqrst.json';
+      writeFileSync(join(receiverPaths.inbox, filename), JSON.stringify({
+        id: 'corrupt-receipt-ack',
+        from: 'sender',
+        to: 'receiver',
+        priority: 'normal',
+        timestamp: '2026-08-25T10:00:03.000Z',
+        text: 'must not redeliver through a corrupt receipt',
+        reply_to: null,
+      }));
+
+      expect(() => checkInbox(receiverPaths)).toThrow(/Malformed ACK receipt/);
+      expect(readdirSync(receiverPaths.inbox).filter(f => f.endsWith('.json'))).toHaveLength(1);
+
+      expect(ackInbox(receiverPaths, 'corrupt-receipt-ack')).toBe('acked');
+      expect(checkInbox(receiverPaths)).toEqual([]);
+      const processed = JSON.parse(readFileSync(join(receiverPaths.processed, filename), 'utf-8'));
+      expect(processed.acknowledged).toBe(true);
+    });
+
+    it('treats valid JSON null as repairable invalid receipt data', () => {
+      ackInbox(receiverPaths, 'null-receipt-ack');
+      const receiptDir = join(receiverPaths.stateDir, 'message-acks');
+      const receiptFile = readdirSync(receiptDir).find(f => f.endsWith('.json'));
+      if (!receiptFile) throw new Error('expected ACK receipt');
+      writeFileSync(join(receiptDir, receiptFile), 'null');
+
+      expect(() => ackInbox(receiverPaths, 'null-receipt-ack')).not.toThrow();
+    });
+
+    it('filters a message ACKed after selection but before delivery lock acquisition', async () => {
+      const msgId = sendMessage(senderPaths, 'sender', 'receiver', 'normal', 'stale selection');
+      const selected = checkInbox(receiverPaths);
+      expect(selected).toHaveLength(1);
+
+      ackInbox(receiverPaths, msgId);
+
+      const delivered = await withInboxDeliveryLock(receiverPaths, selected, async eligible => eligible);
+      expect(delivered).toEqual([]);
     });
   });
 });

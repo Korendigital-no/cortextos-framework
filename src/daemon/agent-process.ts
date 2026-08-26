@@ -402,7 +402,18 @@ export class AgentProcess {
       if (!this.pty || this.status !== 'running') {
         throw new Error(`pty torn down while injection was queued (status: ${this.status})`);
       }
-      await injectMessage((data) => this.pty?.write(data), content);
+      const submitted = await injectMessage((data) => {
+        // Do not optional-chain this write. A teardown during the delayed
+        // Enter must become a failed delivery, not a silent no-op followed by
+        // `ok: true` and a persisted active-turn lease.
+        if (!this.pty || this.status !== 'running') {
+          throw new Error(`pty torn down before injection write (status: ${this.status})`);
+        }
+        this.pty.write(data);
+      }, content);
+      if (!submitted) {
+        throw new Error(`pty torn down before prompt submission (status: ${this.status})`);
+      }
     });
 
     // Timeout guard: free both this caller AND the queue if the link wedges.

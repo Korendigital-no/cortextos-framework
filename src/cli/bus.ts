@@ -247,14 +247,38 @@ busCommand
     // ack-ing every message at injection time; now that injection no longer
     // acks (mark-after-deliver fix), the reply must honour the documented
     // contract or every replied-to message would redeliver after 5 min.
+    let replyAckResult: ReturnType<typeof ackInbox> | null = null;
     if (effectiveReplyTo) {
-      try { ackInbox(paths, effectiveReplyTo); } catch { /* best effort — original may already be acked */ }
+      try {
+        replyAckResult = ackInbox(paths, effectiveReplyTo);
+      } catch (err) {
+        // The reply file was already queued, so report that exact partial
+        // outcome and fail the command loudly. Claiming success here would
+        // violate the documented durable auto-ACK contract and hide a disk or
+        // permission failure that leaves the original eligible for retry.
+        try {
+          logEvent(paths, env.agentName, env.org, 'error', 'reply_auto_ack_failed', 'error', JSON.stringify({
+            to,
+            msg_id: msgId,
+            reply_to: effectiveReplyTo,
+            error: err instanceof Error ? err.message : String(err),
+          }), { refreshHeartbeat: false });
+        } catch { /* original failure remains authoritative */ }
+        console.error(`Reply ${msgId} was sent, but durable ACK of ${effectiveReplyTo} failed.`);
+        throw err;
+      }
     }
 
     try {
       // Generic transport: callers include crash hooks acting on behalf of a
       // crashed agent, so sending a message is not proof that agent is alive.
-      logEvent(paths, env.agentName, env.org, 'message', 'agent_message_sent', 'info', JSON.stringify({ to, priority, msg_id: msgId, reply_to: effectiveReplyTo ?? null }), { refreshHeartbeat: false });
+      logEvent(paths, env.agentName, env.org, 'message', 'agent_message_sent', 'info', JSON.stringify({
+        to,
+        priority,
+        msg_id: msgId,
+        reply_to: effectiveReplyTo ?? null,
+        reply_ack_result: replyAckResult,
+      }), { refreshHeartbeat: false });
     } catch { /* non-fatal */ }
     console.log(msgId);
   });
@@ -264,7 +288,10 @@ busCommand
   .action(() => {
     const env = resolveEnv();
     const paths = resolvePaths(env.agentName, env.instanceId, env.org, env.ctxRoot);
-    const messages = checkInbox(paths);
+    // Manual heartbeat sweeps run inside the same agent turn as daemon
+    // delivery. Honour the active-turn lease here too, or a long-running turn
+    // can rediscover and process its own still-unacknowledged prompt.
+    const messages = checkInbox(paths, { deferWhileAgentActive: true });
     console.log(JSON.stringify(messages));
   });
 
@@ -274,12 +301,14 @@ busCommand
   .action((id: string) => {
     const env = resolveEnv();
     const paths = resolvePaths(env.agentName, env.instanceId, env.org, env.ctxRoot);
-    ackInbox(paths, id);
+    const result = ackInbox(paths, id);
     try {
       // Generic transport commands can be invoked by daemon-side automation.
-      logEvent(paths, env.agentName, env.org, 'message', 'inbox_ack', 'info', JSON.stringify({ msg_id: id }), { refreshHeartbeat: false });
+      logEvent(paths, env.agentName, env.org, 'message', 'inbox_ack', 'info', JSON.stringify({ msg_id: id, result }), { refreshHeartbeat: false });
     } catch { /* non-fatal */ }
-    console.log(`ACK'd ${id}`);
+    console.log(result === 'not-found'
+      ? `ACK recorded for ${id}; queue record will reconcile if it appears`
+      : `ACK'd ${id} (${result})`);
   });
 
 busCommand
@@ -2037,7 +2066,10 @@ busCommand
     // ACK the original inbox message
     if (msgId) {
       const paths = resolvePaths(agent, env.instanceId, env.org, env.ctxRoot);
-      try { ackInbox(paths, msgId); } catch { /* best effort */ }
+      // The mobile reply is already appended above. If the durable ACK fails,
+      // fail loudly instead of claiming the combined reply+ACK operation
+      // succeeded; the operator can safely retry the idempotent ACK.
+      ackInbox(paths, msgId);
     }
 
     console.log('Replied to mobile user');

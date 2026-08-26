@@ -35,10 +35,16 @@ vi.mock('child_process', () => ({ execFile: vi.fn() }));
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readdirSync, readFileSync, utimesSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { createHash } from 'crypto';
 import { FastChecker } from '../../../src/daemon/fast-checker';
 import { AgentProcess } from '../../../src/daemon/agent-process';
 import { MessageDedup, KEYS } from '../../../src/pty/inject';
-import { checkInbox } from '../../../src/bus/message';
+import {
+  ACTIVE_DELIVERY_LEASE_SECONDS,
+  POST_TURN_ACK_GRACE_SECONDS,
+  checkInbox,
+  markInboxInjected,
+} from '../../../src/bus/message';
 import type { BusPaths, CtxEnv, AgentConfig, InboxMessage } from '../../../src/types';
 
 const PASTE_START = '\x1b[200~';
@@ -163,6 +169,25 @@ describe('A) AgentProcess injection serialization (cron catch-up batch repro)', 
     expect(writes[writes.length - 1]).toBe(KEYS.ENTER);
   });
 
+  it('reports NOT_RUNNING when teardown happens after paste but before Enter', async () => {
+    vi.useFakeTimers();
+    const writes: string[] = [];
+    const ap = createAgentProcess(writes);
+
+    const pending = ap.injectMessageDetailed('paste lands, Enter must fail');
+    await vi.advanceTimersByTimeAsync(1);
+    expect(writes.some(w => w.includes('paste lands'))).toBe(true);
+
+    (ap as any).pty = null;
+    (ap as any).status = 'stopped';
+    await vi.advanceTimersByTimeAsync(300);
+
+    const result = await pending;
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain('before prompt submission');
+    expect(ap.getInjectionsSinceMark()).toBe(0);
+  });
+
   it('a failed link surfaces as NOT_RUNNING and does not wedge the queue for the next injection', async () => {
     vi.useFakeTimers();
     const writes: string[] = [];
@@ -222,8 +247,8 @@ describe('A) AgentProcess injection serialization (cron catch-up batch repro)', 
     (ap as any).status = 'stopped';
 
     await vi.advanceTimersByTimeAsync(1000);
-    // p1's queued write also hits the nulled pty via optional chaining, but
-    // the drain-time re-check is what p2 must trip on.
+    // p1 may fail at its delayed Enter; the drain-time re-check is what p2
+    // must trip on before writing anything.
     await p1;
     const r2 = await p2;
     expect(r2.ok).toBe(false);
@@ -275,6 +300,32 @@ describe('B) pollCycle mark-after-deliver (sweep-redelivery contract)', () => {
     expect((checker as any).telegramMessages).toHaveLength(1);
     // Inbox message sits in inflight/, recoverable by the 5-min stale sweep.
     expect(readdirSync(paths.inflight)).toHaveLength(1);
+
+    // A failed injection never earns the 30-minute active-turn lease. Once
+    // stale, it must retry on the ordinary five-minute schedule even though
+    // no last_idle.flag exists (there was no agent turn to complete).
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    for (const f of readdirSync(paths.inflight)) {
+      utimesSync(join(paths.inflight, f), old, old);
+    }
+    expect(checkInbox(paths, { deferWhileAgentActive: true })).toHaveLength(1);
+  });
+
+  it('re-queues Telegram when fail-closed ACK reconciliation aborts the inbox poll', async () => {
+    writeInboxMessage(paths, 'bad-receipt-poll');
+    const receiptDir = join(paths.stateDir, 'message-acks');
+    mkdirSync(receiptDir, { recursive: true });
+    const digest = createHash('sha256').update('bad-receipt-poll').digest('hex');
+    writeFileSync(join(receiptDir, `${digest}.json`), 'null');
+
+    const agent = createMockAgent();
+    const checker = new FastChecker(agent, paths, '/tmp/framework');
+    checker.queueTelegramMessage('=== TELEGRAM from Vilhelm ===\nkeep me\n');
+
+    await (checker as any).pollCycle();
+
+    expect(agent.injectMessageDetailed).not.toHaveBeenCalled();
+    expect((checker as any).telegramMessages).toHaveLength(1);
   });
 
   it('formatInboxMessage salts each delivery so redelivery is not MessageDedup\'d', async () => {
@@ -309,6 +360,16 @@ describe('B2) stale-inflight redelivery counter and MAX_REDELIVERIES park', () =
     }
   }
 
+  function ageConfirmedInflightFiles(confirmedAt: Date): void {
+    for (const f of readdirSync(paths.inflight)) {
+      const filePath = join(paths.inflight, f);
+      const msg = JSON.parse(readFileSync(filePath, 'utf-8')) as InboxMessage;
+      msg.injection_confirmed_at = confirmedAt.toISOString();
+      writeFileSync(filePath, JSON.stringify(msg));
+      utimesSync(filePath, confirmedAt, confirmedAt);
+    }
+  }
+
   it('recovery increments the redeliveries counter on the message', () => {
     writeInboxMessage(paths, 'counted-msg');
     // First checkInbox: delivers, moves to inflight
@@ -320,6 +381,55 @@ describe('B2) stale-inflight redelivery counter and MAX_REDELIVERIES park', () =
     msgs = checkInbox(paths); // stale recovery → back to inbox → re-read
     expect(msgs).toHaveLength(1);
     expect((msgs[0] as any).redeliveries).toBe(1);
+  });
+
+  it('does not redeliver while the receiving agent is still handling the turn', () => {
+    writeInboxMessage(paths, 'active-turn-msg');
+    expect(checkInbox(paths, { deferWhileAgentActive: true })).toHaveLength(1);
+    expect(markInboxInjected(paths, ['active-turn-msg'])).toBe(1);
+
+    const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
+    const twentyMinutesAgo = new Date(Date.now() - 20 * 60 * 1000);
+    ageConfirmedInflightFiles(tenMinutesAgo);
+    const idleFlag = join(paths.stateDir, 'last_idle.flag');
+    writeFileSync(idleFlag, String(Math.floor(twentyMinutesAgo.getTime() / 1000)));
+    utimesSync(idleFlag, twentyMinutesAgo, twentyMinutesAgo);
+
+    expect(checkInbox(paths, { deferWhileAgentActive: true })).toHaveLength(0);
+    expect(readdirSync(paths.inflight)).toHaveLength(1);
+  });
+
+  it('gives a completed turn a short ACK grace before redelivery', () => {
+    writeInboxMessage(paths, 'post-turn-grace-msg');
+    expect(checkInbox(paths, { deferWhileAgentActive: true })).toHaveLength(1);
+    expect(markInboxInjected(paths, ['post-turn-grace-msg'])).toBe(1);
+
+    const staleDelivery = new Date(Date.now() - 10 * 60 * 1000);
+    ageConfirmedInflightFiles(staleDelivery);
+    const recentIdle = new Date(Date.now() - (POST_TURN_ACK_GRACE_SECONDS - 30) * 1000);
+    const idleFlag = join(paths.stateDir, 'last_idle.flag');
+    writeFileSync(idleFlag, String(Math.floor(recentIdle.getTime() / 1000)));
+    utimesSync(idleFlag, recentIdle, recentIdle);
+
+    expect(checkInbox(paths, { deferWhileAgentActive: true })).toHaveLength(0);
+    expect(readdirSync(paths.inflight)).toHaveLength(1);
+  });
+
+  it('redelivers after the active-turn lease backstop expires', () => {
+    writeInboxMessage(paths, 'expired-active-lease-msg');
+    expect(checkInbox(paths, { deferWhileAgentActive: true })).toHaveLength(1);
+    expect(markInboxInjected(paths, ['expired-active-lease-msg'])).toBe(1);
+
+    const expiredDelivery = new Date(Date.now() - (ACTIVE_DELIVERY_LEASE_SECONDS + 60) * 1000);
+    const olderIdle = new Date(expiredDelivery.getTime() - 60 * 1000);
+    ageConfirmedInflightFiles(expiredDelivery);
+    const idleFlag = join(paths.stateDir, 'last_idle.flag');
+    writeFileSync(idleFlag, String(Math.floor(olderIdle.getTime() / 1000)));
+    utimesSync(idleFlag, olderIdle, olderIdle);
+
+    const redelivered = checkInbox(paths, { deferWhileAgentActive: true });
+    expect(redelivered).toHaveLength(1);
+    expect((redelivered[0] as any).redeliveries).toBe(1);
   });
 
   it('the redelivery clock starts at DELIVERY, not send: a message that waited long in inbox/ is not instantly stale', () => {

@@ -29,6 +29,15 @@ export interface InboxMessage {
   signature?: BusMessageSignature;
   /** Legacy shared-HMAC field. Accepted for old files, no longer emitted. */
   sig?: string;
+  /** Number of completed stale-inflight recoveries. */
+  redeliveries?: number;
+  /** True when the bounded retry cap parked this record in processed/. */
+  redelivery_exhausted?: boolean;
+  /** Durable ACK audit fields written when reply_to or ack-inbox succeeds. */
+  acknowledged?: boolean;
+  acked_at?: string;
+  /** Set only after the daemon confirms the message bytes reached the agent. */
+  injection_confirmed_at?: string;
 }
 
 export interface BusMessageSignature {

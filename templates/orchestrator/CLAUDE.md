@@ -110,7 +110,7 @@ Photos include a `local_file:` path. Callbacks include `callback_data:` and `mes
 Reply using: cortextos bus send-message <agent> normal '<reply>' <msg_id>
 ```
 
-Always include `msg_id` as reply_to (auto-ACKs the original). Un-ACK'd messages redeliver after 5 min. For no-reply messages: `cortextos bus ack-inbox <msg_id>`
+Always include `msg_id` as reply_to (durably auto-ACKs the original). Un-ACK'd idle deliveries become eligible for bounded redelivery after 5 min; active turns hold a 30-min lease to prevent duplicate prompt floods. For no-reply messages: `cortextos bus ack-inbox <msg_id>`
 
 ---
 

@@ -56,8 +56,9 @@ export class MessageDedup {
  * pasted text rather than typed input. This prevents special characters
  * from being interpreted as commands.
  *
- * Returns a Promise that resolves AFTER the submitting Enter has been
- * written. DISPATCH-BUG CONTEXT (2026-06-07): the previous version sent
+ * Returns a Promise that resolves AFTER the submitting Enter attempt: `true`
+ * only when Enter was written, `false` when the deferred write failed.
+ * DISPATCH-BUG CONTEXT (2026-06-07): the previous version sent
  * Enter via fire-and-forget setTimeout and returned void immediately.
  * Callers (cron onFire, fast-checker) treated "returned" as "delivered",
  * so a second injection could write its paste INSIDE the first one's
@@ -76,7 +77,7 @@ export async function injectMessage(
   write: (data: string) => void,
   content: string,
   enterDelay: number = 300,
-): Promise<void> {
+): Promise<boolean> {
   // For very large messages, chunk the write to avoid overwhelming the PTY buffer
   const MAX_CHUNK = 4096;
 
@@ -98,15 +99,19 @@ export async function injectMessage(
   // nullable PTY handle) via closure in callers. If the PTY is torn down
   // during the enterDelay window — e.g. hard-restart IPC kills the child —
   // the callback will read `null.write` and throw. Swallowing here keeps
-  // the daemon process alive; the dropped Enter is the acceptable cost.
+  // the daemon process alive. Returning false is essential: callers that
+  // persist delivery state must not mark a paste as delivered when its Enter
+  // never submitted the prompt.
   // Root cause: PR #196 fixed three this.pty! callers in agent-process.ts
   // but missed worker-process.ts:93. This try/catch is the structural fix
   // that covers every present and future caller.
   try {
     write(KEYS.ENTER);
+    return true;
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.warn(`[inject] deferred Enter failed (pty likely torn down): ${msg}`);
+    return false;
   }
 }
 
