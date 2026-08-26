@@ -1,8 +1,9 @@
 import { execFileSync, spawn } from 'child_process';
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, writeFileSync } from 'fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync, writeFileSync } from 'fs';
 import { join, resolve } from 'path';
 import { homedir } from 'os';
 import type { BusPaths } from '../types/index.js';
+import { atomicWriteSync } from '../utils/atomic.js';
 import { normalizeOrgName } from '../utils/org.js';
 
 /**
@@ -120,10 +121,10 @@ function loadStamps(stampFile: string): IngestStamps {
 }
 
 function saveStamps(stampFile: string, stamps: IngestStamps): void {
-  // Atomic write: tmp in same dir → rename (POSIX rename(2) is atomic)
-  const tmp = `${stampFile}.${process.pid}.tmp`;
-  writeFileSync(tmp, JSON.stringify(stamps, null, 2) + '\n', 'utf-8');
-  renameSync(tmp, stampFile);
+  // Use framework atomicWriteSync (src/utils/atomic.ts) per CLAUDE.md.
+  // Writes to a random-hex temp file in the same dir, then rename(2) — atomic
+  // on POSIX, cleans up temp on failure, sets 0o600 permissions.
+  atomicWriteSync(stampFile, JSON.stringify(stamps, null, 2));
 }
 
 // ---------------------------------------------------------------------------
