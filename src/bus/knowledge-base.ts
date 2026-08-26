@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from 'child_process';
-import { existsSync, mkdirSync, openSync, readFileSync, statSync, writeFileSync } from 'fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, writeFileSync } from 'fs';
 import { join, resolve } from 'path';
 import { homedir } from 'os';
 import type { BusPaths } from '../types/index.js';
@@ -120,7 +120,10 @@ function loadStamps(stampFile: string): IngestStamps {
 }
 
 function saveStamps(stampFile: string, stamps: IngestStamps): void {
-  writeFileSync(stampFile, JSON.stringify(stamps, null, 2) + '\n', 'utf-8');
+  // Atomic write: tmp in same dir → rename (POSIX rename(2) is atomic)
+  const tmp = `${stampFile}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(stamps, null, 2) + '\n', 'utf-8');
+  renameSync(tmp, stampFile);
 }
 
 // ---------------------------------------------------------------------------
@@ -349,9 +352,20 @@ export function ingestKnowledgeBase(
 
     for (const absPath of pathsToIngest) {
       try {
-        const mtime = statSync(absPath).mtimeMs;
+        const stat = statSync(absPath);
+        // Warn on directories: parent dir mtime does NOT reflect edits inside —
+        // files nested under a directory argument will always be treated as changed.
+        // Pass individual file paths to --mtime-guard for correct behaviour.
+        if (stat.isDirectory()) {
+          console.warn(`[kb] mtime-guard: WARNING: "${absPath}" is a directory — ` +
+            `directory mtime does not reflect internal changes; treating as changed`);
+          changed.push(absPath);
+          continue;
+        }
         const key = stampKey(absPath, collection);
-        if (stamps[key] !== undefined && stamps[key] >= mtime) {
+        // Strict equality: any mtime change (including backwards, e.g. restored backup)
+        // counts as changed. Equal mtime = unchanged (P1-4 fix: was >=).
+        if (stamps[key] !== undefined && stamps[key] === stat.mtimeMs) {
           unchanged.push(absPath);
         } else {
           changed.push(absPath);
@@ -402,27 +416,47 @@ export function ingestKnowledgeBase(
     const logFile = join(kbRoot, 'ingest-bg.log');
     const logFd = openSync(logFile, 'a');
 
-    // Update stamps optimistically before spawn so the next heartbeat won't
-    // re-queue the same files while this background process is still running.
-    if (mtimeGuard && !force) {
-      const stamps = loadStamps(stampFile);
-      for (const absPath of pathsToIngest) {
-        try { stamps[stampKey(absPath, collection)] = statSync(absPath).mtimeMs; } catch { /* skip */ }
-      }
-      saveStamps(stampFile, stamps);
-    }
+    // P0-1 fix: do NOT write stamps before spawn. A failed background ingest
+    // (API outage, SIGKILL, Python error) must not permanently mark files as
+    // successfully ingested and silently skip them on future guarded runs.
+    // The next heartbeat will re-check mtime and re-dispatch if still changed.
 
     const child = spawn(pythonPath, args, {
       detached: true,
       stdio: ['ignore', logFd, logFd],
       env,
     });
+
+    // P2-9 fix: close parent-side fd immediately after spawn — the child
+    // inherited its own copy; the parent does not need it open.
+    closeSync(logFd);
+
+    // P1-7 fix: attach error handler before unref so spawn-level failures
+    // (e.g. Python executable missing) are logged to file rather than crashing
+    // or silently disappearing.
+    child.on('error', (err: Error) => {
+      try {
+        writeFileSync(logFile, `[${new Date().toISOString()}] kb-ingest spawn error: ${err.message}\n`, { flag: 'a' });
+      } catch { /* ignore if log write itself fails */ }
+    });
+
     child.unref();
-    console.log(`[kb] Detached ingest started (pid ${child.pid}) → log: ${logFile}`);
+    console.log(`[kb] Detached ingest started (pid ${child.pid ?? 'unknown'}) → log: ${logFile}`);
     return;
   }
 
   // --- Blocking mode (default) ---
+
+  // P1-8 fix: capture mtime BEFORE ingest. If the file is edited while
+  // mmrag.py runs, we stamp the pre-ingest mtime so that the newer version
+  // is NOT incorrectly marked as ingested on the next guarded run.
+  const preMtimes: Record<string, number> = {};
+  if (mtimeGuard && !force) {
+    for (const absPath of pathsToIngest) {
+      try { preMtimes[absPath] = statSync(absPath).mtimeMs; } catch { /* skip */ }
+    }
+  }
+
   execFileSync(pythonPath, args, {
     encoding: 'utf-8',
     timeout: ingestTimeoutMs,
@@ -430,11 +464,12 @@ export function ingestKnowledgeBase(
     stdio: 'inherit',
   });
 
-  // Update stamps after successful sync ingest
+  // Stamp with pre-ingest mtime values (captured above) after confirmed success.
   if (mtimeGuard && !force) {
     const stamps = loadStamps(stampFile);
     for (const absPath of pathsToIngest) {
-      try { stamps[stampKey(absPath, collection)] = statSync(absPath).mtimeMs; } catch { /* skip */ }
+      const mtime = preMtimes[absPath];
+      if (mtime !== undefined) stamps[stampKey(absPath, collection)] = mtime;
     }
     saveStamps(stampFile, stamps);
   }
