@@ -559,7 +559,7 @@ export class AgentManager {
     const paths = resolvePaths(name, this.instanceId, resolvedOrg);
 
     const log = (msg: string) => {
-      console.log(`[${name.replace(/[\r\n]/g, '_')}] ${msg}`); // codeql[js/log-injection]
+      console.log(`[${name.replace(/[\r\n]/g, '_')}] ${msg}`); // lgtm[js/log-injection]
     };
 
     // Read agent .env for Telegram credentials
@@ -713,7 +713,7 @@ export class AgentManager {
     // superseded still owns a live process that needs its checker.
     if (!ownEntry.stopped) {
       checker.start().catch(err => {
-        console.error(`[${name.replace(/[\r\n]/g, '_')}] Fast checker error:`, err); // codeql[js/log-injection]
+        console.error('[fast-checker] error for agent:', name.replace(/[\r\n]/g, '_'), err); // lgtm[js/log-injection]
       });
     }
 
@@ -1297,7 +1297,7 @@ export class AgentManager {
       // BUG-011/BUG-031 restart-all honor path below is preserved unchanged.
       if (userInitiated) {
         if (this.pendingRestarts.delete(name)) {
-          console.log(`[agent-manager] Dropped queued restart for ${name.replace(/[\r\n]/g, '_')} — explicit user stop/disable wins.`); // codeql[js/log-injection]
+          console.log(`[agent-manager] Dropped queued restart for ${name.replace(/[\r\n]/g, '_')} — explicit user stop/disable wins.`); // lgtm[js/log-injection]
         }
         return;
       }
@@ -1356,7 +1356,7 @@ export class AgentManager {
     // on the newcomer's next stop.
     const successor = this.agents.get(name);
     if (successor !== undefined && successor !== entry) {
-      console.log(`[agent-manager] ${name.replace(/[\r\n]/g, '_')} was re-registered while restarting — a new instance already holds the name, skipping the start.`); // codeql[js/log-injection]
+      console.log(`[agent-manager] ${name.replace(/[\r\n]/g, '_')} was re-registered while restarting — a new instance already holds the name, skipping the start.`); // lgtm[js/log-injection]
       return;
     }
     await this.startAgent(name, '');

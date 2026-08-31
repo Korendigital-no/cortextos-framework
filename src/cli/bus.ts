@@ -1339,7 +1339,7 @@ busCommand
 
       console.log('Message sent');
     } catch (err: any) {
-      console.error(`Failed to send: ${String(err.message || err).replace(/[\r\n]/g, ' ')}`); // codeql[js/log-injection]
+      console.error(`Failed to send: ${String(err.message || err).replace(/[\r\n]/g, ' ')}`); // lgtm[js/log-injection]
       process.exit(1);
     }
   });
@@ -1393,7 +1393,7 @@ busCommand
       await api.setMessageReaction(chatId, messageId, emojis);
       console.log(emojis.length > 0 ? `Reacted ${emoji}` : 'Reaction cleared');
     } catch (err: any) {
-      console.error(`Failed to react: ${String(err.message || err).replace(/[\r\n]/g, ' ')}`); // codeql[js/log-injection]
+      console.error(`Failed to react: ${String(err.message || err).replace(/[\r\n]/g, ' ')}`); // lgtm[js/log-injection]
       process.exit(1);
     }
   });
@@ -1667,7 +1667,7 @@ busCommand
       await api.editMessageText(parseInt(chatId, 10), parseInt(messageId, 10), newText, markup);
       console.log('Message edited');
     } catch (err: any) {
-      console.error(`Failed to edit message: ${String(err.message || err).replace(/[\r\n]/g, ' ')}`); // codeql[js/log-injection]
+      console.error(`Failed to edit message: ${String(err.message || err).replace(/[\r\n]/g, ' ')}`); // lgtm[js/log-injection]
       process.exit(1);
     }
   });
@@ -1705,7 +1705,7 @@ busCommand
       await api.answerCallbackQuery(callbackQueryId, toastText);
       console.log('Callback answered');
     } catch (err: any) {
-      console.error(`Failed to answer callback: ${String(err.message || err).replace(/[\r\n]/g, ' ')}`); // codeql[js/log-injection]
+      console.error(`Failed to answer callback: ${String(err.message || err).replace(/[\r\n]/g, ' ')}`); // lgtm[js/log-injection]
       process.exit(1);
     }
   });

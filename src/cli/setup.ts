@@ -141,12 +141,12 @@ async function validateTelegramCredsInteractive(
     }
 
     if (result.reason === 'network_error' || result.reason === 'rate_limited') {
-      console.log(`  Warning: ${formatValidateError(result).replace(/[\r\n]/g, ' ')}`); // codeql[js/log-injection]
+      console.log(`  Warning: ${formatValidateError(result).replace(/[\r\n]/g, ' ')}`); // lgtm[js/log-injection]
       console.log('  Writing .env with unvalidated values. Re-run cortextos enable later to confirm.');
       return chatId;
     }
 
-    console.log(`  Validation failed: ${formatValidateError(result).replace(/[\r\n]/g, ' ')}`); // codeql[js/log-injection]
+    console.log(`  Validation failed: ${formatValidateError(result).replace(/[\r\n]/g, ' ')}`); // lgtm[js/log-injection]
 
     if (result.reason === 'bad_token') {
       // Can't recover from a bad token inside the wizard loop — the user

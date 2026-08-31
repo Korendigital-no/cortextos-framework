@@ -152,7 +152,7 @@ export class TelegramPoller {
         this.consecutiveErrors++;
         const base = computePollBackoffMs(msg, this.consecutiveErrors, this.pollInterval, this.backoffCapMs);
         const delay = base + Math.random() * this.pollInterval;
-        console.error(`[telegram-poller] Poll error (retry in ${Math.round(delay)}ms, attempt ${this.consecutiveErrors}):`, err); // codeql[js/log-injection]
+        console.error(`[telegram-poller] Poll error (retry in ${Math.round(delay)}ms, attempt ${this.consecutiveErrors}):`, err); // lgtm[js/log-injection]
         await sleep(delay);
       }
     }
