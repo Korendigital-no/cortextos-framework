@@ -11,7 +11,7 @@ import {
   type StaleCircuit, type StaleThresholds,
 } from './stale-detector.js';
 import type { InboxMessage, BusPaths, TelegramMessage, TelegramCallbackQuery } from '../types/index.js';
-import { checkInbox, ackInbox } from '../bus/message.js';
+import { checkInbox, ackInbox, markInboxInjected, withInboxDeliveryLock } from '../bus/message.js';
 import { getOverdueReminders } from '../bus/reminders.js';
 import { updateApproval } from '../bus/approval.js';
 import { AgentProcess } from './agent-process.js';
@@ -224,10 +224,12 @@ export class FastChecker {
    * wedged/idle session was instantly marked processed and lost for 3h.
    * Now: messages stay in inflight/ after injection; the AGENT acks (by
    * replying with reply_to or ack-inbox, per AGENTS.md), and
-   * recoverStaleInflight redelivers anything still un-ACK'd after 5 min.
+   * recoverStaleInflight makes idle/abandoned deliveries eligible after 5
+   * minutes. A live agent turn holds a bounded 30-minute delivery lease so
+   * long tool runs do not queue the same message every poll interval.
    */
   private async pollCycle(): Promise<void> {
-    let messageBlock = '';
+    let telegramBlock = '';
 
     // Process queued Telegram messages
     let hasTelegramMessage = false;
@@ -235,22 +237,56 @@ export class FastChecker {
     while (this.telegramMessages.length > 0) {
       const msg = this.telegramMessages.shift()!;
       telegramBatch.push(msg);
-      messageBlock += msg.formatted;
+      telegramBlock += msg.formatted;
       hasTelegramMessage = true;
     }
 
     // Check agent inbox (moves messages to inflight/ — they stay there
-    // until the agent acks, with 5-min stale recovery for redelivery)
-    const inboxMessages = checkInbox(this.paths);
-    for (const msg of inboxMessages) {
-      messageBlock += this.formatInboxMessage(msg);
+    // until the agent acks; idle/abandoned deliveries become eligible for
+    // stale recovery after 5 min, while active turns hold a bounded lease)
+    let inboxMessages: InboxMessage[];
+    try {
+      inboxMessages = checkInbox(this.paths, { deferWhileAgentActive: true });
+    } catch (err) {
+      // Telegram has no disk-backed queue. A fail-closed receipt/I/O error
+      // must not discard the already-dequeued operator batch.
+      this.telegramMessages.unshift(...telegramBatch);
+      this.log(`Inbox ACK reconciliation failed; Telegram batch re-queued: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    let deliveredInboxMessages = inboxMessages;
+    let injectedBlock = telegramBlock + inboxMessages.map(msg => this.formatInboxMessage(msg)).join('');
+
+    // Revalidate selected inbox records and hold the same mutex used by ACK
+    // through paste + Enter. This closes the ACK-after-selection race.
+    let result: Awaited<ReturnType<AgentProcess['injectMessageDetailed']>> | null = null;
+    if (inboxMessages.length > 0) {
+      try {
+        result = await withInboxDeliveryLock(this.paths, inboxMessages, async eligible => {
+          deliveredInboxMessages = eligible;
+          injectedBlock = telegramBlock + eligible.map(msg => this.formatInboxMessage(msg)).join('');
+          return injectedBlock ? this.agent.injectMessageDetailed(injectedBlock) : null;
+        });
+      } catch (err) {
+        this.telegramMessages.unshift(...telegramBatch);
+        this.log(`Inbox delivery lock failed; Telegram batch re-queued: ${err instanceof Error ? err.message : String(err)}`);
+        return;
+      }
+    } else if (injectedBlock) {
+      result = await this.agent.injectMessageDetailed(injectedBlock);
     }
 
-    // Inject if there's anything
-    if (messageBlock) {
-      const result = await this.agent.injectMessageDetailed(messageBlock);
+    // Inject if anything survived ACK revalidation.
+    if (result) {
       if (result.ok) {
-        this.log(`Injected ${messageBlock.length} bytes (${inboxMessages.length} inbox message(s) left in inflight pending agent ACK)`);
+        const confirmed = markInboxInjected(this.paths, deliveredInboxMessages.map(msg => msg.id));
+        this.log(`Injected ${injectedBlock.length} bytes (${deliveredInboxMessages.length} inbox message(s) left in inflight pending agent ACK)`);
+        if (confirmed !== deliveredInboxMessages.length) {
+          this.log(
+            `Delivery confirmation persisted for ${confirmed}/${deliveredInboxMessages.length} inbox message(s); ` +
+            'unconfirmed records retain the shorter five-minute retry path',
+          );
+        }
         // Only update typing timestamp for Telegram messages, not inbox/cron.
         // Inbox messages (agent-to-agent, session continuations) must not
         // restart the typing indicator after Stop has cleared it.
@@ -268,7 +304,7 @@ export class FastChecker {
         this.log(
           `Injection failed (${result.code}): ${result.message} — ` +
           `${telegramBatch.length} Telegram message(s) re-queued; ` +
-          `${inboxMessages.length} inbox message(s) await 5-min stale redelivery`,
+          `${deliveredInboxMessages.length} inbox message(s) await five-minute stale redelivery`,
         );
       }
     }

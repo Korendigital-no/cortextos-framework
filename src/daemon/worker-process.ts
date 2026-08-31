@@ -88,10 +88,19 @@ export class WorkerProcess {
    * Inject text into the worker's PTY (equivalent to tmux send-keys).
    * Use to nudge a stuck worker without restarting it.
    */
-  inject(text: string): boolean {
+  async inject(text: string): Promise<boolean> {
     if (!this.pty || this.status !== 'running') return false;
-    injectMessage((data) => this.pty?.write(data), text);
-    return true;
+    try {
+      return await injectMessage((data) => {
+        if (!this.pty || this.status !== 'running') {
+          throw new Error(`worker PTY torn down before injection write (status: ${this.status})`);
+        }
+        this.pty.write(data);
+      }, text);
+    } catch (err) {
+      this.log(`Worker injection failed: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
   }
 
   /**

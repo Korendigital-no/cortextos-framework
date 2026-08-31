@@ -33,7 +33,7 @@ For any messages returned: process and ACK each one:
 cortextos bus ack-inbox "<message_id>"
 ```
 
-Un-ACK'd messages are re-delivered after 5 minutes. Target: 0 un-ACK'd after this sweep.
+Un-ACK'd idle deliveries become eligible for bounded redelivery after 5 minutes; active turns hold a 30-minute lease. Target: 0 un-ACK'd after this sweep.
 
 ## Step 3: Fleet health check (ORCHESTRATOR — do this before your own tasks)
 

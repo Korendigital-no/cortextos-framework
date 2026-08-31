@@ -52,7 +52,7 @@ describe('injectMessage — deferred Enter crash safety', () => {
     warnSpy.mockRestore();
   });
 
-  it('swallows throw from the deferred Enter callback without crashing', async () => {
+  it('returns false when deferred Enter fails without crashing', async () => {
     const writes: string[] = [];
     // Caller's write is "safe" during the synchronous paste but starts
     // throwing by the time the deferred Enter fires — simulates PTY teardown.
@@ -70,9 +70,10 @@ describe('injectMessage — deferred Enter crash safety', () => {
     // PTY dies before the 300ms Enter delay elapses.
     ptyAlive = false;
 
-    // Advancing the clock runs the delayed Enter. Must NOT reject.
+    // Advancing the clock runs the delayed Enter. It must not reject the
+    // daemon, but it MUST report that the prompt was not submitted.
     await vi.advanceTimersByTimeAsync(300);
-    await expect(pending).resolves.toBeUndefined();
+    await expect(pending).resolves.toBe(false);
 
     // The warn path in inject.ts confirms the catch branch ran.
     expect(warnSpy).toHaveBeenCalledTimes(1);
@@ -86,7 +87,7 @@ describe('injectMessage — deferred Enter crash safety', () => {
     const pending = injectMessage(write, 'hi', 300);
     const writesBeforeTimer = writes.length;
     await vi.advanceTimersByTimeAsync(300);
-    await pending;
+    await expect(pending).resolves.toBe(true);
 
     // Exactly one new write — the ENTER keystroke — and no warn.
     expect(writes.length).toBe(writesBeforeTimer + 1);

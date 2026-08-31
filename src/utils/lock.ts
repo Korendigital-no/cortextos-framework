@@ -347,3 +347,37 @@ export function withFileLockSync<T>(
     releaseLock(dir);
   }
 }
+
+/**
+ * Async counterpart used when the protected operation itself must await (for
+ * example paste + delayed Enter). The lock remains held across the await so
+ * queue ACK and delivery have one unambiguous linearization order.
+ */
+export async function withFileLockAsync<T>(
+  dir: string,
+  fn: () => Promise<T>,
+  opts: FileLockOptions = {},
+): Promise<T> {
+  const timeoutMs = opts.timeoutMs ?? 5_000;
+  const initBackoff = opts.initialBackoffMs ?? 5;
+  const maxBackoff = opts.maxBackoffMs ?? 100;
+  const start = process.hrtime.bigint();
+  const timeoutNs = BigInt(timeoutMs) * 1_000_000n;
+  let backoff = initBackoff;
+
+  while (!acquireLock(dir)) {
+    if (process.hrtime.bigint() - start > timeoutNs) {
+      throw new Error(
+        `withFileLockAsync: failed to acquire lock on "${dir}" within ${timeoutMs}ms`,
+      );
+    }
+    await new Promise(resolve => setTimeout(resolve, backoff));
+    backoff = Math.min(backoff * 2, maxBackoff);
+  }
+
+  try {
+    return await fn();
+  } finally {
+    releaseLock(dir);
+  }
+}

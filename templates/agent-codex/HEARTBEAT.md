@@ -33,7 +33,7 @@ For any messages returned: process and ACK each one:
 cortextos bus ack-inbox "<message_id>"
 ```
 
-Un-ACK'd messages are re-delivered after 5 minutes. Target: 0 un-ACK'd after this sweep.
+Un-ACK'd idle deliveries become eligible for bounded redelivery after 5 minutes; active turns hold a 30-minute lease. Target: 0 un-ACK'd after this sweep.
 
 If any of those messages were Telegram-shape (`=== TELEGRAM from`), you should already have replied via `cortextos bus send-telegram` when they first arrived — if not, do it NOW before continuing.
 

@@ -1037,7 +1037,7 @@ export class AgentManager {
   /**
    * Inject text into a running worker's PTY (nudge / stuck-state recovery).
    */
-  injectWorker(name: string, text: string): boolean {
+  async injectWorker(name: string, text: string): Promise<boolean> {
     const worker = this.workers.get(name);
     if (!worker) return false;
     return worker.inject(text);

@@ -719,7 +719,7 @@ export class IPCServer {
           if (!injectName || !injectText) {
             response = { success: false, error: 'inject-worker requires: name, text' };
           } else {
-            const ok = this.agentManager.injectWorker(injectName, injectText);
+            const ok = await this.agentManager.injectWorker(injectName, injectText);
             response = ok
               ? { success: true, data: `Injected into worker ${injectName}` }
               : { success: false, error: `Worker ${injectName} not found or not running` };

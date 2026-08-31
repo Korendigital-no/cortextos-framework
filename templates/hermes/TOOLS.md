@@ -38,7 +38,7 @@ Agent secrets: `orgs/{org}/agents/{agent}/.env`
 |---|---|
 | `send-message <agent> <priority> '<text>' [reply_to]` | Send to another agent |
 | `check-inbox` | Check incoming messages (run every heartbeat) |
-| `ack-inbox "<msg_id>"` | ACK a message (un-ACK'd re-deliver after 5 min) |
+| `ack-inbox "<msg_id>"` | Durably ACK a message (idle un-ACK'd deliveries retry after 5 min; active turn lease: 30 min) |
 | `notify-agent <agent> "<msg>"` | Urgently signal agent's fast-checker |
 
 ### Telegram

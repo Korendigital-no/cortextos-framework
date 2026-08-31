@@ -126,7 +126,7 @@ cortextos bus check-inbox
 Returns a list of messages. Each has an ID you must ACK.
 
 ### ack-inbox
-Acknowledge a message. Un-ACK'd messages are re-delivered in 5 minutes.
+Acknowledge a message durably. Idle un-ACK'd deliveries become eligible for bounded redelivery in 5 minutes; an active agent turn holds a 30-minute delivery lease to prevent duplicate prompt floods.
 
 ```bash
 cortextos bus ack-inbox "<message_id>"

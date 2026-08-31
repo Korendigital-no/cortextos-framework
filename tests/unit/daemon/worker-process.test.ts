@@ -107,24 +107,42 @@ describe('WorkerProcess', () => {
   });
 
   describe('inject', () => {
-    it('returns false before spawn', () => {
+    beforeEach(() => {
+      mockInjectMessage.mockResolvedValue(true);
+    });
+
+    it('returns false before spawn', async () => {
       const w = new WorkerProcess('w8', '/tmp/proj', undefined);
-      expect(w.inject('nudge')).toBe(false);
+      await expect(w.inject('nudge')).resolves.toBe(false);
       expect(mockInjectMessage).not.toHaveBeenCalled();
     });
 
     it('injects text when running', async () => {
       const w = new WorkerProcess('w9', '/tmp/proj', undefined);
       await w.spawn(mockEnv, 'task');
-      expect(w.inject('continue with phase 3')).toBe(true);
+      await expect(w.inject('continue with phase 3')).resolves.toBe(true);
       expect(mockInjectMessage).toHaveBeenCalled();
+    });
+
+    it('reports a delayed Enter failure', async () => {
+      mockInjectMessage.mockResolvedValueOnce(false);
+      const w = new WorkerProcess('w9-failed-enter', '/tmp/proj', undefined);
+      await w.spawn(mockEnv, 'task');
+      await expect(w.inject('must submit')).resolves.toBe(false);
+    });
+
+    it('reports an immediate PTY write failure', async () => {
+      mockInjectMessage.mockRejectedValueOnce(new Error('pty write exploded'));
+      const w = new WorkerProcess('w9-write-failed', '/tmp/proj', undefined);
+      await w.spawn(mockEnv, 'task');
+      await expect(w.inject('must write')).resolves.toBe(false);
     });
 
     it('returns false after exit', async () => {
       const w = new WorkerProcess('w10', '/tmp/proj', undefined);
       await w.spawn(mockEnv, 'task');
       capturedOnExit!(0);
-      expect(w.inject('too late')).toBe(false);
+      await expect(w.inject('too late')).resolves.toBe(false);
     });
   });
 
