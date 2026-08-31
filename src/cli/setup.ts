@@ -141,14 +141,12 @@ async function validateTelegramCredsInteractive(
     }
 
     if (result.reason === 'network_error' || result.reason === 'rate_limited') {
-      // codeql[js/log-injection] -- formatValidateError returns a human-readable error string from Telegram API response; newlines stripped for defense-in-depth
-      console.log(`  Warning: ${formatValidateError(result).replace(/[\r\n]/g, ' ')}`);
+      console.log(`  Warning: ${formatValidateError(result).replace(/[\r\n]/g, ' ')}`); // codeql[js/log-injection]
       console.log('  Writing .env with unvalidated values. Re-run cortextos enable later to confirm.');
       return chatId;
     }
 
-    // codeql[js/log-injection] -- formatValidateError returns a human-readable error string from Telegram API response; newlines stripped for defense-in-depth
-    console.log(`  Validation failed: ${formatValidateError(result).replace(/[\r\n]/g, ' ')}`);
+    console.log(`  Validation failed: ${formatValidateError(result).replace(/[\r\n]/g, ' ')}`); // codeql[js/log-injection]
 
     if (result.reason === 'bad_token') {
       // Can't recover from a bad token inside the wizard loop — the user

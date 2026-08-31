@@ -68,8 +68,7 @@ export function logEvent(
     metadata: meta,
   });
 
-  // codeql[js/path-injection] -- eventsDir is operator-configured (derived from ctxRoot, not user input); today is a date string computed locally; appending JSON event log is intentional data recording
-  appendFileSync(join(eventsDir, `${today}.jsonl`), eventLine + '\n', 'utf-8');
+  appendFileSync(join(eventsDir, `${today}.jsonl`), eventLine + '\n', 'utf-8'); // codeql[js/http-to-file-access] -- eventsDir is operator-configured (ctxRoot); today is locally computed; intentional event log recording
 
   // Refresh heartbeat timestamp only when the caller opts in (in-session
   // self-logging). Default off is fail-safe. See doc comment above.

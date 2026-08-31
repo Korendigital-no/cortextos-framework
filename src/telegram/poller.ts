@@ -152,8 +152,7 @@ export class TelegramPoller {
         this.consecutiveErrors++;
         const base = computePollBackoffMs(msg, this.consecutiveErrors, this.pollInterval, this.backoffCapMs);
         const delay = base + Math.random() * this.pollInterval;
-        // codeql[js/log-injection] -- delay and consecutiveErrors are internal numeric counters; err is an internal Error object from the Telegram API client, not attacker-controlled
-        console.error(`[telegram-poller] Poll error (retry in ${Math.round(delay)}ms, attempt ${this.consecutiveErrors}):`, err);
+        console.error(`[telegram-poller] Poll error (retry in ${Math.round(delay)}ms, attempt ${this.consecutiveErrors}):`, err); // codeql[js/log-injection]
         await sleep(delay);
       }
     }
@@ -258,8 +257,7 @@ export class TelegramPoller {
     ensureDir(this.stateDir);
     const offsetFile = join(this.stateDir, this.offsetFileName);
     try {
-      // codeql[js/path-injection] -- offsetFile is constructed from operator-configured stateDir; this.offset is an integer (Telegram update_id), not user-controlled path data
-      writeFileSync(offsetFile, String(this.offset), 'utf-8');
+      writeFileSync(offsetFile, String(this.offset), 'utf-8'); // codeql[js/http-to-file-access] -- this.offset is an integer (Telegram update_id); offsetFile path is operator-configured stateDir
     } catch {
       // Ignore write errors
     }

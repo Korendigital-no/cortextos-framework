@@ -121,8 +121,7 @@ export class FastChecker {
     this.paths = paths;
     this.frameworkRoot = frameworkRoot;
     this.pollInterval = options.pollInterval || 1000;
-    // codeql[js/log-injection] -- agent name is operator-configured; newlines stripped for defense-in-depth
-    this.log = options.log || ((msg) => console.log(`[fast-checker/${agent.name.replace(/[\r\n]/g, '_')}] ${msg}`));
+    this.log = options.log || ((msg) => console.log(`[fast-checker/${agent.name.replace(/[\r\n]/g, '_')}] ${msg}`)); // codeql[js/log-injection]
     this.telegramApi = options.telegramApi;
     this.chatId = options.chatId;
     this.allowedUserId = options.allowedUserId;

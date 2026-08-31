@@ -559,8 +559,7 @@ export class AgentManager {
     const paths = resolvePaths(name, this.instanceId, resolvedOrg);
 
     const log = (msg: string) => {
-      // codeql[js/log-injection] -- agent name is operator-configured; newlines stripped for defense-in-depth
-      console.log(`[${name.replace(/[\r\n]/g, '_')}] ${msg}`);
+      console.log(`[${name.replace(/[\r\n]/g, '_')}] ${msg}`); // codeql[js/log-injection]
     };
 
     // Read agent .env for Telegram credentials
@@ -714,8 +713,7 @@ export class AgentManager {
     // superseded still owns a live process that needs its checker.
     if (!ownEntry.stopped) {
       checker.start().catch(err => {
-        // codeql[js/log-injection] -- agent name is operator-configured; newlines stripped for defense-in-depth; err is an internal Error object
-        console.error(`[${name.replace(/[\r\n]/g, '_')}] Fast checker error:`, err);
+        console.error(`[${name.replace(/[\r\n]/g, '_')}] Fast checker error:`, err); // codeql[js/log-injection]
       });
     }
 
@@ -1299,8 +1297,7 @@ export class AgentManager {
       // BUG-011/BUG-031 restart-all honor path below is preserved unchanged.
       if (userInitiated) {
         if (this.pendingRestarts.delete(name)) {
-          // codeql[js/log-injection] -- agent name is operator-configured; newlines stripped for defense-in-depth
-          console.log(`[agent-manager] Dropped queued restart for ${name.replace(/[\r\n]/g, '_')} — explicit user stop/disable wins.`);
+          console.log(`[agent-manager] Dropped queued restart for ${name.replace(/[\r\n]/g, '_')} — explicit user stop/disable wins.`); // codeql[js/log-injection]
         }
         return;
       }
@@ -1359,8 +1356,7 @@ export class AgentManager {
     // on the newcomer's next stop.
     const successor = this.agents.get(name);
     if (successor !== undefined && successor !== entry) {
-      // codeql[js/log-injection] -- agent name is operator-configured; newlines stripped for defense-in-depth
-      console.log(`[agent-manager] ${name.replace(/[\r\n]/g, '_')} was re-registered while restarting — a new instance already holds the name, skipping the start.`);
+      console.log(`[agent-manager] ${name.replace(/[\r\n]/g, '_')} was re-registered while restarting — a new instance already holds the name, skipping the start.`); // codeql[js/log-injection]
       return;
     }
     await this.startAgent(name, '');

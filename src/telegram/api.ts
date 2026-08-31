@@ -703,8 +703,7 @@ export class TelegramAPI {
     const url = new URL(`${this.baseUrl}/${method}`);
     const body = Buffer.from(JSON.stringify(data));
     return new Promise((resolve, reject) => {
-      // codeql[js/ssrf] -- host is api.telegram.org (hardcoded in this.baseUrl, set at construction from BOT_TOKEN env var); URL path contains /bot{token}/{method} — operator-configured bot token + method name, not attacker-controlled user input
-      const req = httpsRequest({
+      const req = httpsRequest({ // codeql[js/file-access-to-http] -- baseUrl is https://api.telegram.org/bot{TOKEN} constructed from BOT_TOKEN env var; host is hardcoded, not user-controlled
         protocol: url.protocol,
         hostname: url.hostname,
         port: url.port || undefined,
@@ -748,8 +747,7 @@ export class TelegramAPI {
         }
         reject(new Error(`Telegram API request failed: ${error}`));
       });
-      // codeql[js/ssrf] -- body is a JSON Buffer of the API request parameters built internally; request goes to api.telegram.org (see httpsRequest call above on this connection)
-      req.end(body);
+      req.end(body); // codeql[js/file-access-to-http] -- body is JSON of internally-built API params; request goes to api.telegram.org (hardcoded host, see httpsRequest above)
     });
   }
 
@@ -757,8 +755,7 @@ export class TelegramAPI {
   private requestUnpooledBuffer(rawUrl: string, timeoutMs: number): Promise<Buffer> {
     const url = new URL(rawUrl);
     return new Promise((resolve, reject) => {
-      // codeql[js/ssrf] -- rawUrl is a Telegram file-download URL returned by the Telegram API (e.g. https://api.telegram.org/file/bot.../...) and is not derived from attacker-controlled user input; Telegram controls what file URLs it vends
-      const req = httpsRequest({
+      const req = httpsRequest({ // codeql[js/file-access-to-http] -- rawUrl is a Telegram CDN URL vended by Telegram API (e.g. https://api.telegram.org/file/bot.../...); not derived from attacker-controlled user input
         protocol: url.protocol,
         hostname: url.hostname,
         port: url.port || undefined,
