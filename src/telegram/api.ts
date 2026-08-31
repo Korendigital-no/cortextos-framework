@@ -703,6 +703,7 @@ export class TelegramAPI {
     const url = new URL(`${this.baseUrl}/${method}`);
     const body = Buffer.from(JSON.stringify(data));
     return new Promise((resolve, reject) => {
+      // codeql[js/ssrf] -- host is api.telegram.org (hardcoded in this.baseUrl, set at construction from BOT_TOKEN env var); URL path contains /bot{token}/{method} — operator-configured bot token + method name, not attacker-controlled user input
       const req = httpsRequest({
         protocol: url.protocol,
         hostname: url.hostname,
@@ -747,6 +748,7 @@ export class TelegramAPI {
         }
         reject(new Error(`Telegram API request failed: ${error}`));
       });
+      // codeql[js/ssrf] -- body is a JSON Buffer of the API request parameters built internally; request goes to api.telegram.org (see httpsRequest call above on this connection)
       req.end(body);
     });
   }
@@ -755,6 +757,7 @@ export class TelegramAPI {
   private requestUnpooledBuffer(rawUrl: string, timeoutMs: number): Promise<Buffer> {
     const url = new URL(rawUrl);
     return new Promise((resolve, reject) => {
+      // codeql[js/ssrf] -- rawUrl is a Telegram file-download URL returned by the Telegram API (e.g. https://api.telegram.org/file/bot.../...) and is not derived from attacker-controlled user input; Telegram controls what file URLs it vends
       const req = httpsRequest({
         protocol: url.protocol,
         hostname: url.hostname,

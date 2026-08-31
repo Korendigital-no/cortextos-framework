@@ -11,14 +11,14 @@ import {
   type StaleCircuit, type StaleThresholds,
 } from './stale-detector.js';
 import type { InboxMessage, BusPaths, TelegramMessage, TelegramCallbackQuery } from '../types/index.js';
-import { checkInbox, ackInbox, sendMessage } from '../bus/message.js';
+import { checkInbox, sendMessage } from '../bus/message.js';
 import { getOverdueReminders } from '../bus/reminders.js';
 import { updateApproval } from '../bus/approval.js';
 import { AgentProcess } from './agent-process.js';
 import type { TelegramAPI } from '../telegram/api.js';
 import { KEYS } from '../pty/inject.js';
 import { stripControlChars, sanitizeForPtyInjection, wrapFenceSafe } from '../utils/validate.js';
-import { agentHoldsContextHandoffLease, releaseContextHandoffLease, requestContextHandoffLease } from './context-handoff-lease.js';
+import { releaseContextHandoffLease, requestContextHandoffLease } from './context-handoff-lease.js';
 
 type LogFn = (msg: string) => void;
 
@@ -121,7 +121,8 @@ export class FastChecker {
     this.paths = paths;
     this.frameworkRoot = frameworkRoot;
     this.pollInterval = options.pollInterval || 1000;
-    this.log = options.log || ((msg) => console.log(`[fast-checker/${agent.name}] ${msg}`));
+    // codeql[js/log-injection] -- agent name is operator-configured; newlines stripped for defense-in-depth
+    this.log = options.log || ((msg) => console.log(`[fast-checker/${agent.name.replace(/[\r\n]/g, '_')}] ${msg}`));
     this.telegramApi = options.telegramApi;
     this.chatId = options.chatId;
     this.allowedUserId = options.allowedUserId;

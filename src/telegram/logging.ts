@@ -51,6 +51,7 @@ export function logOutboundMessage(
     ...meta,
   });
 
+  // codeql[js/path-injection] -- logDir is operator-configured (derived from ctxRoot + agentName, not user input); appending JSON message log is intentional data recording
   appendFileSync(join(logDir, 'outbound-messages.jsonl'), entry + '\n', 'utf-8');
 }
 
