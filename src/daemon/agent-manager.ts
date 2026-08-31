@@ -16,7 +16,10 @@ import { collectTelegramCommands, registerTelegramCommands } from '../bus/metric
 import { stripControlChars } from '../utils/validate.js';
 import { processMediaMessage } from '../telegram/media.js';
 import { stripBom } from '../utils/strip-bom.js';
-import { BuzzRelayClient, BuzzDispatcher, loadBuzzConfig, type NostrEvent } from '../buzz/index.js';
+// Buzz/Nostr and Slack feat modules are held for product review — declare minimal stubs
+// so stopAgent's cleanup loops compile and run safely without the feat infrastructure.
+type SlackSocketModeClient = { stop(): void };
+type BuzzEntry = { dispatcher: { unregister(name: string): void } };
 import { computeDormancy, parseHeartbeatIntervalMs } from '../utils/dormancy.js';
 import { CRONS_DIRECTORY, CRONS_FILENAME } from '../bus/crons-schema.js';
 
@@ -117,6 +120,7 @@ export class AgentManager {
   // the orchestrator (e.g. a restart) while this daemon process is alive.
   private slackSocketStarted = false;
   private slackSocketClient: SlackSocketModeClient | null = null;
+  private buzzClients: Map<string, BuzzEntry> = new Map();
 
   // silent-dormancy fix: epoch ms of when this AgentManager (i.e. the daemon)
   // was constructed. Used as the Face-B liveness baseline for enabled agents
