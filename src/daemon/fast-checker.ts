@@ -18,6 +18,7 @@ import { AgentProcess } from './agent-process.js';
 import type { TelegramAPI } from '../telegram/api.js';
 import { KEYS } from '../pty/inject.js';
 import { stripControlChars, sanitizeForPtyInjection, wrapFenceSafe } from '../utils/validate.js';
+import { agentHoldsContextHandoffLease, releaseContextHandoffLease, requestContextHandoffLease } from './context-handoff-lease.js';
 
 type LogFn = (msg: string) => void;
 
@@ -83,7 +84,9 @@ export class FastChecker {
   private ctxHandoffFiredAt: number = 0;    // fires once per session (0 = not yet)
   private ctxHandoffDeadlineAt: number = 0; // timestamp after which force-restart fires
   private ctxLastSessionId: string | null = null; // detects new session → clears stale deadline
+  private ctxSessionStartedAt: number = 0; // when current session_id was first observed — handoff grace window anchor
   private ctxCircuitRestarts: number[] = []; // timestamps of recent context-triggered restarts
+  private ctxHandoffFires: number[] = [];    // timestamps of recent Tier-2 handoff fires (cooperative-restart loop backstop)
   private ctxCircuitBrokenAt: number | null = null; // when circuit tripped (null = healthy)
   // Persisted to disk so --continue restarts don't reset the circuit breaker
   private ctxCircuitFile: string = '';
@@ -1225,8 +1228,8 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
     } catch { /* keep stale values */ }
     const config = this.agent.getConfig();
     return {
-      warn: config.ctx_warning_threshold ?? 70,
-      handoff: config.ctx_handoff_threshold ?? 80,
+      warn: config.ctx_warning_threshold ?? 30,
+      handoff: config.ctx_handoff_threshold ?? 60,
     };
   }
 
@@ -1295,16 +1298,28 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
           this.ctxWarningFiredAt = 0;
           this.ctxSessionBaselinePct = null;
           this.ctxBaselineAlertFiredAt = 0;
+          this.ctxHandoffFires = [];
           this.log(`New session detected (${incomingSessionId.slice(0, 8)}…) — per-session ctx state reset`);
         }
         this.ctxLastSessionId = incomingSessionId;
+        // Anchor the handoff grace window. A freshly-started session begins at low
+        // context, so context-handoff actions are suppressed for HANDOFF_GRACE_MS to
+        // avoid acting on a transient/stale high reading (observed on fresh codex
+        // app-server threads that briefly report prior prompt-cache tokens) that
+        // would otherwise fire an immediate handoff → restart → fresh-session loop.
+        this.ctxSessionStartedAt = now;
       }
     } catch { return; }
 
-    // Check PTY output for hard API overflow errors (always act regardless of threshold config)
+    // Check PTY output for hard API overflow errors (always act regardless of threshold config).
+    // Guard: only treat the banner phrase as a *live* overflow when context usage actually
+    // corroborates it (exceeds 200k, or pct genuinely high). The same phrase appears as benign
+    // text in memory files, source, and chat that *document* this mechanism — without this guard
+    // a fresh boot re-reading those at low context force-restarts on every boot, producing a loop.
+    const ctxCorroboratesOverflow = exceeds200k || (pct !== null && pct >= 85);
     const recentOutput = this.agent.getOutputBuffer()?.getRecent(8000) ?? '';
-    if (/extra usage.*?1[Mm] context|conversation too long.*?compaction/i.test(recentOutput)) {
-      this.log('Context overflow error detected in PTY output — force restarting');
+    if (ctxCorroboratesOverflow && /extra usage.*?1[Mm] context|conversation too long.*?compaction/i.test(recentOutput)) {
+      this.log('Context overflow error detected in PTY output at high context — force restarting');
       this.forceContextRestart('API overflow error in PTY output');
       return;
     }
@@ -1312,10 +1327,22 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
     const { warn, handoff } = this.getCtxThresholds();
 
     // No threshold configured — observe-only mode (log but don't act)
-    if (this.agent.getConfig().ctx_handoff_threshold === undefined) return;
+    // Default-ON: an UNSET ctx_handoff_threshold uses the 60% default from
+    // getCtxThresholds (handoff on for every agent with no config). An explicit
+    // ctx_handoff_threshold <= 0 is the deliberate opt-out (observe-only: log,
+    // never act). This is the only disable path now that default is on.
+    const configuredHandoff = this.agent.getConfig().ctx_handoff_threshold;
+    if (configuredHandoff !== undefined && configuredHandoff <= 0) return;
 
     const effectivePct = pct ?? (exceeds200k ? 101 : null);
     if (effectivePct === null) return;
+
+    // while all other runtimes keep 2min — see handoffGraceMs(). Hard API-overflow
+    // detection above is NOT gated by grace, so a genuine overflow is still caught
+    // immediately.
+    const HANDOFF_GRACE_MS = handoffGraceMs(this.agent.getConfig().runtime);
+    const withinHandoffGrace =
+      this.ctxSessionStartedAt > 0 && now - this.ctxSessionStartedAt < HANDOFF_GRACE_MS;
 
     // Tier 3: deadline exceeded — force restart if agent ignored handoff prompt
     if (this.ctxHandoffDeadlineAt > 0 && now > this.ctxHandoffDeadlineAt) {
@@ -1395,6 +1422,26 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
       }
       this.ctxHandoffLeaseId = lease.leaseId;
       this.ctxHandoffFiredAt = now;
+      // Cooperative-restart loop backstop: count handoff fires in a persisted 15min window.
+      // If they reach 3, the runtime is not resetting context on restart — trip the circuit
+      // breaker (30min pause) instead of handing off again so the loop self-limits.
+      // Cap 3 is above the benign 1-2 fires a single very-large turn can produce before settling.
+      this.ctxHandoffFires = this.ctxHandoffFires.filter(t => now - t < 15 * 60_000);
+      this.ctxHandoffFires.push(now);
+      this.saveCtxCircuit();
+      if (this.ctxHandoffFires.length >= 3) {
+        this.ctxCircuitBrokenAt = now;
+        this.saveCtxCircuit();
+        releaseContextHandoffLease(this.paths.ctxRoot, this.agent.name);
+        this.ctxHandoffLeaseId = null;
+        this.ctxHandoffFiredAt = 0;
+        const msg = `Context handoff loop detected for ${this.agent.name}: ${this.ctxHandoffFires.length} handoffs in 15min — a runtime may not be resetting context on restart. Auto-handoff paused 30min. Check logs/${this.agent.name}/restarts.log.`;
+        this.log(msg);
+        if (this.telegramApi && this.chatId) {
+          this.telegramApi.sendMessage(this.chatId, msg).catch(() => {});
+        }
+        return;
+      }
       this.ctxHandoffDeadlineAt = now + 5 * 60_000; // 5min grace for agent to cooperate
       // Reset context_status.json so the new session doesn't re-trigger immediately
       const statusPath = join(this.paths.stateDir, 'context_status.json');
@@ -1540,6 +1587,7 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
       if (!existsSync(this.ctxCircuitFile)) return;
       const data = JSON.parse(readFileSync(this.ctxCircuitFile, 'utf-8'));
       this.ctxCircuitRestarts = Array.isArray(data.restarts) ? data.restarts : [];
+      this.ctxHandoffFires = Array.isArray(data.handoffFires) ? data.handoffFires : [];
       this.ctxCircuitBrokenAt = typeof data.brokenAt === 'number' ? data.brokenAt : null;
     } catch {
       // Start fresh on error
@@ -1553,6 +1601,7 @@ Reply using: cortextos bus send-telegram ${chatId} '<your reply>'
     try {
       writeFileSync(this.ctxCircuitFile, JSON.stringify({
         restarts: this.ctxCircuitRestarts,
+        handoffFires: this.ctxHandoffFires,
         brokenAt: this.ctxCircuitBrokenAt,
       }), 'utf-8');
     } catch {
