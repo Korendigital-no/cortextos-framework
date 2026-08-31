@@ -85,6 +85,8 @@ export class FastChecker {
   private ctxHandoffDeadlineAt: number = 0; // timestamp after which force-restart fires
   private ctxLastSessionId: string | null = null; // detects new session → clears stale deadline
   private ctxSessionStartedAt: number = 0; // when current session_id was first observed — handoff grace window anchor
+  private ctxHandoffLeaseId: string | null = null; // lease ID held by this agent (released on teardown)
+  private ctxHandoffQueuedLogAt: number = 0; // throttle for "queued, waiting" log lines
   private ctxCircuitRestarts: number[] = []; // timestamps of recent context-triggered restarts
   private ctxHandoffFires: number[] = [];    // timestamps of recent Tier-2 handoff fires (cooperative-restart loop backstop)
   private ctxCircuitBrokenAt: number | null = null; // when circuit tripped (null = healthy)

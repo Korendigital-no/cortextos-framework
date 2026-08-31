@@ -206,6 +206,8 @@ export const ecosystemCommand = new Command('ecosystem')
     // system where the dashboard is consumed by humans, not edited live.
     const isWindows = process.platform === 'win32';
     const nextBin = join(dashboardDir, 'node_modules', 'next', 'dist', 'bin', 'next');
+    const dashboardScript = isWindows && existsSync(nextBin) ? nextBin : 'npm';
+    const dashboardArgs = isWindows && existsSync(nextBin) ? 'start' : 'run start:prod';
     // KNOWN GAP (Windows): the Windows path invokes next bin directly, which
     // skips the `prestart:prod` npm hook (kill-port + ensure-built). First-time
     // PM2 boot on Windows requires `npm run build` manually before

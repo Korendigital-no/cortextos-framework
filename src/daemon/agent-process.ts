@@ -817,7 +817,7 @@ export class AgentProcess {
     // continuity artifact, not an agent malfunction.
     if (
       exitCode === 0 &&
-      this.config.runtime === 'opencode' &&
+      (this.config.runtime as string) === 'opencode' &&
       this.lastSpawnMode === 'continue' &&
       Date.now() - this.lastStartAtMs < OPENCODE_CONTINUE_WEDGE_FAST_EXIT_MS
     ) {
