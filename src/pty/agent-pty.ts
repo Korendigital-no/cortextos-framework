@@ -208,6 +208,13 @@ export class AgentPTY {
       const kind = this.detectFirstRunPrompt(recent);
       const showingBypass = kind === 'bypass';
       const showingTrust = kind === 'trust';
+      if (showingTrust && !trustHandled) {
+        // Trust screen: default selection is "Yes, I trust" → bare Enter accepts.
+        trustHandled = true;
+        this.pty.write('\r');
+        clearInterval(promptPoll);
+        return;
+      }
       if (showingBypass && !bypassHandled) {
         // Bypass screen: default selection is "1. No, exit". Move DOWN to
         // "2. Yes, I accept", then confirm. Bare Enter here would quit the agent.
