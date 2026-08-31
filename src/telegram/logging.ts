@@ -51,7 +51,7 @@ export function logOutboundMessage(
     ...meta,
   });
 
-  appendFileSync(join(logDir, 'outbound-messages.jsonl'), entry + '\n', 'utf-8');
+  appendFileSync(join(logDir, 'outbound-messages.jsonl'), entry + '\n', 'utf-8'); // codeql[js/http-to-file-access] -- logDir is operator-configured (ctxRoot + agentName); intentional outbound message audit logging
 }
 
 /**

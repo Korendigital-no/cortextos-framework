@@ -14,6 +14,16 @@ import { resolvePaths } from '../utils/paths.js';
 
 type LogFn = (msg: string) => void;
 
+// opencode --continue wedge auto-recovery thresholds. A wedged session exits
+// code 0 almost immediately on every `--continue` re-attach, so a "wedge exit"
+// is an exit_code=0 that arrives within FAST_EXIT_MS of the spawn. After
+// WEDGE_THRESHOLD consecutive such exits we stop trusting the session marker and
+// force a fresh boot. 3 mirrors the codex thread-resume crash-loop signature
+// (see shouldContinue()); the fast-exit gate keeps a genuinely long, cleanly
+// exited session from ever counting.
+const OPENCODE_CONTINUE_WEDGE_THRESHOLD = 3;
+const OPENCODE_CONTINUE_WEDGE_FAST_EXIT_MS = 60_000;
+
 /**
  * Manages a single agent's lifecycle.
  * Replaces agent-wrapper.sh for one agent.
@@ -35,6 +45,13 @@ export class AgentProcess {
   private sessionStart: Date | null = null;
   private status: AgentStatus['status'] = 'stopped';
   private stopping: boolean = false;
+  // Change B (join-in-flight re-entry): the single in-flight teardown promise.
+  // A stop() that arrives while a teardown is already running awaits THIS
+  // instead of returning immediately. The only re-entrant caller is the
+  // manager's eviction path (`await stale.process.stop()`), which must block
+  // until the real, death-confirmed teardown completes rather than racing a
+  // fresh spawn against a still-alive predecessor (the duplicate-PTY defect).
+  private stopInFlight: Promise<void> | null = null;
   // BUG-040 fix: persists across stop() return until handleExit clears it.
   // Required because BUG-032's CRLF + 5s wait can cause graceful shutdown to
   // exceed the 5s Promise.race timeout in stop(), which would otherwise reset
@@ -69,6 +86,13 @@ export class AgentProcess {
   // daemon should fire the codex-app-server back-online Telegram directly
   // (skipped on handoff restart — the agent sends its own contextual reply).
   private lastSpawnWasHandoff = false;
+  // opencode --continue wedge auto-recovery state (see the OPENCODE_CONTINUE_WEDGE_*
+  // constants). lastSpawnMode/lastStartAtMs let handleExit tell an immediate
+  // exit-0-on-continue (wedge) apart from a normal exit; the counter tracks the
+  // consecutive streak and is reset by any non-wedge exit.
+  private lastSpawnMode: 'fresh' | 'continue' | null = null;
+  private lastStartAtMs = 0;
+  private opencodeContinueWedgeCount = 0;
 
   constructor(name: string, env: CtxEnv, config: AgentConfig, log?: LogFn) {
     this.name = name;
@@ -108,6 +132,10 @@ export class AgentProcess {
 
     // Determine start mode
     const mode = this.shouldContinue() ? 'continue' : 'fresh';
+    // Record the mode/time this lifecycle spawned in so handleExit can detect an
+    // immediate exit-0-on-continue wedge (opencode --continue re-attach loop).
+    this.lastSpawnMode = mode;
+    this.lastStartAtMs = Date.now();
     const prompt = mode === 'fresh'
       ? this.buildStartupPrompt()
       : this.buildContinuePrompt();
@@ -124,6 +152,13 @@ export class AgentProcess {
     // the stop() window would otherwise pre-load the self-inflicted-stale
     // detector and could falsely restart a healthy fresh session.
     this.injectionsSinceMark = 0;
+    // disable-resurrection fix: a fresh start means this agent is (re-)enabled.
+    // Clear any lingering .user-disable marker so handleExit's crash-recovery gate
+    // stops suppressing restarts for it. No-op if the marker is absent.
+    try {
+      const disableMarker = join(this.env.ctxRoot, 'state', this.name, '.user-disable');
+      if (existsSync(disableMarker)) unlinkSync(disableMarker);
+    } catch { /* best effort */ }
     // BUG-040 fix: bump generation. The onExit closure below captures THIS
     // value and uses it to detect "I'm an old PTY whose exit fired after a
     // new lifecycle began" — in which case it bails out without touching
@@ -207,9 +242,28 @@ export class AgentProcess {
 
   /**
    * Stop the agent gracefully.
+   *
+   * Change B (join-in-flight): a re-entrant stop() awaits the in-flight teardown
+   * instead of the previous silent early no-op (`if (this.stopping) return;`).
+   * The only re-entrant caller is the manager's eviction path
+   * (`await stale.process.stop()`), which WANTS to block until the predecessor
+   * is truly dead before spawning fresh — the previous no-op let it return
+   * immediately and spawn a second live PTY alongside the still-alive first one.
    */
   async stop(): Promise<void> {
-    if (this.stopping) return;
+    if (this.stopping) {
+      if (this.stopInFlight) await this.stopInFlight;
+      return;
+    }
+    this.stopInFlight = this.runStop();
+    try {
+      await this.stopInFlight;
+    } finally {
+      this.stopInFlight = null;
+    }
+  }
+
+  private async runStop(): Promise<void> {
     this.stopping = true;
     // BUG-040 fix: stopRequested persists ACROSS stop()'s return until
     // handleExit clears it. This is the safety net for the case where the
@@ -259,6 +313,11 @@ export class AgentProcess {
       } catch {
         // Ignore write errors during shutdown
       }
+      // Change A (death-confirmed stop): capture the OS child pid BEFORE
+      // pty.kill(). node-pty's kill() can invalidate the handle, so getPid()
+      // is unreliable afterward — we need the pid to confirm death below.
+      const childPid = pty.getPid();
+
       // BUG-032 follow-up: only kill the PTY if the process is still alive.
       // After /exit + 5s wait, the child has usually exited cleanly. Calling
       // pty.kill() on an already-exited PTY tears down the file descriptor,
@@ -280,6 +339,33 @@ export class AgentProcess {
       // timeout reduces "Ignoring late exit from previous lifecycle" log noise.
       if (exitPromise) {
         await Promise.race([exitPromise, sleep(15000)]);
+      }
+
+      // Change A (death-confirmed stop): node-pty's kill() sends SIGHUP with no
+      // escalation, so a child that traps/ignores SIGHUP (or is simply slow to
+      // unwind) outlives the graceful window above. stop() would then return
+      // with the OS child still alive and untracked — free to co-emit alongside
+      // the next spawn under this agent name (the duplicate-PTY defect). If the
+      // child is still alive after the bounded race, escalate to SIGKILL and
+      // poll until the OS confirms it is gone before returning. This branch runs
+      // ONLY when the child survived the graceful window, so a normal fast exit
+      // adds ZERO latency and never sees a SIGKILL (no false kills).
+      if (childPid && isChildAlive(childPid)) {
+        this.log(`Graceful stop timed out — escalating to SIGKILL (pid ${childPid})`);
+        try {
+          process.kill(childPid, 'SIGKILL');
+        } catch {
+          // ESRCH: exited between the liveness check and the kill — fine.
+        }
+        // Bounded poll: 5s deadline / 100ms interval (hardcoded — a stop must
+        // not block the daemon indefinitely on a wedged, unkillable child).
+        const deadline = Date.now() + 5000;
+        while (isChildAlive(childPid) && Date.now() < deadline) {
+          await sleep(100);
+        }
+        if (isChildAlive(childPid)) {
+          this.log(`WARNING: pid ${childPid} still alive 5s after SIGKILL — proceeding anyway`);
+        }
       }
     }
 
@@ -483,6 +569,10 @@ export class AgentProcess {
       sessionStart: this.sessionStart?.toISOString(),
       crashCount: this.crashCount,
       model: this.config.model,
+      awaitingConfirmation:
+        this.pty && 'isAwaitingInteractiveConfirmation' in this.pty
+          ? this.pty.isAwaitingInteractiveConfirmation()
+          : false,
     };
   }
 
@@ -639,6 +729,22 @@ export class AgentProcess {
       return;
     }
 
+    // disable-resurrection fix: a DISABLED agent that exits (crash / force-exit
+    // with stopRequested=false) must NOT be respawned by crash recovery. The
+    // `.user-disable` marker (written by `cortextos disable`) is the authoritative
+    // "stood down by the user" signal — mirror isDaemonShuttingDown()'s check.
+    // Return BEFORE crash counting and BEFORE both respawn setTimeouts
+    // (image-poison ~L587, crash-recovery ~L643). status='stopped' so the agent
+    // shows as down, not crash-looping. Marker is cleared on the next start().
+    // Acknowledged edge case: the crash-alert hook lazy-unlinks markers older
+    // than 5min, so a disabled agent that survives stop() and keeps running
+    // >5min could theoretically lose this gate — outside the repro's scope.
+    if (this.isUserDisabled()) {
+      this.status = 'stopped';
+      this.notifyStatusChange();
+      return;
+    }
+
     // BUG-040 fix: check stopRequested instead of (only) stopping. The
     // stopping flag is cleared inside stop() after a 15s timeout window —
     // which means a slow PTY shutdown can fire handleExit AFTER stopping is
@@ -691,6 +797,54 @@ export class AgentProcess {
         }
       }, 5000);
       return;
+    }
+
+    // opencode --continue wedge auto-recovery (companion to the image-poison
+    // block above; same shape, different signature). shouldContinue() passes
+    // `opencode --continue` whenever the session marker is present, with no
+    // wedge-awareness — so a session wedged on the bootstrap splash re-attaches
+    // on every crash-recovery restart and exits code 0 almost immediately,
+    // producing a self-perpetuating exit_code=0 loop that drains max_crashes and
+    // halts the agent (measured live 2026-08-12: opencode crashed 10x with
+    // exit_code=0 across 22min, then HALTED). The marker is trusted as "safe to
+    // continue" without confirming the prior session is not wedged. Detect the
+    // signature — an opencode agent, spawned in continue mode, exiting 0 within
+    // FAST_EXIT_MS — and after THRESHOLD consecutive such exits arm .force-fresh
+    // so the next boot discards the wedged session (shouldContinue() honors
+    // .force-fresh for all runtimes). This automates an operator's manual
+    // stop -> drop-marker -> fresh recovery. Like image-poison, a recovery
+    // restart is not charged against max_crashes_per_day — it is a self-inflicted
+    // continuity artifact, not an agent malfunction.
+    if (
+      exitCode === 0 &&
+      (this.config.runtime as string) === 'opencode' &&
+      this.lastSpawnMode === 'continue' &&
+      Date.now() - this.lastStartAtMs < OPENCODE_CONTINUE_WEDGE_FAST_EXIT_MS
+    ) {
+      this.opencodeContinueWedgeCount++;
+      if (this.opencodeContinueWedgeCount >= OPENCODE_CONTINUE_WEDGE_THRESHOLD) {
+        this.log(
+          `opencode --continue wedge: ${this.opencodeContinueWedgeCount} consecutive fast exit_code=0 continues — arming .force-fresh and restarting fresh (not counted toward max_crashes_per_day).`,
+        );
+        this.armForceFresh('opencode --continue wedge auto-recovery');
+        this.appendCrashToRestartsLog(exitCode, 5000, 'OPENCODE_CONTINUE_WEDGE_RECOVERY');
+        this.opencodeContinueWedgeCount = 0;
+        this.status = 'crashed';
+        this.notifyStatusChange();
+        setTimeout(() => {
+          if (this.status === 'crashed') {
+            this.start().catch(err => this.log(`opencode wedge recovery restart failed: ${err}`));
+          }
+        }, 5000);
+        return;
+      }
+      // Below threshold: fall through to normal crash recovery (still counted +
+      // backoff). The next restart re-continues; if it wedges again the streak
+      // grows until the threshold trips the force-fresh above.
+    } else {
+      // Any non-wedge exit — nonzero code, fresh mode, or a session that stayed
+      // up past the fast-exit window — breaks the consecutive streak.
+      this.opencodeContinueWedgeCount = 0;
     }
 
     // CrashLoopPauser (instar-inspired): if a sliding window is configured,
@@ -995,6 +1149,24 @@ export class AgentProcess {
   }
 
   /**
+   * Check whether this agent has been explicitly disabled by the user.
+   *
+   * Returns true iff a `.user-disable` marker exists in this agent's state
+   * dir (written by `cortextos disable`). Unlike isDaemonShuttingDown()'s 60s
+   * freshness window, there is NO time bound here: `.user-disable` is a
+   * persistent flag with an explicit lifecycle (cleared on the next start()),
+   * not a transient shutdown signal.
+   */
+  private isUserDisabled(): boolean {
+    const marker = join(this.env.ctxRoot, 'state', this.name, '.user-disable');
+    try {
+      return existsSync(marker);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Append an unplanned-exit entry to restarts.log. Complements the planned
    * SELF-RESTART / HARD-RESTART entries written by src/bus/system.ts so that
    * a single file gives the complete restart history for an agent.
@@ -1007,7 +1179,7 @@ export class AgentProcess {
   private appendCrashToRestartsLog(
     exitCode: number,
     backoffMs: number,
-    kind: 'CRASH' | 'HALTED' | 'CRASH_LOOP' | 'IMAGE_POISON_RECOVERY',
+    kind: 'CRASH' | 'HALTED' | 'CRASH_LOOP' | 'IMAGE_POISON_RECOVERY' | 'OPENCODE_CONTINUE_WEDGE_RECOVERY',
   ): void {
     try {
       const logDir = join(this.env.ctxRoot, 'logs', this.name);
@@ -1016,7 +1188,7 @@ export class AgentProcess {
       const details =
         kind === 'HALTED'
           ? `exit_code=${exitCode} crash_count=${this.crashCount} max_crashes=${this.maxCrashesPerDay}`
-          : kind === 'IMAGE_POISON_RECOVERY'
+          : kind === 'IMAGE_POISON_RECOVERY' || kind === 'OPENCODE_CONTINUE_WEDGE_RECOVERY'
             ? `exit_code=${exitCode} backoff_s=${backoffMs / 1000} (not counted toward max_crashes)`
             : `exit_code=${exitCode} crash_count=${this.crashCount} backoff_s=${backoffMs / 1000}`;
       const logLine = `[${timestamp}] ${kind}: ${details}\n`;
@@ -1052,4 +1224,18 @@ export class AgentProcess {
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Change A: OS-level pid liveness probe using the signal-0 idiom. Local copy of
+// the same helper duplicated in agent-manager.ts (isPidAlive), utils/lock.ts,
+// and pty/opencode-pty.ts: signal 0 sends nothing, it only tests process
+// existence + our permission to signal it. A process owned by another user
+// (EPERM) is alive; only ESRCH (process gone) counts as dead.
+function isChildAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
 }

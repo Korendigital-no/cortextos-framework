@@ -204,11 +204,11 @@ export const enableAgentCommand = new Command('enable')
         );
       } else if (validation.reason === 'network_error' || validation.reason === 'rate_limited') {
         console.error(`Warning: could not verify Telegram credentials (${validation.reason}).`);
-        console.error(`  ${formatValidateError(validation)}`);
+        console.error(`  ${formatValidateError(validation).replace(/[\r\n]/g, ' ')}`); // lgtm[js/log-injection]
         console.error('  Continuing anyway — re-run enable after connectivity is restored to confirm.');
       } else {
         console.error(`Error: Telegram credentials for agent "${agent}" failed validation.`);
-        console.error(`  ${formatValidateError(validation)}`);
+        console.error(`  ${formatValidateError(validation).replace(/[\r\n]/g, ' ')}`); // lgtm[js/log-injection]
         console.error(`  Edit ${agentEnvPath} and re-run: cortextos enable ${agent}`);
         process.exit(1);
       }

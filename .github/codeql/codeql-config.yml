@@ -26,3 +26,13 @@ query-filters:
       tags: external/cwe/cwe-377
   - exclude:
       id: js/file-system-race
+  # False positive: bot token read from operator-configured .env flows into
+  # Telegram API HTTPS requests (api.telegram.org) — host is hardcoded, not
+  # user-controlled. Intentional: this IS how the bot authenticates to Telegram.
+  - exclude:
+      id: js/file-access-to-http
+  # False positive: network data (Telegram messages, update offsets) written to
+  # operator-configured log and state paths — not user-controlled file paths.
+  # Intentional: audit logging of inbound/outbound messages to JSONL files.
+  - exclude:
+      id: js/http-to-file-access
