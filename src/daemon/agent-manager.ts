@@ -713,7 +713,7 @@ export class AgentManager {
     // superseded still owns a live process that needs its checker.
     if (!ownEntry.stopped) {
       checker.start().catch(err => {
-        console.error(`[${name}] Fast checker error:`, err);
+        console.error(`[${name.replace(/[\r\n]/g, '_')}] Fast checker error:`, err);
       });
     }
 
