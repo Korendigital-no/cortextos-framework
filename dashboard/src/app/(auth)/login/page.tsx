@@ -14,6 +14,7 @@ import {
   CardDescription,
 } from '@/components/ui/card';
 import { SplashScreen } from '@/components/layout/splash-screen';
+import { interpretLoginRedirect } from '@/lib/login-result';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -103,43 +104,35 @@ export default function LoginPage() {
     body.set('password', passwordInput?.value || '');
 
     try {
+      // X-Auth-Return-Redirect makes NextAuth answer 200 + JSON { url }
+      // instead of a 302. Following the 302 broke every localhost login when
+      // AUTH_URL points at the tunnel: the redirect is cross-origin and fetch
+      // rejects it as a network error. See src/lib/login-result.ts.
       const res = await fetch(form.action, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'X-Auth-Return-Redirect': '1',
+        },
         body: body.toString(),
         credentials: 'same-origin',
-        redirect: 'follow',
       });
-      if (res.redirected) {
-        const target = new URL(res.url);
-        if (target.pathname.startsWith('/login')) {
-          const code = target.searchParams.get('error') || 'Unknown';
-          // CallbackRouteError usually means the rate limiter blocked the request.
-          // Show a human-readable message instead of the raw error code.
-          const msg = code === 'CallbackRouteError'
-            ? 'Too many attempts. Please wait a few minutes and try again.'
-            : `Sign-in failed: ${code}`;
-          setError(msg);
-          setLoading(false);
-          return;
-        }
-        // Navigate to the original destination the user tried to reach, or /
-        // if none was recorded. Use window.location.origin to build a safe
-        // relative-only target — res.url can be http://localhost:3000/ behind
-        // a reverse proxy (when AUTH_URL is not set), which would send the
-        // browser to the wrong host.
-        const callbackParam = new URL(window.location.href).searchParams.get('callbackUrl');
-        // Validate same-origin: must start with / but not // (which is a protocol-relative URL)
-        const safeTarget = callbackParam && callbackParam.startsWith('/') && !callbackParam.startsWith('//') ? callbackParam : '/';
-        window.location.href = safeTarget;
+      if (!res.ok) {
+        setError(`Sign-in failed with status ${res.status}`);
+        setLoading(false);
         return;
       }
-      if (res.ok) {
-        window.location.href = '/';
+      const data = (await res.json().catch(() => null)) as { url?: string } | null;
+      const callbackParam = new URL(window.location.href).searchParams.get('callbackUrl');
+      const result = interpretLoginRedirect(data?.url, callbackParam);
+      if (!result.ok) {
+        setError(result.message);
+        setLoading(false);
         return;
       }
-      setError(`Sign-in failed with status ${res.status}`);
-      setLoading(false);
+      // Relative target only — never the host NextAuth put in the url.
+      window.location.href = result.target;
+      return;
     } catch (err) {
       // Surface auth submit failures (network/CORS/unexpected) in Sentry — these
       // are user-blocking and were previously invisible (only shown in the UI).
